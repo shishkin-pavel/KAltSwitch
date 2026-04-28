@@ -71,6 +71,12 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         hotkeyController = HotkeyController(controller: controller)
         hotkeyController?.start()
 
+        // The CGEventTap inside HotkeyController needs AX permission. If the
+        // user grants it after launch, re-run start() so the tap installs.
+        registry.onAxTrustChanged = { [weak self] trusted in
+            if trusted { self?.hotkeyController?.start() }
+        }
+
         // Switcher overlay panel. Built eagerly so showing has zero startup cost;
         // toggled visibility comes from `observeSwitcherVisibility` below.
         let panel = SwitcherOverlayWindow()

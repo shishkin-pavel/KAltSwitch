@@ -12,6 +12,10 @@ final class AppRegistry {
     private var nsObservers: [NSObjectProtocol] = []
     private var trustTimer: Timer?
     private var lastTrusted = false
+    /// Fires whenever AX trust flips. The hotkey controller's CGEventTap
+    /// creation requires AX, so on `true` AppDelegate calls `start()` again
+    /// (the call is idempotent).
+    var onAxTrustChanged: ((Bool) -> Void)?
 
     init(store: WorldStore) {
         self.store = store
@@ -144,6 +148,7 @@ final class AppRegistry {
             if trusted {
                 respawnAllWatchers()
             }
+            onAxTrustChanged?(trusted)
         }
     }
 

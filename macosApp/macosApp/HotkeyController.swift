@@ -29,10 +29,12 @@ final class HotkeyController {
         self.controller = controller
     }
 
+    /// Idempotent — safe to re-call after AX trust flips so the previously-failed
+    /// CGEventTap can be created. Each piece guards on its own state.
     func start() {
-        installEventHandler()
-        registerHotkeys()
-        installFlagsChangedTap()
+        if eventHandler == nil { installEventHandler() }
+        if hotKeyRefs.isEmpty { registerHotkeys() }
+        if eventTap == nil { installFlagsChangedTap() }
     }
 
     func stop() {
