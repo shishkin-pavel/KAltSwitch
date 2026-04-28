@@ -1,6 +1,9 @@
 package com.shish.kaltswitch.model
 
+import kotlinx.serialization.Serializable
+
 /** Three-way filter: include normally, push to the demoted bucket, or push to the hidden bucket. */
+@Serializable
 enum class TriFilter { Show, Demote, Hide }
 
 /**
@@ -10,6 +13,7 @@ enum class TriFilter { Show, Demote, Hide }
  * Defaults: everything is `Show` except `windowlessApps`, which `Demote`s by
  * default — apps with no current windows are visually less important.
  */
+@Serializable
 data class Filters(
     // Apps
     val windowlessApps: TriFilter = TriFilter.Demote,

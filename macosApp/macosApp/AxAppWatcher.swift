@@ -77,9 +77,16 @@ final class AxAppWatcher {
     private func handle(name: String, element: AXUIElement) {
         switch name {
         case kAXApplicationActivatedNotification as String:
-            store.setActiveApp(pid: pid)
             store.recordAppActivation(pid: pid, timestampMs: nowMillis())
             refreshAllWindows()
+            // kAXFocusedWindowChanged often doesn't fire on app activation if the
+            // focused window inside the app didn't change — query it explicitly so
+            // the active-window pictogram lights up.
+            if let focused = readAttributeAsElement(appElement, kAXFocusedWindowAttribute as String) {
+                store.setActiveAppAndWindow(pid: pid, windowId: Int64(CFHash(focused)))
+            } else {
+                store.setActiveApp(pid: pid)
+            }
 
         case kAXApplicationHiddenNotification as String,
              kAXApplicationShownNotification as String:

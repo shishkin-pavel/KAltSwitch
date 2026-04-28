@@ -113,8 +113,23 @@ final class AppRegistry {
 
     private func handleActivated(_ note: Notification) {
         guard let nsApp = note.userInfo?[NSWorkspace.applicationUserInfoKey] as? NSRunningApplication else { return }
-        store.recordAppActivation(pid: nsApp.processIdentifier, timestampMs: nowMillis())
-        store.setActiveApp(pid: nsApp.processIdentifier)
+        let pid = nsApp.processIdentifier
+        store.recordAppActivation(pid: pid, timestampMs: nowMillis())
+
+        // Also probe the focused window via AX so the pictogram lights up
+        // immediately, without waiting for kAXFocusedWindowChanged (which often
+        // doesn't fire when activating an app whose internal focus is unchanged).
+        let appEl = AXUIElementCreateApplication(pid)
+        var focusedRef: AnyObject?
+        let err = AXUIElementCopyAttributeValue(appEl, kAXFocusedWindowAttribute as CFString, &focusedRef)
+        if err == .success,
+           let v = focusedRef,
+           CFGetTypeID(v as CFTypeRef) == AXUIElementGetTypeID() {
+            let focused = v as! AXUIElement
+            store.setActiveAppAndWindow(pid: pid, windowId: Int64(CFHash(focused)))
+        } else {
+            store.setActiveApp(pid: pid)
+        }
     }
 
     private func handleHiddenChange(_ note: Notification, hidden: Bool) {
