@@ -19,6 +19,10 @@ final class AxAppWatcher {
 
     /// AX windows we've already subscribed to, keyed by CFHash of the AXUIElement.
     private var perWindowSubscribed = Set<Int>()
+    /// Live AXUIElement references for every top-level window currently known,
+    /// keyed by `CFHash(axWin)` (which is also the WindowId we publish to the
+    /// store). Looked up on raise / commit to find the element to act on.
+    private var windowsByHash: [Int: AXUIElement] = [:]
 
     init(pid: pid_t, store: WorldStore) {
         self.pid = pid
@@ -136,6 +140,7 @@ final class AxAppWatcher {
         let appHash = Int(CFHash(appElement))
         let byHash: [Int: AXUIElement] = Dictionary(uniqueKeysWithValues:
             topLevel.map { (Int(CFHash($0)), $0) })
+        windowsByHash = byHash
 
         // For each "top-level" window, see whether its AXParent is another top-level
         // window. Sheets/dialogs/floating panels often appear in app's kAXWindows even
@@ -278,6 +283,28 @@ final class AxAppWatcher {
             height: h,
             children: children
         )
+    }
+
+    // MARK: - Raise / commit (called from main, from the SwitcherController bridge)
+
+    /// `kAXRaiseAction` raises a window to the front *of its app* without making
+    /// the app frontmost. Used for preview-on-hover; doesn't fire
+    /// `didActivateApplicationNotification` so it doesn't pollute history.
+    @discardableResult
+    func raiseWindow(windowId: Int64) -> Bool {
+        guard let el = windowsByHash[Int(windowId)] else { return false }
+        return AXUIElementPerformAction(el, kAXRaiseAction as CFString) == .success
+    }
+
+    /// Make this window the app's main window. Pair this with
+    /// `NSRunningApplication.activate` and a `kAXRaiseAction` to bring the app
+    /// + this specific window forward. Used on switcher-commit.
+    @discardableResult
+    func makeWindowMain(windowId: Int64) -> Bool {
+        guard let el = windowsByHash[Int(windowId)] else { return false }
+        let setMain = AXUIElementSetAttributeValue(el, kAXMainAttribute as CFString, kCFBooleanTrue)
+        let raise = AXUIElementPerformAction(el, kAXRaiseAction as CFString)
+        return setMain == .success || raise == .success
     }
 
     private func readAttribute(_ element: AXUIElement, _ attribute: String) -> Any? {

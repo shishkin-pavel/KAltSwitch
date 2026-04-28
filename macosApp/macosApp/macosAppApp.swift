@@ -52,12 +52,23 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         frameObservers = [move, resize]
 
         // Bring up the per-app AX watchers. Store is the singleton owned by the framework.
-        appRegistry = AppRegistry(store: ComposeViewKt.store)
-        appRegistry?.start()
+        let registry = AppRegistry(store: ComposeViewKt.store)
+        appRegistry = registry
+        registry.start()
+
+        // Wire the Kotlin switcher controller's AX-side actions to AppRegistry.
+        let controller = ComposeViewKt.switcherController
+        controller.onRaiseWindow = { [weak registry] pid, windowId in
+            registry?.raise(pid: pid_t(truncatingIfNeeded: pid.int32Value),
+                            windowId: windowId.int64Value)
+        }
+        controller.onCommitActivation = { [weak registry] pid, windowId in
+            registry?.commit(pid: pid_t(truncatingIfNeeded: pid.int32Value),
+                             windowId: windowId?.int64Value)
+        }
 
         // Global hotkeys + cmd-release detection feed the Kotlin SwitcherController.
-        // M4 will fill in onRaiseWindow / onCommitActivation on this controller.
-        hotkeyController = HotkeyController(controller: ComposeViewKt.switcherController)
+        hotkeyController = HotkeyController(controller: controller)
         hotkeyController?.start()
 
         // Switcher overlay panel. Built eagerly so showing has zero startup cost;

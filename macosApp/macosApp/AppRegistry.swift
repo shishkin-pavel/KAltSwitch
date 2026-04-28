@@ -76,6 +76,24 @@ final class AppRegistry {
         watchers.removeAll()
     }
 
+    // MARK: - Switcher actions (raise / commit)
+
+    /// Raise a window for preview without changing frontmost-app.
+    func raise(pid: pid_t, windowId: Int64) {
+        watchers[pid]?.raiseWindow(windowId: windowId)
+    }
+
+    /// Final activation on cmd-release: bring the app to front, mark the
+    /// chosen window as main, raise it. If `windowId` is nil we just activate
+    /// the app (its own focus rules pick the window).
+    func commit(pid: pid_t, windowId: Int64?) {
+        guard let nsApp = NSRunningApplication(processIdentifier: pid) else { return }
+        nsApp.activate(options: [.activateIgnoringOtherApps])
+        if let wid = windowId {
+            watchers[pid]?.makeWindowMain(windowId: wid)
+        }
+    }
+
     private func checkTrust() {
         let trusted = AXIsProcessTrusted()
         if trusted != lastTrusted {
