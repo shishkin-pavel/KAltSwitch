@@ -23,6 +23,10 @@ final class AxAppWatcher {
     private var subscribedAppNotifications = Set<String>()
     /// Per-window subscriptions — keyed by (CFHash, notificationName). Same retry idea.
     private var subscribedWindowNotifications = Set<String>()
+    /// Last logged kAXWindows result, so the 5s bulk-refresh timer doesn't spam
+    /// "still nil" / "still empty" lines for every app every tick. -1 = unknown,
+    /// -2 = nil, -3 = empty, anything ≥ 0 = window count.
+    private var lastLoggedWindowState: Int = -1
 
     init(pid: pid_t, store: WorldStore) {
         self.pid = pid
@@ -140,6 +144,18 @@ final class AxAppWatcher {
 
         let raw = readAttribute(appElement, kAXWindowsAttribute as String)
         let topLevel = (raw as? [AXUIElement]) ?? []
+        // Log kAXWindows state, but only on transitions — the 5s bulk-refresh
+        // timer would otherwise spam "still nil" / "still empty" lines for every
+        // app, every tick.
+        let currentState = raw == nil ? -2 : (topLevel.isEmpty ? -3 : topLevel.count)
+        if currentState != lastLoggedWindowState {
+            switch currentState {
+            case -2: NSLog("KAltSwitch: kAXWindows nil for pid=%d", pid)
+            case -3: NSLog("KAltSwitch: kAXWindows empty for pid=%d", pid)
+            default: NSLog("KAltSwitch: kAXWindows pid=%d count=%d", pid, currentState)
+            }
+            lastLoggedWindowState = currentState
+        }
         let appHash = Int(CFHash(appElement))
         let byHash: [Int: AXUIElement] = Dictionary(uniqueKeysWithValues:
             topLevel.map { (Int(CFHash($0)), $0) })
