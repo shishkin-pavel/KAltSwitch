@@ -79,14 +79,7 @@ final class AxAppWatcher {
         case kAXApplicationActivatedNotification as String:
             store.recordAppActivation(pid: pid, timestampMs: nowMillis())
             refreshAllWindows()
-            // kAXFocusedWindowChanged often doesn't fire on app activation if the
-            // focused window inside the app didn't change — query it explicitly so
-            // the active-window pictogram lights up.
-            if let focused = readAttributeAsElement(appElement, kAXFocusedWindowAttribute as String) {
-                store.setActiveAppAndWindow(pid: pid, windowId: Int64(CFHash(focused)))
-            } else {
-                store.setActiveApp(pid: pid)
-            }
+            syncActiveStateFromSystem(store: store)
 
         case kAXApplicationHiddenNotification as String,
              kAXApplicationShownNotification as String:
@@ -97,9 +90,13 @@ final class AxAppWatcher {
         case kAXMainWindowChangedNotification as String,
              kAXFocusedWindowChangedNotification as String:
             refreshAllWindows()
-            let id = Int64(CFHash(element))
-            store.recordWindowActivation(pid: pid, windowId: id, timestampMs: nowMillis())
-            store.setActiveAppAndWindow(pid: pid, windowId: id)
+            // Only record this as activation history if our app is actually frontmost
+            // — otherwise we'd reorder the log based on a no-longer-active app's
+            // events. Sync active-state from the system to authoritative truth.
+            if NSWorkspace.shared.frontmostApplication?.processIdentifier == pid {
+                store.recordWindowActivation(pid: pid, windowId: Int64(CFHash(element)), timestampMs: nowMillis())
+            }
+            syncActiveStateFromSystem(store: store)
 
         case kAXWindowCreatedNotification as String:
             subscribePerWindow(element)
@@ -116,6 +113,10 @@ final class AxAppWatcher {
             // Without a stable id-before-destruction we just re-snapshot; the gone
             // window will simply be missing from the new list.
             refreshAllWindows()
+            // The destroyed window may have been the active one, and macOS may have
+            // silently transitioned focus (e.g. closing Finder's last real window).
+            // Re-sync from the system rather than assuming.
+            syncActiveStateFromSystem(store: store)
 
         default:
             break
