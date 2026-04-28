@@ -123,7 +123,6 @@ final class AxAppWatcher {
         for axWin in windows {
             if let win = makeWindow(from: axWin) {
                 out.append(win)
-                subscribePerWindow(axWin)
             }
         }
         store.setWindows(pid: pid, windows: out)
@@ -132,6 +131,27 @@ final class AxAppWatcher {
     private func pushWindowFromElement(_ axWin: AXUIElement) {
         guard let win = makeWindow(from: axWin) else { return }
         store.upsertWindow(window: win)
+    }
+
+    /// Recursively collect window-like children attached to a window (sheets, drawers,
+    /// "child windows" exposed by some apps). Each visited element gets a per-window
+    /// AX subscription so we react to its own miniaturize/move/title changes too.
+    ///
+    /// We try three attributes since macOS doesn't have a single canonical "child
+    /// windows" name: AXSheets is the standard for modal sheets, AXDrawers for
+    /// (now-rare) drawer panels, and AXChildWindows is a non-standard string that
+    /// some apps populate.
+    private func makeChildren(of axWin: AXUIElement) -> [Window] {
+        var seen = Set<Int>()
+        var raw: [AXUIElement] = []
+        for attr in childWindowAttrs {
+            guard let elements = readAttribute(axWin, attr) as? [AXUIElement] else { continue }
+            for el in elements {
+                let key = Int(CFHash(el))
+                if seen.insert(key).inserted { raw.append(el) }
+            }
+        }
+        return raw.compactMap { makeWindow(from: $0) }
     }
 
     private func subscribePerWindow(_ axWin: AXUIElement) {
@@ -146,6 +166,7 @@ final class AxAppWatcher {
     }
 
     private func makeWindow(from axWin: AXUIElement) -> Window? {
+        subscribePerWindow(axWin)
         let title = (readAttribute(axWin, kAXTitleAttribute as String) as? String) ?? ""
         let role = readAttribute(axWin, kAXRoleAttribute as String) as? String
         let subrole = readAttribute(axWin, kAXSubroleAttribute as String) as? String
@@ -173,6 +194,7 @@ final class AxAppWatcher {
         }
 
         let id = Int64(CFHash(axWin))
+        let children = makeChildren(of: axWin)
         return Window(
             id: id,
             pid: pid,
@@ -186,7 +208,8 @@ final class AxAppWatcher {
             x: x,
             y: y,
             width: w,
-            height: h
+            height: h,
+            children: children
         )
     }
 
@@ -197,6 +220,12 @@ final class AxAppWatcher {
         return value
     }
 }
+
+private let childWindowAttrs: [String] = [
+    "AXSheets",
+    "AXDrawers",
+    "AXChildWindows",
+]
 
 private let appNotifications: [String] = [
     kAXApplicationActivatedNotification as String,

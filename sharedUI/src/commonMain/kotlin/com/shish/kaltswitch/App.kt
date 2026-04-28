@@ -121,13 +121,27 @@ private fun AppRow(entry: AppEntry, activeAppPid: Int?, activeWindowId: WindowId
             style = MaterialTheme.typography.bodyMedium,
         )
         entry.windows.forEach { w ->
-            WindowRow(w, isActiveApp && w.id == activeWindowId)
+            WindowSubtree(w, depth = 1, activeAppPid == app.pid, activeWindowId)
         }
     }
 }
 
+/** Recursive: prints a window plus its [Window.children] indented one level deeper. */
 @Composable
-private fun WindowRow(w: Window, isActive: Boolean) {
+private fun WindowSubtree(
+    w: Window,
+    depth: Int,
+    isInActiveApp: Boolean,
+    activeWindowId: WindowId?,
+) {
+    WindowRow(w, depth = depth, isActive = isInActiveApp && w.id == activeWindowId)
+    w.children.forEach { child ->
+        WindowSubtree(child, depth + 1, isInActiveApp, activeWindowId)
+    }
+}
+
+@Composable
+private fun WindowRow(w: Window, depth: Int, isActive: Boolean) {
     val color = if (isActive) Color(0xFFFFFFFF) else Color(0xFF9E9E9E)
     val pictogram = windowPictogram(w, isActive)
     val tags = buildList {
@@ -137,9 +151,11 @@ private fun WindowRow(w: Window, isActive: Boolean) {
         if (w.width != null && w.height != null) {
             add("${w.width.toInt()}×${w.height.toInt()}")
         }
+        if (w.children.isNotEmpty()) add("${w.children.size} child")
     }.joinToString(" · ")
+    val indent = "    ".repeat(depth)
     Text(
-        "    $pictogram ${w.title.ifBlank { "(untitled)" }}  ${tagText(tags)}",
+        "$indent$pictogram ${w.title.ifBlank { "(untitled)" }}  ${tagText(tags)}",
         color = color,
         fontWeight = if (isActive) FontWeight.SemiBold else FontWeight.Normal,
         style = MaterialTheme.typography.bodySmall,

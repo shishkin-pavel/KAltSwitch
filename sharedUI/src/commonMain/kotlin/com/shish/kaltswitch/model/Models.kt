@@ -37,6 +37,8 @@ data class Window(
     val y: Double? = null,
     val width: Double? = null,
     val height: Double? = null,
+    /** Child windows (sheets, drawers, popovers) attached to this one via kAXChildWindowsAttribute. */
+    val children: List<Window> = emptyList(),
 )
 
 sealed interface Group {
