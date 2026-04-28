@@ -17,16 +17,8 @@ final class AxAppWatcher {
     private weak var runLoop: CFRunLoop?
     private var observer: AXObserver?
 
-    /// Per-app notifications we've successfully subscribed to. Retried on every
-    /// refresh until full — early-launch apps like ChatGPT often refuse AX initially
-    /// (kAXErrorAPIDisabled) and accept only after their UI has fully come up.
-    private var subscribedAppNotifications = Set<String>()
-    /// Per-window subscriptions — keyed by (CFHash, notificationName). Same retry idea.
-    private var subscribedWindowNotifications = Set<String>()
-    /// Last logged kAXWindows result, so the 5s bulk-refresh timer doesn't spam
-    /// "still nil" / "still empty" lines for every app every tick. -1 = unknown,
-    /// -2 = nil, -3 = empty, anything ≥ 0 = window count.
-    private var lastLoggedWindowState: Int = -1
+    /// AX windows we've already subscribed to, keyed by CFHash of the AXUIElement.
+    private var perWindowSubscribed = Set<Int>()
 
     init(pid: pid_t, store: WorldStore) {
         self.pid = pid
@@ -64,7 +56,10 @@ final class AxAppWatcher {
         }
         observer = observerRef
 
-        ensureAppSubscriptions()
+        let selfPtr = Unmanaged.passUnretained(self).toOpaque()
+        for notif in appNotifications {
+            _ = AXObserverAddNotification(observerRef, appElement, notif as CFString, selfPtr)
+        }
 
         CFRunLoopAddSource(
             CFRunLoopGetCurrent(),
@@ -137,25 +132,7 @@ final class AxAppWatcher {
     // MARK: - Window queries
 
     private func refreshAllWindows() {
-        // Whenever we manage to read AX state, re-try any per-app subscriptions
-        // that earlier failed (apps like ChatGPT often deny AX until they're fully
-        // up, then start accepting). Idempotent.
-        ensureAppSubscriptions()
-
-        let raw = readAttribute(appElement, kAXWindowsAttribute as String)
-        let topLevel = (raw as? [AXUIElement]) ?? []
-        // Log kAXWindows state, but only on transitions — the 5s bulk-refresh
-        // timer would otherwise spam "still nil" / "still empty" lines for every
-        // app, every tick.
-        let currentState = raw == nil ? -2 : (topLevel.isEmpty ? -3 : topLevel.count)
-        if currentState != lastLoggedWindowState {
-            switch currentState {
-            case -2: NSLog("KAltSwitch: kAXWindows nil for pid=%d", pid)
-            case -3: NSLog("KAltSwitch: kAXWindows empty for pid=%d", pid)
-            default: NSLog("KAltSwitch: kAXWindows pid=%d count=%d", pid, currentState)
-            }
-            lastLoggedWindowState = currentState
-        }
+        let topLevel = (readAttribute(appElement, kAXWindowsAttribute as String) as? [AXUIElement]) ?? []
         let appHash = Int(CFHash(appElement))
         let byHash: [Int: AXUIElement] = Dictionary(uniqueKeysWithValues:
             topLevel.map { (Int(CFHash($0)), $0) })
@@ -244,34 +221,15 @@ final class AxAppWatcher {
         return raw.compactMap { makeWindow(from: $0) }
     }
 
-    /// Re-attempt per-app notification subscriptions. Notifications already accepted
-    /// stay in `subscribedAppNotifications`; ones that returned `kAXErrorAPIDisabled`
-    /// (-25211) earlier get retried until they succeed. Safe to call repeatedly —
-    /// `kAXErrorNotificationAlreadyRegistered` is treated as success.
-    private func ensureAppSubscriptions() {
-        guard let observer = observer else { return }
-        let selfPtr = Unmanaged.passUnretained(self).toOpaque()
-        for notif in appNotifications {
-            if subscribedAppNotifications.contains(notif) { continue }
-            let err = AXObserverAddNotification(observer, appElement, notif as CFString, selfPtr)
-            if err == .success || err == .notificationAlreadyRegistered {
-                subscribedAppNotifications.insert(notif)
-            }
-        }
-    }
-
     private func subscribePerWindow(_ axWin: AXUIElement) {
+        let key = Int(CFHash(axWin))
+        guard !perWindowSubscribed.contains(key) else { return }
         guard let observer = observer else { return }
-        let hash = Int(CFHash(axWin))
         let selfPtr = Unmanaged.passUnretained(self).toOpaque()
         for notif in windowNotifications {
-            let key = "\(hash)|\(notif)"
-            if subscribedWindowNotifications.contains(key) { continue }
-            let err = AXObserverAddNotification(observer, axWin, notif as CFString, selfPtr)
-            if err == .success || err == .notificationAlreadyRegistered {
-                subscribedWindowNotifications.insert(key)
-            }
+            _ = AXObserverAddNotification(observer, axWin, notif as CFString, selfPtr)
         }
+        perWindowSubscribed.insert(key)
     }
 
     private func makeWindow(from axWin: AXUIElement) -> Window? {

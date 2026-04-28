@@ -68,8 +68,27 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     func applicationWillFinishLaunching(_ notification: Notification) {
+        redirectStderrToLogFile()
         composeDelegate?.create()
         composeDelegate?.start()
+    }
+
+    /// Force NSLog/print/stderr to ~/Library/Logs/KAltSwitch.log, regardless of how
+    /// the app was launched. Without this, double-clicking the .app or running it
+    /// from the IDE sends stderr to /dev/null, hiding all our diagnostics.
+    private func redirectStderrToLogFile() {
+        let fm = FileManager.default
+        guard let libraryLogs = fm.urls(for: .libraryDirectory, in: .userDomainMask).first?
+            .appendingPathComponent("Logs", isDirectory: true) else { return }
+        try? fm.createDirectory(at: libraryLogs, withIntermediateDirectories: true)
+        let logPath = libraryLogs.appendingPathComponent("KAltSwitch.log").path
+        // "a" = append. Both stderr and stdout get the same file so NSLog output
+        // (stderr) and any print() output (stdout) sit side-by-side.
+        freopen(logPath, "a", stderr)
+        freopen(logPath, "a", stdout)
+        setbuf(stderr, nil)
+        setbuf(stdout, nil)
+        NSLog("KAltSwitch: log redirected to %@ (pid=%d)", logPath, ProcessInfo.processInfo.processIdentifier)
     }
 
     func applicationDidBecomeActive(_ notification: Notification) {

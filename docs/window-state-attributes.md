@@ -201,6 +201,50 @@ windowless) makes the windowless apps visually less intrusive, and we can add
   distinguish "genuine new top-level window" from "logically a child whose
   AX tells us nothing". Defer until after MVP.
 
+- **AX-resistant Electron apps (ChatGPT)**: when the user has to grant
+  Accessibility permission *during* a session (rather than having granted
+  it before), ChatGPT's `kAXWindows` returns `nil` indefinitely. The path
+  where AX was granted in a previous session and persists across launches
+  works fine for ChatGPT.
+
+  Reproducible symptom (logs from a fresh post-grant run):
+  ```
+  AX trusted = false                              ← startup
+  kAXWindows nil for pid=N                        ← initial refresh, AX denied
+  AX trust changed to true                        ← user just granted
+  kAXWindows nil for pid=N                        ← respawned watcher, still nil
+  (no further changes — AX never recovers)
+  ```
+
+  Things tried that did **not** fix it:
+  1. Re-spawning the per-app watcher after AX trust flips (so a fresh
+     `AXObserverCreate` runs with full permission).
+  2. Subscription retry: tracking which `AXObserverAddNotification` calls
+     succeeded vs failed (with `kAXErrorAPIDisabled`/`-25211`) and retrying
+     missing ones on every `refreshAllWindows`.
+  3. Triggering refresh on `NSWorkspace.didActivate` for the app
+     (`watcher.requestRefresh()`).
+  4. A 5-second bulk-refresh timer in `AppRegistry` that asks every watcher
+     to refresh, in case AX cooperation arrives after some delay.
+  5. Setting the `AXEnhancedUserInterface` and `AXManualAccessibility`
+     attributes on the app element to `true`. This is the documented signal
+     screen readers use to opt Chromium-based apps into AX. ChatGPT
+     ignored it.
+
+  Hypothesis: ChatGPT (Electron-based, with custom hardening) refuses
+  AX cross-process queries from any client that wasn't trusted *at app
+  launch time*. Other AX-friendly apps tolerate mid-session permission
+  grants. Likely fixes for post-MVP:
+  - Use private `_AXUIElementCreateWithRemoteToken` / CGSWindowList
+    fallback to enumerate ChatGPT's windows via Core Graphics rather than
+    AX (alt-tab-macos and AeroSpace both rely on CGS for stubborn apps).
+  - Or detect AX-permanently-disabled apps and tell the user to relaunch
+    them after granting permission — restart of the *target* app fixes
+    it.
+
+  Workaround for users today: relaunch ChatGPT after granting AX
+  permission (or grant permission *before* the first switcher run).
+
 ## 9. Open questions for you
 
 - **Subrole filtering**: alt-tab has ~40 app-specific exception rules that

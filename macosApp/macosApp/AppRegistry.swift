@@ -11,7 +11,6 @@ final class AppRegistry {
     private var watchers: [pid_t: AxAppWatcher] = [:]
     private var nsObservers: [NSObjectProtocol] = []
     private var trustTimer: Timer?
-    private var bulkRefreshTimer: Timer?
     private var lastTrusted = false
 
     init(store: WorldStore) {
@@ -27,19 +26,6 @@ final class AppRegistry {
         // (after the user toggles us in Settings), we re-spawn all watchers.
         trustTimer = Timer.scheduledTimer(withTimeInterval: 1.0, repeats: true) { [weak self] _ in
             self?.checkTrust()
-        }
-
-        // Some apps (ChatGPT being the canonical case) refuse AX queries and
-        // subscriptions even when the host process has full AX trust, and only
-        // start cooperating after some opaque internal initialization. The
-        // user-activate path (handleActivated → requestRefresh) already retries,
-        // but if the user doesn't switch to those apps we never recover. This
-        // bulk refresh is a low-frequency safety net: every 5s, ask every watcher
-        // to refresh & retry subscriptions. AX queries are microseconds; even
-        // 50+ watchers cost <5ms total.
-        bulkRefreshTimer = Timer.scheduledTimer(withTimeInterval: 5.0, repeats: true) { [weak self] _ in
-            guard let self = self else { return }
-            for (_, w) in self.watchers { w.requestRefresh() }
         }
 
         let workspace = NSWorkspace.shared
@@ -83,7 +69,6 @@ final class AppRegistry {
 
     func stop() {
         trustTimer?.invalidate(); trustTimer = nil
-        bulkRefreshTimer?.invalidate(); bulkRefreshTimer = nil
         let center = NSWorkspace.shared.notificationCenter
         for obs in nsObservers { center.removeObserver(obs) }
         nsObservers.removeAll()
