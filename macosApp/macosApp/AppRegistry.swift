@@ -10,12 +10,24 @@ final class AppRegistry {
     private let store: WorldStore
     private var watchers: [pid_t: AxAppWatcher] = [:]
     private var nsObservers: [NSObjectProtocol] = []
+    private var trustTimer: Timer?
+    private var lastTrusted = false
 
     init(store: WorldStore) {
         self.store = store
     }
 
     func start() {
+        lastTrusted = AXIsProcessTrusted()
+        store.setAxTrusted(trusted: lastTrusted)
+        NSLog("KAltSwitch: AX trusted = %@", lastTrusted ? "true" : "false")
+
+        // Poll AX trust state every second. The moment macOS flips it to true
+        // (after the user toggles us in Settings), we re-spawn all watchers.
+        trustTimer = Timer.scheduledTimer(withTimeInterval: 1.0, repeats: true) { [weak self] _ in
+            self?.checkTrust()
+        }
+
         let workspace = NSWorkspace.shared
         let center = workspace.notificationCenter
 
@@ -56,11 +68,32 @@ final class AppRegistry {
     }
 
     func stop() {
+        trustTimer?.invalidate(); trustTimer = nil
         let center = NSWorkspace.shared.notificationCenter
         for obs in nsObservers { center.removeObserver(obs) }
         nsObservers.removeAll()
         for (_, w) in watchers { w.stop() }
         watchers.removeAll()
+    }
+
+    private func checkTrust() {
+        let trusted = AXIsProcessTrusted()
+        if trusted != lastTrusted {
+            lastTrusted = trusted
+            store.setAxTrusted(trusted: trusted)
+            NSLog("KAltSwitch: AX trust changed to %@", trusted ? "true" : "false")
+            if trusted {
+                respawnAllWatchers()
+            }
+        }
+    }
+
+    private func respawnAllWatchers() {
+        for (_, w) in watchers { w.stop() }
+        watchers.removeAll()
+        for nsApp in NSWorkspace.shared.runningApplications {
+            spawn(for: nsApp)
+        }
     }
 
     // MARK: - Notification handlers
