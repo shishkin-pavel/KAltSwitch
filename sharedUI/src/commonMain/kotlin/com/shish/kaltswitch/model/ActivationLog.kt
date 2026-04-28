@@ -9,15 +9,12 @@ data class ActivationEvent(
 )
 
 /**
- * Single source of truth for "what was used most recently". Newest-first event log.
- * Display orderings (apps, windows-within-app) are derived projections.
+ * Single source of truth for "what was used most recently". Immutable, newest-first
+ * event log. Display orderings (apps, windows-within-app) are derived projections.
  */
-class ActivationLog {
-    private val events = ArrayDeque<ActivationEvent>()
+data class ActivationLog(val events: List<ActivationEvent> = emptyList()) {
 
-    fun record(event: ActivationEvent) { events.addFirst(event) }
-
-    fun events(): List<ActivationEvent> = events.toList()
+    fun record(event: ActivationEvent): ActivationLog = copy(events = listOf(event) + events)
 
     /** Pids ordered newest-first by their most-recent activation. */
     fun appOrder(): List<Int> {
