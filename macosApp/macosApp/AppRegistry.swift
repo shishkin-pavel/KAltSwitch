@@ -62,8 +62,49 @@ final class AppRegistry {
             spawn(for: nsApp)
         }
 
-        if let frontmost = workspace.frontmostApplication {
-            store.setActiveApp(pid: frontmost.processIdentifier)
+        seedActivationLog()
+        syncActiveStateFromSystem(store: store)
+    }
+
+    /// Pre-fill the activation log with one event per running app, descending
+    /// timestamps so the frontmost app is "newest". This makes cmd+tab
+    /// meaningful from the very first keystroke after launch — without it the
+    /// log would be empty and the default cursor would have nowhere to land.
+    private func seedActivationLog() {
+        let workspace = NSWorkspace.shared
+        let now = nowMillis()
+        let frontPid = workspace.frontmostApplication?.processIdentifier
+
+        // Background apps first, descending into the past, in the order
+        // NSWorkspace reports them (system order is roughly launch order).
+        let backgroundApps = workspace.runningApplications.filter {
+            $0.activationPolicy != .prohibited
+                && $0.processIdentifier > 0
+                && $0.processIdentifier != frontPid
+        }
+        for (i, nsApp) in backgroundApps.enumerated() {
+            let offsetMs = Int64(backgroundApps.count - i + 1) * 1000
+            store.recordAppActivation(pid: nsApp.processIdentifier, timestampMs: now - offsetMs)
+        }
+
+        // Frontmost gets the latest timestamp and, if AX cooperates, also a
+        // window-level event so cmd+` (window-mode) has a default target.
+        if let frontPid = frontPid {
+            store.recordAppActivation(pid: frontPid, timestampMs: now)
+            let appEl = AXUIElementCreateApplication(frontPid)
+            var focusedRef: AnyObject?
+            let err = AXUIElementCopyAttributeValue(
+                appEl, kAXFocusedWindowAttribute as CFString, &focusedRef)
+            if err == .success,
+               let v = focusedRef,
+               CFGetTypeID(v as CFTypeRef) == AXUIElementGetTypeID() {
+                let focused = v as! AXUIElement
+                store.recordWindowActivation(
+                    pid: frontPid,
+                    windowId: Int64(CFHash(focused)),
+                    timestampMs: now
+                )
+            }
         }
     }
 
