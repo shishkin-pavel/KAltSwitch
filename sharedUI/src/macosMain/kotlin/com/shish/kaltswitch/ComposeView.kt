@@ -19,11 +19,14 @@ fun AttachMainComposeView(
         val axTrusted by store.axTrusted.collectAsState()
         val activeAppPid by store.activeAppPid.collectAsState()
         val activeWindowId by store.activeWindowId.collectAsState()
+        val filters by store.filters.collectAsState()
         App(
             world = world,
             axTrusted = axTrusted,
             activeAppPid = activeAppPid,
             activeWindowId = activeWindowId,
+            filters = filters,
+            onFiltersChange = { store.setFilters(it) },
             onGrantAxClick = {
                 val granted = requestAxPermission()
                 store.setAxTrusted(granted)

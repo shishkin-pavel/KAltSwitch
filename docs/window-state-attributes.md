@@ -189,7 +189,19 @@ windowless) makes the windowless apps visually less intrusive, and we can add
 
 ---
 
-## 8. Open questions for you
+## 8. Deferred / known limits (post-MVP)
+
+- **Parent-child window relinking**: implemented for two cases — (a) typed
+  attributes `AXSheets`/`AXDrawers`/`AXChildWindows`, (b) top-level windows
+  whose `kAXParent` points at another top-level window in the same app.
+  But many apps (Firefox save dialog confirmed via Accessibility Inspector,
+  IntelliJ popups, Mail composer) report their dialog/popup `kAXParent` as
+  the application element rather than the parent window. Without private
+  APIs like `_AXUIElementGetWindow` + CGS to cross-reference, we can't
+  distinguish "genuine new top-level window" from "logically a child whose
+  AX tells us nothing". Defer until after MVP.
+
+## 9. Open questions for you
 
 - **Subrole filtering**: alt-tab has ~40 app-specific exception rules that
   filter out tooltips, dropdowns, panels. v1 plan: only show

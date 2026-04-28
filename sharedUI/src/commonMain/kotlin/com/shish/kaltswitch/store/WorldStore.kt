@@ -4,6 +4,7 @@ import com.shish.kaltswitch.model.ActivationEvent
 import com.shish.kaltswitch.model.ActivationLog
 import com.shish.kaltswitch.model.App
 import com.shish.kaltswitch.model.AppActivationPolicy
+import com.shish.kaltswitch.model.Filters
 import com.shish.kaltswitch.model.Window
 import com.shish.kaltswitch.model.WindowId
 import com.shish.kaltswitch.model.World
@@ -31,6 +32,13 @@ class WorldStore(initial: World = World(ActivationLog(), emptyMap(), emptyMap())
 
     private val _activeWindowId = MutableStateFlow<WindowId?>(null)
     val activeWindowId: StateFlow<WindowId?> = _activeWindowId.asStateFlow()
+
+    private val _filters = MutableStateFlow(Filters())
+    val filters: StateFlow<Filters> = _filters.asStateFlow()
+
+    fun setFilters(f: Filters) {
+        _filters.value = f
+    }
 
     fun setAxTrusted(trusted: Boolean) {
         _axTrusted.value = trusted
