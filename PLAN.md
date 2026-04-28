@@ -9,10 +9,9 @@ Compose Multiplatform 1.10.3, Kotlin 2.3.20, JVM 17. There is no
 macOS-native interop wired in.
 
 The goal is to turn this scaffold into a macOS alt-tab replacement, **fully in
-Compose Multiplatform** — no JVM, no Java. Small bits of **Swift/Objective-C
-glue are allowed** where they make interop materially simpler than going
-straight from Kotlin via `cinterop` (e.g. APIs that are awkward to bind from
-C-headers, Swift-only frameworks). Default path is still pure Kotlin.
+Compose Multiplatform** — no JVM, no Java. **Simplicity wins**: if a piece is
+materially easier to write in Swift, write it in Swift; porting it to pure
+Kotlin/cinterop is a separate follow-up task, not a v1 blocker.
 
 ### Feature spec
 
@@ -124,13 +123,17 @@ KAltSwitch/
 Replaces the earlier two-LRU-list design. We store **one ordered event list**:
 
 ```kotlin
-data class ActivationEvent(val instant: Instant, val pid: Int, val windowId: CGWindowID)
+data class ActivationEvent(
+    val instant: Instant,
+    val pid: Int,
+    val windowId: CGWindowID?,  // null = app activation without a known window
+)
 
 class ActivationLog {
     private val events: ArrayDeque<ActivationEvent>  // newest first
 
     fun appOrder(): List<App>            // unique pids in newest-first order
-    fun windowOrder(app: App): List<Window>  // events filtered by pid, unique windows newest-first
+    fun windowOrder(app: App): List<Window>  // events filtered by pid, unique non-null windowIds newest-first
     fun record(event: ActivationEvent)
 }
 ```
@@ -147,7 +150,7 @@ class ActivationLog {
   - `kAXFocusedWindowChangedNotification` per-app AX observer →
     `record(ActivationEvent(now, pid, winId))`.
   - `NSWorkspace.didActivateApplicationNotification` for apps with no current
-    AX-known window → `record(ActivationEvent(now, pid, NoWindow))`.
+    AX-known window → `record(ActivationEvent(now, pid, windowId = null))`.
 - A single in-flight flag `isPreviewing` is set while the switcher panel is
   visible. AX/Workspace events arriving during that window are dropped (they
   describe our own preview-raises, not user intent).
@@ -195,8 +198,9 @@ While open, all keys are equivalent: tab/shift-tab and `→`/`←` move apps;
 - Horizontal row of app cells: 64×64 icon, truncated app name, vertical list
   of window titles below.
 - A **vertical separator** in the row marks the boundary between apps with
-  windows (left, recency-ordered) and apps without windows (right). The
-  separator is purely visual; navigation skips it without stopping.
+  windows (left, recency-ordered) and apps without windows (right). v1 keeps
+  this minimal — just a divider; finer visual treatment of windowless apps
+  (dimming, smaller icons, etc.) is a later visual-pass concern.
 - Selected cell/window visualized with border + tint. Window list scrolls
   if long.
 - App icons via `IconLoader.kt`: `NSRunningApplication.icon` →
@@ -207,9 +211,11 @@ While open, all keys are equivalent: tab/shift-tab and `→`/`←` move apps;
 - Compose settings window. Two ways to open it:
   1. Menubar `NSStatusItem` (default visible; toggleable).
   2. **Re-opening the running app** (Spotlight / Dock / `open -a`). Handled
-     via `applicationShouldHandleReopen:hasVisibleWindows:` returning false
-     while we instead surface our settings window. This is the escape hatch
-     for users who turn the menubar icon off.
+     via `applicationShouldHandleReopen:hasVisibleWindows:`: we surface the
+     settings window. This is the escape hatch for users who turn the
+     menubar icon off. **If the switcher overlay is currently visible, the
+     reopen cancels it (no commit, history untouched) before the settings
+     window opens** — settings always win against an in-flight switch.
 - v1 settings:
   - **Menubar icon visible** (default `true`).
   - **`showDelay`** — modifier-hold threshold before showing UI (default 20 ms).
@@ -303,19 +309,4 @@ keystroke after launch.
 
 ## Remaining open questions
 
-1. **Swift glue scope**. You okayed Swift for "convenient interop". Concretely:
-   should I write Swift wrappers proactively for any AX/AppKit surface that
-   has a clean Swift form (e.g. async sequences, Sendable wrappers), or keep
-   Swift strictly to "cinterop is impossible/very ugly" cases?
-2. **`ActivationEvent` for windowless apps**. The single-list model needs a
-   way to represent "this app was activated but we don't have a window id".
-   Plan: a sentinel `windowId = NO_WINDOW`. Confirm that's acceptable, or
-   prefer `ActivationEvent.windowId: CGWindowID?` (nullable) — equivalent
-   semantics, slightly different ergonomics.
-3. **Separator visual**. Is a thin vertical divider plus extra horizontal gap
-   enough, or do you want windowless apps visually de-emphasized too (e.g.
-   smaller icons, dimmed)?
-4. **Settings window invocation when overlay is open**. If the user
-   re-launches the app via Spotlight while holding cmd+tab, what wins —
-   commit the switch first, then show settings, or ignore the reopen until
-   the modifier is released?
+None at the moment — ready to begin the day-1 spike.
