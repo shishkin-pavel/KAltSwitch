@@ -40,6 +40,18 @@ class WorldStore(initial: World = World(ActivationLog(), emptyMap(), emptyMap())
         _filters.value = f
     }
 
+    private val _inspectorFrame = MutableStateFlow<com.shish.kaltswitch.config.WindowFrame?>(null)
+    val inspectorFrame: StateFlow<com.shish.kaltswitch.config.WindowFrame?> = _inspectorFrame.asStateFlow()
+
+    fun setInspectorFrame(frame: com.shish.kaltswitch.config.WindowFrame?) {
+        _inspectorFrame.value = frame
+    }
+
+    /** Swift-friendly variant taking primitives. */
+    fun saveInspectorFrame(x: Double, y: Double, width: Double, height: Double) {
+        _inspectorFrame.value = com.shish.kaltswitch.config.WindowFrame(x, y, width, height)
+    }
+
     fun setAxTrusted(trusted: Boolean) {
         _axTrusted.value = trusted
     }

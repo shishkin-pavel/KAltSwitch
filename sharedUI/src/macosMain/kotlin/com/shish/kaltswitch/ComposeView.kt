@@ -16,18 +16,25 @@ import platform.AppKit.NSWindow
 
 /** Singleton store. Swift's `AppRegistry` mutates it; the Compose UI observes it. */
 val store = WorldStore().also { initStore ->
-    // Load persisted config on first access so the UI starts with the user's filters.
-    ConfigStore.load()?.let { cfg -> initStore.setFilters(cfg.filters) }
+    // Load persisted config on first access so the UI starts with the user's
+    // filters and the inspector window restores its last frame.
+    ConfigStore.load()?.let { cfg ->
+        initStore.setFilters(cfg.filters)
+        initStore.setInspectorFrame(cfg.inspectorFrame)
+    }
 }
 
 /**
- * Persists filter changes to disk. Skips the first emission (initial value) so we
- * don't immediately overwrite the file we just loaded; subsequent edits flow to disk.
+ * Persists config changes to disk. Combine emits whenever either of the underlying
+ * StateFlows changes; `drop(1)` skips the initial combined emission so we don't
+ * immediately overwrite the file we just loaded.
  */
 private val configScope = CoroutineScope(Dispatchers.Main).also { scope ->
-    store.filters
+    kotlinx.coroutines.flow.combine(store.filters, store.inspectorFrame) { filters, frame ->
+        AppConfig(filters = filters, inspectorFrame = frame)
+    }
         .drop(1)
-        .onEach { ConfigStore.save(AppConfig(filters = it)) }
+        .onEach { ConfigStore.save(it) }
         .launchIn(scope)
 }
 
