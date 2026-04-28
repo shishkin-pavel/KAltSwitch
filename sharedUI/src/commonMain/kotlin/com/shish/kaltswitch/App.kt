@@ -40,13 +40,6 @@ fun App(
     onGrantAxClick: () -> Unit = {},
 ) {
     val snapshot = remember(world) { world.snapshot() }
-    val activeAppName = snapshot.all.firstOrNull { it.app.pid == activeAppPid }?.app?.name
-    val activeWindowTitle = snapshot.all
-        .firstOrNull { it.app.pid == activeAppPid }
-        ?.windows
-        ?.firstOrNull { it.id == activeWindowId }
-        ?.title
-
     Column(
         Modifier
             .fillMaxSize()
@@ -55,7 +48,6 @@ fun App(
         verticalArrangement = Arrangement.spacedBy(8.dp),
     ) {
         if (!axTrusted) AxBanner(onGrantAxClick)
-        ActiveIndicator(activeAppName, activeWindowTitle)
         Section("Apps with windows (${snapshot.withWindows.size})") {
             items(snapshot.withWindows) { entry ->
                 AppRow(entry, activeAppPid, activeWindowId)
@@ -92,20 +84,6 @@ private fun AxBanner(onGrantClick: () -> Unit) {
             colors = ButtonDefaults.buttonColors(containerColor = Color(0xFFFFC107), contentColor = Color.Black),
         ) { Text("Grant…") }
     }
-}
-
-@Composable
-private fun ActiveIndicator(appName: String?, windowTitle: String?) {
-    val text = when {
-        appName == null -> "● Active: (none)"
-        windowTitle.isNullOrBlank() -> "● Active: $appName"
-        else -> "● Active: $appName — $windowTitle"
-    }
-    Text(
-        text,
-        color = Color(0xFF80CBC4),
-        style = MaterialTheme.typography.bodyMedium,
-    )
 }
 
 @Composable

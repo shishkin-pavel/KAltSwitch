@@ -56,6 +56,20 @@ class WorkspaceWatcher(private val store: WorldStore) {
         ) { _ -> tick() }
     }
 
+    /** Re-checks AX permission. If it just became granted, seed all apps' windows. */
+    fun recheckAxPermission() {
+        val trusted = isAxTrusted()
+        val wasTrusted = store.axTrusted.value
+        store.setAxTrusted(trusted)
+        if (trusted && !wasTrusted) {
+            NSLog("KAltSwitch: AX permission just granted, seeding all apps")
+            @Suppress("UNCHECKED_CAST")
+            val list = (workspace.runningApplications as List<NSRunningApplication>)
+                .filter { it.activationPolicy != NSApplicationActivationPolicyProhibited }
+            for (nsApp in list) refreshWindows(nsApp.processIdentifier)
+        }
+    }
+
     fun stop() {
         observers.forEach { center.removeObserver(it) }
         observers.clear()
@@ -112,11 +126,11 @@ class WorkspaceWatcher(private val store: WorldStore) {
     }
 
     /**
-     * Periodic poll of the frontmost app: re-query its windows + focused window.
-     * Catches new/closed windows and same-app focus changes that NSWorkspace doesn't
-     * surface on its own.
+     * Periodic poll: catches new/closed windows and same-app focus changes that
+     * NSWorkspace doesn't surface, and re-checks AX permission if not yet granted.
      */
     private fun tick() {
+        if (!store.axTrusted.value) recheckAxPermission()
         val frontmost = workspace.frontmostApplication ?: return
         if (frontmost.activationPolicy == NSApplicationActivationPolicyProhibited) return
         val pid = frontmost.processIdentifier
