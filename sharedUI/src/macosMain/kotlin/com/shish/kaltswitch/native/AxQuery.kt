@@ -14,8 +14,10 @@ import platform.ApplicationServices.AXUIElementCopyAttributeValue
 import platform.ApplicationServices.AXUIElementCreateApplication
 import platform.ApplicationServices.AXUIElementRef
 import platform.ApplicationServices.kAXErrorSuccess
+import platform.ApplicationServices.kAXFocusedWindowAttribute
 import platform.ApplicationServices.kAXTitleAttribute
 import platform.ApplicationServices.kAXWindowsAttribute
+import com.shish.kaltswitch.model.WindowId
 import platform.CoreFoundation.CFArrayGetCount
 import platform.CoreFoundation.CFArrayGetValueAtIndex
 import platform.CoreFoundation.CFArrayRef
@@ -46,7 +48,10 @@ fun queryWindows(pid: Int): List<Window> {
         memScoped {
             val out = alloc<CPointerVarOf<CFTypeRef>>()
             val err = AXUIElementCopyAttributeValue(app, windowsAttr, out.ptr)
-            if (err != kAXErrorSuccess) return@memScoped emptyList()
+            if (err != kAXErrorSuccess) {
+                platform.Foundation.NSLog("KAltSwitch: kAXWindows pid=$pid err=$err")
+                return@memScoped emptyList()
+            }
             val arrayRef = out.value ?: return@memScoped emptyList()
             try {
                 val array: CFArrayRef = arrayRef.reinterpret()
@@ -67,6 +72,29 @@ fun queryWindows(pid: Int): List<Window> {
         }
     } finally {
         CFRelease(windowsAttr)
+        CFRelease(app)
+    }
+}
+
+/**
+ * Returns the [WindowId] of [pid]'s currently-focused window (CFHash of its AXUIElement),
+ * or `null` if no window is focused or AX query failed.
+ */
+fun queryFocusedWindow(pid: Int): WindowId? {
+    val app = AXUIElementCreateApplication(pid) ?: return null
+    val attr = kAXFocusedWindowAttribute.toCFString() ?: run { CFRelease(app); return null }
+    return try {
+        memScoped {
+            val out = alloc<CPointerVarOf<CFTypeRef>>()
+            val err = AXUIElementCopyAttributeValue(app, attr, out.ptr)
+            if (err != kAXErrorSuccess) return@memScoped null
+            val ref = out.value ?: return@memScoped null
+            val id = CFHash(ref).toLong()
+            CFRelease(ref)
+            id
+        }
+    } finally {
+        CFRelease(attr)
         CFRelease(app)
     }
 }
