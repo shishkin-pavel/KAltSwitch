@@ -118,14 +118,58 @@ final class AxAppWatcher {
     // MARK: - Window queries
 
     private func refreshAllWindows() {
-        let windows = (readAttribute(appElement, kAXWindowsAttribute as String) as? [AXUIElement]) ?? []
+        let topLevel = (readAttribute(appElement, kAXWindowsAttribute as String) as? [AXUIElement]) ?? []
+        let appHash = Int(CFHash(appElement))
+        let byHash: [Int: AXUIElement] = Dictionary(uniqueKeysWithValues:
+            topLevel.map { (Int(CFHash($0)), $0) })
+
+        // For each "top-level" window, see whether its AXParent is another top-level
+        // window. Sheets/dialogs/floating panels often appear in app's kAXWindows even
+        // though they logically belong to another window — use AXParent to relink.
+        var childrenOfParent: [Int: [AXUIElement]] = [:]
+        var attachedAsChild = Set<Int>()
+        for win in topLevel {
+            let myHash = Int(CFHash(win))
+            guard let parent = readAttributeAsElement(win, kAXParentAttribute as String) else { continue }
+            let parentHash = Int(CFHash(parent))
+            guard parentHash != appHash, parentHash != myHash, byHash[parentHash] != nil else { continue }
+            childrenOfParent[parentHash, default: []].append(win)
+            attachedAsChild.insert(myHash)
+        }
+
+        let roots = topLevel.filter { !attachedAsChild.contains(Int(CFHash($0))) }
         var out: [Window] = []
-        for axWin in windows {
-            if let win = makeWindow(from: axWin) {
+        for axWin in roots {
+            if let win = buildWindowTree(axWin, childrenOfParent: childrenOfParent) {
                 out.append(win)
             }
         }
         store.setWindows(pid: pid, windows: out)
+    }
+
+    /// Build a Window with its children = (typed-attribute children) + (top-level
+    /// siblings whose AXParent points back to us).
+    private func buildWindowTree(_ axWin: AXUIElement, childrenOfParent: [Int: [AXUIElement]]) -> Window? {
+        guard let base = makeWindow(from: axWin) else { return nil }
+        let extras = (childrenOfParent[Int(CFHash(axWin))] ?? [])
+            .compactMap { buildWindowTree($0, childrenOfParent: childrenOfParent) }
+        if extras.isEmpty { return base }
+        return base.doCopy(
+            id: base.id,
+            pid: base.pid,
+            title: base.title,
+            role: base.role,
+            subrole: base.subrole,
+            isMinimized: base.isMinimized,
+            isFullscreen: base.isFullscreen,
+            isFocused: base.isFocused,
+            isMain: base.isMain,
+            x: base.x,
+            y: base.y,
+            width: base.width,
+            height: base.height,
+            children: base.children + extras
+        )
     }
 
     private func pushWindowFromElement(_ axWin: AXUIElement) {
@@ -227,6 +271,12 @@ final class AxAppWatcher {
         let err = AXUIElementCopyAttributeValue(element, attribute as CFString, &value)
         guard err == .success else { return nil }
         return value
+    }
+
+    private func readAttributeAsElement(_ element: AXUIElement, _ attribute: String) -> AXUIElement? {
+        guard let value = readAttribute(element, attribute) else { return nil }
+        guard CFGetTypeID(value as CFTypeRef) == AXUIElementGetTypeID() else { return nil }
+        return (value as! AXUIElement)
     }
 }
 
