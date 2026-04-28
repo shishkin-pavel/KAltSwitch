@@ -133,17 +133,16 @@ final class AxAppWatcher {
         store.upsertWindow(window: win)
     }
 
-    /// Recursively collect window-like children attached to a window (sheets, drawers,
-    /// "child windows" exposed by some apps). Each visited element gets a per-window
-    /// AX subscription so we react to its own miniaturize/move/title changes too.
-    ///
-    /// We try three attributes since macOS doesn't have a single canonical "child
-    /// windows" name: AXSheets is the standard for modal sheets, AXDrawers for
-    /// (now-rare) drawer panels, and AXChildWindows is a non-standard string that
-    /// some apps populate.
+    /// Collect window-like children attached to a window. macOS doesn't have one
+    /// canonical attribute, so we try several:
+    ///  - AXSheets, AXDrawers (typed list attributes when supported)
+    ///  - AXChildWindows (non-standard, populated by some apps)
+    ///  - kAXChildrenAttribute filtered by role — sheets often appear in there
+    ///    rather than under a typed attribute.
     private func makeChildren(of axWin: AXUIElement) -> [Window] {
         var seen = Set<Int>()
         var raw: [AXUIElement] = []
+
         for attr in childWindowAttrs {
             guard let elements = readAttribute(axWin, attr) as? [AXUIElement] else { continue }
             for el in elements {
@@ -151,6 +150,16 @@ final class AxAppWatcher {
                 if seen.insert(key).inserted { raw.append(el) }
             }
         }
+
+        if let allChildren = readAttribute(axWin, kAXChildrenAttribute as String) as? [AXUIElement] {
+            for child in allChildren {
+                let role = (readAttribute(child, kAXRoleAttribute as String) as? String) ?? ""
+                guard windowLikeRoles.contains(role) else { continue }
+                let key = Int(CFHash(child))
+                if seen.insert(key).inserted { raw.append(child) }
+            }
+        }
+
         return raw.compactMap { makeWindow(from: $0) }
     }
 
@@ -225,6 +234,15 @@ private let childWindowAttrs: [String] = [
     "AXSheets",
     "AXDrawers",
     "AXChildWindows",
+]
+
+private let windowLikeRoles: Set<String> = [
+    "AXWindow",
+    "AXSheet",
+    "AXDrawer",
+    "AXSystemDialog",
+    "AXPopover",
+    "AXFloatingWindow",
 ]
 
 private let appNotifications: [String] = [
