@@ -56,12 +56,14 @@ class WorkspaceWatcher(private val store: WorldStore) {
         val list = (workspace.runningApplications as List<NSRunningApplication>)
             .filter { it.activationPolicy == NSApplicationActivationPolicyRegular }
         store.setRunningApps(list.map { it.toApp() }.associateBy { it.pid })
+        for (nsApp in list) refreshWindows(nsApp.processIdentifier)
     }
 
     private fun onLaunched(n: NSNotification) {
         val nsApp = n.runningApp() ?: return
         if (nsApp.activationPolicy != NSApplicationActivationPolicyRegular) return
         store.addRunningApp(nsApp.toApp())
+        refreshWindows(nsApp.processIdentifier)
     }
 
     private fun onTerminated(n: NSNotification) {
@@ -72,13 +74,19 @@ class WorkspaceWatcher(private val store: WorldStore) {
     private fun onActivated(n: NSNotification) {
         val nsApp = n.runningApp() ?: return
         if (nsApp.activationPolicy != NSApplicationActivationPolicyRegular) return
+        val pid = nsApp.processIdentifier
         store.recordEvent(
             ActivationEvent(
                 timestampMs = nowMillis(),
-                pid = nsApp.processIdentifier,
+                pid = pid,
                 windowId = null,
             )
         )
+        refreshWindows(pid)
+    }
+
+    private fun refreshWindows(pid: Int) {
+        store.setWindows(pid, queryWindows(pid))
     }
 }
 
