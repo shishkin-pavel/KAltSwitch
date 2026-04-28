@@ -1,111 +1,117 @@
 package com.shish.kaltswitch.model
 
-/** Three-way filter: include normally, push to the demoted bucket at the end, or drop entirely. */
+/** Three-way filter: include normally, push to the demoted bucket, or push to the hidden bucket. */
 enum class TriFilter { Show, Demote, Hide }
-
-/** Two-way filter for cases where Demote doesn't make sense. */
-enum class BiFilter { Show, Hide }
 
 /**
  * User-configurable filters for the inspector window. Live in `WorldStore`,
  * applied by [filteredSnapshot] before the UI renders.
+ *
+ * Defaults: everything is `Show` except `windowlessApps`, which `Demote`s by
+ * default — apps with no current windows are visually less important.
  */
 data class Filters(
     // Apps
-    val windowlessApps: TriFilter = TriFilter.Demote,         // current default: own section at the end
+    val windowlessApps: TriFilter = TriFilter.Demote,
     val accessoryApps: TriFilter = TriFilter.Show,
     val hiddenApps: TriFilter = TriFilter.Show,
-    val launchingApps: BiFilter = BiFilter.Show,
-
-    // Windows (Demote within an app's window list isn't obviously useful yet — keep
-    // these binary; we can revisit if "minimized goes to bottom" feels natural later).
-    val minimizedWindows: BiFilter = BiFilter.Show,
-    val fullscreenWindows: BiFilter = BiFilter.Show,
-    val nonStandardSubroleWindows: BiFilter = BiFilter.Show,  // anything not AXStandardWindow
-    val untitledWindows: BiFilter = BiFilter.Show,
+    val launchingApps: TriFilter = TriFilter.Show,
+    // Windows
+    val minimizedWindows: TriFilter = TriFilter.Show,
+    val fullscreenWindows: TriFilter = TriFilter.Show,
+    val nonStandardSubroleWindows: TriFilter = TriFilter.Show,
+    val untitledWindows: TriFilter = TriFilter.Show,
 )
 
-/** Result of applying [Filters] to a [SwitcherSnapshot]. */
-data class FilteredSnapshot(
-    val primary: List<AppEntry>,
-    val windowless: List<AppEntry>,
-    val demoted: List<AppEntry>,
+/** A window decorated with the filter mode classification. */
+data class WindowView(
+    val window: Window,
+    val mode: TriFilter,
+    val children: List<WindowView>,
 )
 
 /**
- * Apply filters to the world's raw snapshot. Returns three buckets:
- *  - `primary`: apps with windows, kept in the main section
- *  - `windowless`: apps that have no (post-filter) windows, in their own section
- *  - `demoted`: apps that the filter classified as "Demote", regardless of windows
+ * An app with its windows already classified and sorted: within `windows`,
+ * Show items come first, then Demote, then Hide. Order within each group is
+ * the original (recency-driven) order.
+ */
+data class AppView(
+    val app: App,
+    val windows: List<WindowView>,
+    val mode: TriFilter,
+)
+
+/** Three buckets at the app level. The UI renders all three; the eventual switcher overlay would render only `show`. */
+data class FilteredSnapshot(
+    val show: List<AppView>,
+    val demote: List<AppView>,
+    val hide: List<AppView>,
+) {
+    val all: List<AppView> get() = show + demote + hide
+}
+
+/**
+ * Apply filters to the world's raw snapshot. Each app and each window get a
+ * `TriFilter` mode (the strictest matching rule wins: `Hide > Demote > Show`),
+ * then apps are partitioned into three buckets and windows within each app are
+ * sorted by mode.
  */
 fun World.filteredSnapshot(filters: Filters): FilteredSnapshot {
     val raw = snapshot()
-
-    val primary = mutableListOf<AppEntry>()
-    val windowless = mutableListOf<AppEntry>()
-    val demoted = mutableListOf<AppEntry>()
-
     val all = raw.withWindows + raw.windowless
 
-    for (entry in all) {
-        // 1. Filter the windows of this app.
-        val keptWindows = entry.windows.mapNotNull { applyWindowFilters(it, filters) }
-        val newEntry = entry.copy(windows = keptWindows)
+    val show = mutableListOf<AppView>()
+    val demote = mutableListOf<AppView>()
+    val hide = mutableListOf<AppView>()
 
-        // 2. Decide which bucket the app goes into.
-        val mode = classifyApp(newEntry, filters)
+    for (entry in all) {
+        val winViews = entry.windows
+            .map { classifyWindow(it, filters) }
+            .sortedBy(::modeOrder)
+        val mode = classifyApp(entry, filters)
+        val view = AppView(entry.app, winViews, mode)
         when (mode) {
-            TriFilter.Hide -> { /* drop */ }
-            TriFilter.Demote -> demoted.add(newEntry)
-            TriFilter.Show -> {
-                if (keptWindows.isEmpty() && filters.windowlessApps == TriFilter.Show) {
-                    // app shows but has no windows after filter → windowless section
-                    windowless.add(newEntry)
-                } else if (keptWindows.isEmpty()) {
-                    // windowless filter is Demote/Hide and applied above; if Show, falls in windowless.
-                    windowless.add(newEntry)
-                } else {
-                    primary.add(newEntry)
-                }
-            }
+            TriFilter.Show -> show.add(view)
+            TriFilter.Demote -> demote.add(view)
+            TriFilter.Hide -> hide.add(view)
         }
     }
 
-    return FilteredSnapshot(primary, windowless, demoted)
+    return FilteredSnapshot(show, demote, hide)
 }
 
 private fun classifyApp(entry: AppEntry, f: Filters): TriFilter {
     val a = entry.app
-    // First the absolute Hide rules — once any rule says Hide, we drop.
-    if (!a.isFinishedLaunching && f.launchingApps == BiFilter.Hide) return TriFilter.Hide
-    if (a.isHidden && f.hiddenApps == TriFilter.Hide) return TriFilter.Hide
-    if (a.activationPolicy == AppActivationPolicy.Accessory && f.accessoryApps == TriFilter.Hide) return TriFilter.Hide
-    if (entry.windows.isEmpty() && f.windowlessApps == TriFilter.Hide) return TriFilter.Hide
-
-    // Demote rules — if any matches, demote.
-    if (a.isHidden && f.hiddenApps == TriFilter.Demote) return TriFilter.Demote
-    if (a.activationPolicy == AppActivationPolicy.Accessory && f.accessoryApps == TriFilter.Demote) return TriFilter.Demote
-    if (entry.windows.isEmpty() && f.windowlessApps == TriFilter.Demote) return TriFilter.Demote
-
-    return TriFilter.Show
+    var mode = TriFilter.Show
+    if (entry.windows.isEmpty()) mode = strictest(mode, f.windowlessApps)
+    if (a.activationPolicy == AppActivationPolicy.Accessory) mode = strictest(mode, f.accessoryApps)
+    if (a.isHidden) mode = strictest(mode, f.hiddenApps)
+    if (!a.isFinishedLaunching) mode = strictest(mode, f.launchingApps)
+    return mode
 }
 
-/**
- * Recursively filter a window subtree. Returns the rewritten window with
- * filtered children, or `null` to drop the whole subtree.
- *
- * Note: child windows are also subject to filtering. A demoted child is dropped
- * since "demote within an app's window list" doesn't have a natural meaning yet
- * — leave that to a future enhancement.
- */
-private fun applyWindowFilters(w: Window, f: Filters): Window? {
-    if (w.isMinimized && f.minimizedWindows == BiFilter.Hide) return null
-    if (w.isFullscreen && f.fullscreenWindows == BiFilter.Hide) return null
-    if (w.title.isBlank() && f.untitledWindows == BiFilter.Hide) return null
+private fun classifyWindow(w: Window, f: Filters): WindowView {
+    var mode = TriFilter.Show
+    if (w.isMinimized) mode = strictest(mode, f.minimizedWindows)
+    if (w.isFullscreen) mode = strictest(mode, f.fullscreenWindows)
+    if (w.title.isBlank()) mode = strictest(mode, f.untitledWindows)
     val isStandard = w.subrole == "AXStandardWindow"
-    if (!isStandard && f.nonStandardSubroleWindows == BiFilter.Hide) return null
+    if (!isStandard) mode = strictest(mode, f.nonStandardSubroleWindows)
 
-    // Filter children recursively.
-    val keptChildren = w.children.mapNotNull { applyWindowFilters(it, f) }
-    return w.copy(children = keptChildren)
+    val childViews = w.children
+        .map { classifyWindow(it, f) }
+        .sortedBy(::modeOrder)
+    return WindowView(w, mode, childViews)
 }
+
+/** [TriFilter.Hide] is strictest, [TriFilter.Show] is loosest. */
+private fun strictest(a: TriFilter, b: TriFilter): TriFilter =
+    if (modeOrder(a) >= modeOrder(b)) a else b
+
+private fun modeOrder(v: TriFilter): Int = when (v) {
+    TriFilter.Show -> 0
+    TriFilter.Demote -> 1
+    TriFilter.Hide -> 2
+}
+
+private fun modeOrder(v: WindowView): Int = modeOrder(v.mode)

@@ -33,13 +33,12 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.shish.kaltswitch.model.AppActivationPolicy
-import com.shish.kaltswitch.model.AppEntry
-import com.shish.kaltswitch.model.BiFilter
+import com.shish.kaltswitch.model.AppView
 import com.shish.kaltswitch.model.FilteredSnapshot
 import com.shish.kaltswitch.model.Filters
 import com.shish.kaltswitch.model.TriFilter
-import com.shish.kaltswitch.model.Window
 import com.shish.kaltswitch.model.WindowId
+import com.shish.kaltswitch.model.WindowView
 import com.shish.kaltswitch.model.World
 import com.shish.kaltswitch.model.filteredSnapshot
 
@@ -95,29 +94,34 @@ private fun InspectorPanel(
             Modifier.padding(start = 4.dp).fillMaxSize(),
             verticalArrangement = Arrangement.spacedBy(2.dp),
         ) {
-            sectionHeader("Apps with windows (${snapshot.primary.size})")
-            items(snapshot.primary) { entry -> AppRow(entry, activeAppPid, activeWindowId) }
-            item { Spacer(Modifier.height(12.dp)) }
-            sectionHeader("Windowless (${snapshot.windowless.size})")
-            items(snapshot.windowless) { entry -> AppRow(entry, activeAppPid, activeWindowId) }
-            if (snapshot.demoted.isNotEmpty()) {
+            modeSection("Show", snapshot.show, activeAppPid, activeWindowId)
+            if (snapshot.demote.isNotEmpty()) {
                 item { Spacer(Modifier.height(12.dp)) }
-                sectionHeader("Demoted by filters (${snapshot.demoted.size})")
-                items(snapshot.demoted) { entry -> AppRow(entry, activeAppPid, activeWindowId) }
+                modeSection("Demote", snapshot.demote, activeAppPid, activeWindowId)
+            }
+            if (snapshot.hide.isNotEmpty()) {
+                item { Spacer(Modifier.height(12.dp)) }
+                modeSection("Hide", snapshot.hide, activeAppPid, activeWindowId)
             }
         }
     }
 }
 
-private fun LazyListScope.sectionHeader(title: String) {
+private fun LazyListScope.modeSection(
+    title: String,
+    apps: List<AppView>,
+    activeAppPid: Int?,
+    activeWindowId: WindowId?,
+) {
     item {
         Text(
-            title,
+            "$title (${apps.size})",
             color = Color.White,
             fontWeight = FontWeight.Bold,
             style = MaterialTheme.typography.titleMedium,
         )
     }
+    items(apps) { entry -> AppRow(entry, activeAppPid, activeWindowId) }
 }
 
 @Composable
@@ -145,10 +149,11 @@ private fun AxBanner(onGrantClick: () -> Unit) {
 }
 
 @Composable
-private fun AppRow(entry: AppEntry, activeAppPid: Int?, activeWindowId: WindowId?) {
-    val app = entry.app
+private fun AppRow(view: AppView, activeAppPid: Int?, activeWindowId: WindowId?) {
+    val app = view.app
     val isActiveApp = app.pid == activeAppPid
-    val appColor = if (isActiveApp) Color(0xFFFFFFFF) else Color(0xFFE0E0E0)
+    val baseColor = if (isActiveApp) Color(0xFFFFFFFF) else Color(0xFFE0E0E0)
+    val color = baseColor.dimmedFor(view.mode)
     val pictogram = appPictogram(app, isActiveApp)
     val tags = buildList {
         add(policyTag(app.activationPolicy))
@@ -159,37 +164,42 @@ private fun AppRow(entry: AppEntry, activeAppPid: Int?, activeWindowId: WindowId
     Column {
         Text(
             "$pictogram ${app.name}  ${tagText(tags)}",
-            color = appColor,
+            color = color,
             fontWeight = if (isActiveApp) FontWeight.Bold else FontWeight.Normal,
             style = MaterialTheme.typography.bodyMedium,
         )
-        entry.windows.forEach { w ->
-            WindowSubtree(w, depth = 1, activeAppPid == app.pid, activeWindowId)
+        view.windows.forEach { wv ->
+            WindowSubtree(wv, depth = 1, activeAppPid == app.pid, activeWindowId)
         }
     }
 }
 
 @Composable
 private fun WindowSubtree(
-    w: Window,
+    view: WindowView,
     depth: Int,
     isInActiveApp: Boolean,
     activeWindowId: WindowId?,
 ) {
-    WindowRow(w, depth = depth, isActive = isInActiveApp && w.id == activeWindowId)
-    w.children.forEach { child -> WindowSubtree(child, depth + 1, isInActiveApp, activeWindowId) }
+    WindowRow(view, depth = depth, isActive = isInActiveApp && view.window.id == activeWindowId)
+    view.children.forEach { child ->
+        WindowSubtree(child, depth + 1, isInActiveApp, activeWindowId)
+    }
 }
 
 @Composable
-private fun WindowRow(w: Window, depth: Int, isActive: Boolean) {
-    val color = if (isActive) Color(0xFFFFFFFF) else Color(0xFF9E9E9E)
-    val pictogram = windowPictogram(w, isActive)
+private fun WindowRow(view: WindowView, depth: Int, isActive: Boolean) {
+    val w = view.window
+    val baseColor = if (isActive) Color(0xFFFFFFFF) else Color(0xFF9E9E9E)
+    val color = baseColor.dimmedFor(view.mode)
+    val pictogram = windowPictogram(view, isActive)
     val tags = buildList {
+        if (view.mode != TriFilter.Show) add(view.mode.name.lowercase())
         if (!w.role.isNullOrBlank()) add("role: " + w.role.removePrefix("AX"))
         if (!w.subrole.isNullOrBlank()) add("subrole: " + w.subrole.removePrefix("AX"))
         if (w.isMain) add("main")
         if (w.width != null && w.height != null) add("${w.width.toInt()}×${w.height.toInt()}")
-        if (w.children.isNotEmpty()) add("${w.children.size} child")
+        if (view.children.isNotEmpty()) add("${view.children.size} child")
     }.joinToString(" · ")
     val indent = "    ".repeat(depth)
     Text(
@@ -208,10 +218,10 @@ private fun appPictogram(app: com.shish.kaltswitch.model.App, isActive: Boolean)
     else -> "•"
 }
 
-private fun windowPictogram(w: Window, isActive: Boolean): String = when {
+private fun windowPictogram(view: WindowView, isActive: Boolean): String = when {
     isActive -> "└▶"
-    w.isMinimized -> "└⎽"
-    w.isFullscreen -> "└⤢"
+    view.window.isMinimized -> "└⎽"
+    view.window.isFullscreen -> "└⤢"
     else -> "└─"
 }
 
@@ -222,6 +232,13 @@ private fun policyTag(p: AppActivationPolicy): String = when (p) {
 }
 
 private fun tagText(s: String): String = if (s.isBlank()) "" else "  · $s"
+
+/** Visually weaken a color based on filter mode so demoted/hidden rows recede. */
+private fun Color.dimmedFor(mode: TriFilter): Color = when (mode) {
+    TriFilter.Show -> this
+    TriFilter.Demote -> this.copy(alpha = 0.65f)
+    TriFilter.Hide -> this.copy(alpha = 0.35f)
+}
 
 // ─────────── Filters panel (left) ───────────
 
@@ -239,33 +256,19 @@ private fun FiltersPanel(
             style = MaterialTheme.typography.titleMedium,
         )
         FilterGroup("Apps")
-        TriRow("Windowless apps", filters.windowlessApps) {
-            onFiltersChange(filters.copy(windowlessApps = it))
-        }
-        TriRow("Accessory apps", filters.accessoryApps) {
-            onFiltersChange(filters.copy(accessoryApps = it))
-        }
-        TriRow("Hidden apps (cmd+H)", filters.hiddenApps) {
-            onFiltersChange(filters.copy(hiddenApps = it))
-        }
-        BiRow("Launching apps", filters.launchingApps) {
-            onFiltersChange(filters.copy(launchingApps = it))
-        }
+        TriRow("Windowless apps", filters.windowlessApps) { onFiltersChange(filters.copy(windowlessApps = it)) }
+        TriRow("Accessory apps", filters.accessoryApps) { onFiltersChange(filters.copy(accessoryApps = it)) }
+        TriRow("Hidden apps (cmd+H)", filters.hiddenApps) { onFiltersChange(filters.copy(hiddenApps = it)) }
+        TriRow("Launching apps", filters.launchingApps) { onFiltersChange(filters.copy(launchingApps = it)) }
 
         Spacer(Modifier.height(6.dp))
         FilterGroup("Windows")
-        BiRow("Minimized", filters.minimizedWindows) {
-            onFiltersChange(filters.copy(minimizedWindows = it))
-        }
-        BiRow("Fullscreen", filters.fullscreenWindows) {
-            onFiltersChange(filters.copy(fullscreenWindows = it))
-        }
-        BiRow("Non-standard subrole", filters.nonStandardSubroleWindows) {
+        TriRow("Minimized", filters.minimizedWindows) { onFiltersChange(filters.copy(minimizedWindows = it)) }
+        TriRow("Fullscreen", filters.fullscreenWindows) { onFiltersChange(filters.copy(fullscreenWindows = it)) }
+        TriRow("Non-standard subrole", filters.nonStandardSubroleWindows) {
             onFiltersChange(filters.copy(nonStandardSubroleWindows = it))
         }
-        BiRow("Untitled", filters.untitledWindows) {
-            onFiltersChange(filters.copy(untitledWindows = it))
-        }
+        TriRow("Untitled", filters.untitledWindows) { onFiltersChange(filters.copy(untitledWindows = it)) }
     }
 }
 
@@ -286,23 +289,7 @@ private fun TriRow(label: String, value: TriFilter, onChange: (TriFilter) -> Uni
         Row(Modifier.padding(top = 2.dp), horizontalArrangement = Arrangement.spacedBy(4.dp)) {
             for (option in TriFilter.entries) {
                 SegmentChip(
-                    text = option.label(),
-                    selected = option == value,
-                    onClick = { onChange(option) },
-                )
-            }
-        }
-    }
-}
-
-@Composable
-private fun BiRow(label: String, value: BiFilter, onChange: (BiFilter) -> Unit) {
-    Column {
-        Text(label, color = Color(0xFFE0E0E0), style = MaterialTheme.typography.bodySmall)
-        Row(Modifier.padding(top = 2.dp), horizontalArrangement = Arrangement.spacedBy(4.dp)) {
-            for (option in BiFilter.entries) {
-                SegmentChip(
-                    text = option.label(),
+                    text = option.name,
                     selected = option == value,
                     onClick = { onChange(option) },
                 )
@@ -324,15 +311,4 @@ private fun SegmentChip(text: String, selected: Boolean, onClick: () -> Unit) {
     ) {
         Text(text, color = fg, fontSize = 11.sp)
     }
-}
-
-private fun TriFilter.label(): String = when (this) {
-    TriFilter.Show -> "Show"
-    TriFilter.Demote -> "Demote"
-    TriFilter.Hide -> "Hide"
-}
-
-private fun BiFilter.label(): String = when (this) {
-    BiFilter.Show -> "Show"
-    BiFilter.Hide -> "Hide"
 }
