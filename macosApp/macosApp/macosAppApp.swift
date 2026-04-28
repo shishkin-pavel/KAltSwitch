@@ -13,6 +13,8 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     private var composeDelegate: ComposeNSViewDelegate? = nil
     private var appRegistry: AppRegistry? = nil
     private var hotkeyController: HotkeyController? = nil
+    private var overlayWindow: SwitcherOverlayWindow? = nil
+    private var overlayComposeDelegate: ComposeNSViewDelegate? = nil
     private var frameObservers: [NSObjectProtocol] = []
 
     func applicationDidFinishLaunching(_ aNotification: Notification) {
@@ -57,6 +59,29 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         // M4 will fill in onRaiseWindow / onCommitActivation on this controller.
         hotkeyController = HotkeyController(controller: ComposeViewKt.switcherController)
         hotkeyController?.start()
+
+        // Switcher overlay panel. Built eagerly so showing has zero startup cost;
+        // toggled visibility comes from `observeSwitcherVisibility` below.
+        let panel = SwitcherOverlayWindow()
+        overlayWindow = panel
+        overlayComposeDelegate = ComposeViewKt.AttachSwitcherOverlay(window: panel)
+        overlayComposeDelegate?.create()
+        overlayComposeDelegate?.start()
+
+        ComposeViewKt.observeSwitcherVisibility { [weak self] visible in
+            self?.setOverlayVisible(visible.boolValue)
+        }
+    }
+
+    private func setOverlayVisible(_ visible: Bool) {
+        guard let panel = overlayWindow else { return }
+        if visible {
+            panel.centerOnActiveScreen()
+            panel.orderFrontRegardless()
+            panel.makeKey()
+        } else {
+            panel.orderOut(nil)
+        }
     }
 
     private func persistFrame() {
@@ -111,6 +136,8 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         frameObservers.removeAll()
         hotkeyController?.stop()
         appRegistry?.stop()
+        overlayComposeDelegate?.stop()
+        overlayComposeDelegate?.destroy()
         composeDelegate?.stop()
         composeDelegate?.destroy()
     }

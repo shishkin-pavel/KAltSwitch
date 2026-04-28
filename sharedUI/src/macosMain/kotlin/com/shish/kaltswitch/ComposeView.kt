@@ -10,7 +10,9 @@ import com.shish.kaltswitch.switcher.SwitcherController
 import com.shish.kaltswitch.viewcontroller.ComposeNSViewDelegate
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.drop
+import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.onEach
 import kotlinx.coroutines.flow.launchIn
 import platform.AppKit.NSWindow
@@ -50,6 +52,22 @@ val switcherController = SwitcherController(
     scope = CoroutineScope(Dispatchers.Main),
 )
 
+/** Lifetime scope for cross-boundary observers. Cancelled on app termination. */
+private val bridgeScope = CoroutineScope(Dispatchers.Main)
+
+/**
+ * Subscribe Swift to overlay-panel visibility transitions. `visible == true` means
+ * the overlay should be on screen and key; `false` means closed (or pending —
+ * not yet shown). The subscription is active for the lifetime of the process.
+ */
+fun observeSwitcherVisibility(onChange: (Boolean) -> Unit) {
+    switcherController.ui
+        .map { it?.visible == true }
+        .distinctUntilChanged()
+        .onEach(onChange)
+        .launchIn(bridgeScope)
+}
+
 fun AttachMainComposeView(
     window: NSWindow,
 ): ComposeNSViewDelegate = ComposeNSViewDelegate(
@@ -72,5 +90,27 @@ fun AttachMainComposeView(
                 store.setAxTrusted(granted)
             },
         )
+    },
+)
+
+/**
+ * Compose content host for the switcher overlay panel (`NSPanel` provided by Swift).
+ * Renders [SwitcherOverlay] when a session is active and visible; otherwise empty.
+ */
+fun AttachSwitcherOverlay(window: NSWindow): ComposeNSViewDelegate = ComposeNSViewDelegate(
+    window = window,
+    content = {
+        val ui by switcherController.ui.collectAsState()
+        val icons by store.iconsByPid.collectAsState()
+        val current = ui
+        if (current != null && current.visible) {
+            SwitcherOverlay(
+                ui = current,
+                iconsByPid = icons,
+                onNavigate = { switcherController.onNavigate(it) },
+                onEsc = { switcherController.onEsc() },
+                onShortcut = { switcherController.onShortcut(it) },
+            )
+        }
     },
 )

@@ -50,6 +50,19 @@ class WorldStore(initial: World = World(ActivationLog(), emptyMap(), emptyMap())
         _switcherActive.value = active
     }
 
+    /** Per-pid PNG-encoded application icons. Populated by Swift from
+     *  `NSRunningApplication.icon` and consumed by the Compose overlay. */
+    private val _iconsByPid = MutableStateFlow<Map<Int, ByteArray>>(emptyMap())
+    val iconsByPid: StateFlow<Map<Int, ByteArray>> = _iconsByPid.asStateFlow()
+
+    fun setAppIconPng(pid: Int, png: ByteArray) {
+        _iconsByPid.update { it + (pid to png) }
+    }
+
+    fun removeAppIcon(pid: Int) {
+        _iconsByPid.update { it - pid }
+    }
+
     private val _inspectorFrame = MutableStateFlow<com.shish.kaltswitch.config.WindowFrame?>(null)
     val inspectorFrame: StateFlow<com.shish.kaltswitch.config.WindowFrame?> = _inspectorFrame.asStateFlow()
 
@@ -89,6 +102,7 @@ class WorldStore(initial: World = World(ActivationLog(), emptyMap(), emptyMap())
                 windowsByPid = it.windowsByPid - pid,
             )
         }
+        _iconsByPid.update { it - pid }
     }
 
     /** Replace the full window list for a pid. Use for snapshot-style refreshes. */

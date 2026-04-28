@@ -164,6 +164,37 @@ final class AppRegistry {
             executablePath: nsApp.executableURL?.path,
             launchDateMillis: launchMs
         )
+        pushAppIcon(nsApp)
+    }
+
+    /// Render `NSRunningApplication.icon` (a vector NSImage) to a 128×128 PNG and push
+    /// the bytes into the store so the Compose overlay can decode and display it.
+    /// Skia decodes PNG natively; TIFF (NSImage's default representation) does not.
+    private func pushAppIcon(_ nsApp: NSRunningApplication) {
+        let pid = nsApp.processIdentifier
+        guard let image = nsApp.icon else { return }
+        let target = NSSize(width: 128, height: 128)
+        let bitmap = NSBitmapImageRep(
+            bitmapDataPlanes: nil,
+            pixelsWide: Int(target.width), pixelsHigh: Int(target.height),
+            bitsPerSample: 8, samplesPerPixel: 4, hasAlpha: true,
+            isPlanar: false, colorSpaceName: .deviceRGB,
+            bytesPerRow: 0, bitsPerPixel: 32
+        )
+        guard let bitmap = bitmap else { return }
+        bitmap.size = target
+        NSGraphicsContext.saveGraphicsState()
+        NSGraphicsContext.current = NSGraphicsContext(bitmapImageRep: bitmap)
+        image.draw(in: NSRect(origin: .zero, size: target),
+                   from: .zero, operation: .copy, fraction: 1.0)
+        NSGraphicsContext.restoreGraphicsState()
+        guard let png = bitmap.representation(using: .png, properties: [:]) else { return }
+        let bytes = [UInt8](png)
+        let kotlinByteArray = KotlinByteArray(size: Int32(bytes.count))
+        for i in 0..<bytes.count {
+            kotlinByteArray.set(index: Int32(i), value: Int8(bitPattern: bytes[i]))
+        }
+        store.setAppIconPng(pid: pid, png: kotlinByteArray)
     }
 }
 
