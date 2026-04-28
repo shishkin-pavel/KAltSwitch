@@ -11,6 +11,12 @@ kotlin {
         compilerOptions { jvmTarget = JvmTarget.JVM_17 }
     }
 
+    macosArm64().binaries.framework {
+        baseName = "ComposeAppMac"
+        isStatic = true
+        binaryOption("bundleId", "com.shish.kaltswitch.ComposeAppMac")
+    }
+
     sourceSets {
         commonMain.dependencies {
             api(libs.compose.runtime)

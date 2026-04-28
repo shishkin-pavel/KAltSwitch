@@ -1,0 +1,50 @@
+name: macosApp
+options:
+  bundleIdPrefix: com.shish.kaltswitch
+  deploymentTarget:
+    macOS: "15.0"
+  createIntermediateGroups: true
+
+settings:
+  base:
+    SWIFT_VERSION: "5.0"
+
+targets:
+  macosApp:
+    type: application
+    platform: macOS
+    sources:
+      - path: macosApp
+    info:
+      path: macosApp/Info.plist
+      properties:
+        NSPrincipalClass: NSApplication
+        LSMinimumSystemVersion: "15.0"
+        CFBundleDisplayName: KAltSwitch
+        NSHighResolutionCapable: true
+    entitlements:
+      path: macosApp/macosApp.entitlements
+      properties:
+        com.apple.security.app-sandbox: false
+        com.apple.security.cs.disable-library-validation: true
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.shish.kaltswitch.macosApp
+        CODE_SIGN_STYLE: Automatic
+        CODE_SIGN_IDENTITY: "-"
+        OTHER_LDFLAGS: ["-framework", "ComposeAppMac"]
+        FRAMEWORK_SEARCH_PATHS:
+          - "$(inherited)"
+          - "$(BUILT_PRODUCTS_DIR)"
+        ENABLE_USER_SCRIPT_SANDBOXING: NO
+    preBuildScripts:
+      - name: "Build Compose framework via Gradle"
+        script: |
+          set -e
+          if [ "YES" = "$OVERRIDE_KOTLIN_BUILD_IDE_SUPPORTED" ]; then
+            echo "Skipping Gradle build (OVERRIDE_KOTLIN_BUILD_IDE_SUPPORTED=YES)"
+            exit 0
+          fi
+          cd "$SRCROOT/.."
+          ./gradlew :sharedUI:embedAndSignAppleFrameworkForXcode
+        basedOnDependencyAnalysis: false

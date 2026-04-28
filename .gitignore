@@ -12,6 +12,9 @@ captures
 local.properties
 xcuserdata/
 Pods/
+*.xcodeproj
+macosApp/macosApp/Info.plist
+macosApp/macosApp/macosApp.entitlements
 *.jks
 *.gpg
 *yarn.lock
