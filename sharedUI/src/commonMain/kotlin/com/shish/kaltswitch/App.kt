@@ -25,6 +25,7 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
+import com.shish.kaltswitch.model.AppActivationPolicy
 import com.shish.kaltswitch.model.AppEntry
 import com.shish.kaltswitch.model.Window
 import com.shish.kaltswitch.model.WindowId
@@ -48,17 +49,31 @@ fun App(
         verticalArrangement = Arrangement.spacedBy(8.dp),
     ) {
         if (!axTrusted) AxBanner(onGrantAxClick)
-        Section("Apps with windows (${snapshot.withWindows.size})") {
+        LazyColumn(
+            Modifier.padding(start = 4.dp),
+            verticalArrangement = Arrangement.spacedBy(2.dp),
+        ) {
+            sectionHeader("Apps with windows (${snapshot.withWindows.size})")
             items(snapshot.withWindows) { entry ->
                 AppRow(entry, activeAppPid, activeWindowId)
             }
-        }
-        Spacer(Modifier.height(8.dp))
-        Section("Windowless (${snapshot.windowless.size})") {
+            item { Spacer(Modifier.height(12.dp)) }
+            sectionHeader("Windowless (${snapshot.windowless.size})")
             items(snapshot.windowless) { entry ->
                 AppRow(entry, activeAppPid, activeWindowId)
             }
         }
+    }
+}
+
+private fun LazyListScope.sectionHeader(title: String) {
+    item {
+        Text(
+            title,
+            color = Color.White,
+            fontWeight = FontWeight.Bold,
+            style = MaterialTheme.typography.titleMedium,
+        )
     }
 }
 
@@ -87,44 +102,69 @@ private fun AxBanner(onGrantClick: () -> Unit) {
 }
 
 @Composable
-private fun Section(title: String, content: LazyListScope.() -> Unit) {
-    Text(
-        title,
-        color = Color.White,
-        fontWeight = FontWeight.Bold,
-        style = MaterialTheme.typography.titleMedium,
-    )
-    LazyColumn(
-        Modifier.padding(start = 8.dp, top = 4.dp),
-        verticalArrangement = Arrangement.spacedBy(2.dp),
-        content = content,
-    )
-}
-
-@Composable
 private fun AppRow(entry: AppEntry, activeAppPid: Int?, activeWindowId: WindowId?) {
-    val isActiveApp = entry.app.pid == activeAppPid
+    val app = entry.app
+    val isActiveApp = app.pid == activeAppPid
     val appColor = if (isActiveApp) Color(0xFFFFFFFF) else Color(0xFFE0E0E0)
-    val appPrefix = if (isActiveApp) "▶ " else "• "
+    val pictogram = appPictogram(app, isActiveApp)
+    val tags = buildList {
+        add(policyTag(app.activationPolicy))
+        if (app.isHidden) add("hidden")
+        if (!app.isFinishedLaunching) add("launching")
+        app.bundleId?.let { add(it) }
+    }.joinToString(" · ")
     Column {
         Text(
-            "$appPrefix${entry.app.name}",
+            "$pictogram ${app.name}  ${tagText(tags)}",
             color = appColor,
             fontWeight = if (isActiveApp) FontWeight.Bold else FontWeight.Normal,
             style = MaterialTheme.typography.bodyMedium,
         )
-        entry.windows.forEach { w -> WindowRow(w, isActiveApp && w.id == activeWindowId) }
+        entry.windows.forEach { w ->
+            WindowRow(w, isActiveApp && w.id == activeWindowId)
+        }
     }
 }
 
 @Composable
 private fun WindowRow(w: Window, isActive: Boolean) {
     val color = if (isActive) Color(0xFFFFFFFF) else Color(0xFF9E9E9E)
-    val prefix = if (isActive) "    └▶ " else "    └─ "
+    val pictogram = windowPictogram(w, isActive)
+    val tags = buildList {
+        if (!w.role.isNullOrBlank()) add(w.role.removePrefix("AX"))
+        if (!w.subrole.isNullOrBlank()) add(w.subrole.removePrefix("AX"))
+        if (w.isMain) add("main")
+        if (w.width != null && w.height != null) {
+            add("${w.width.toInt()}×${w.height.toInt()}")
+        }
+    }.joinToString(" · ")
     Text(
-        "$prefix${w.title.ifBlank { "(untitled)" }}",
+        "    $pictogram ${w.title.ifBlank { "(untitled)" }}  ${tagText(tags)}",
         color = color,
         fontWeight = if (isActive) FontWeight.SemiBold else FontWeight.Normal,
         style = MaterialTheme.typography.bodySmall,
     )
 }
+
+private fun appPictogram(app: com.shish.kaltswitch.model.App, isActive: Boolean): String = when {
+    isActive -> "▶"
+    app.isHidden -> "◌"
+    !app.isFinishedLaunching -> "…"
+    app.activationPolicy == AppActivationPolicy.Accessory -> "◇"
+    else -> "•"
+}
+
+private fun windowPictogram(w: Window, isActive: Boolean): String = when {
+    isActive -> "└▶"
+    w.isMinimized -> "└⎽"
+    w.isFullscreen -> "└⤢"
+    else -> "└─"
+}
+
+private fun policyTag(p: AppActivationPolicy): String = when (p) {
+    AppActivationPolicy.Regular -> "regular"
+    AppActivationPolicy.Accessory -> "accessory"
+    AppActivationPolicy.Prohibited -> "prohibited"
+}
+
+private fun tagText(s: String): String = if (s.isBlank()) "" else "  · $s"

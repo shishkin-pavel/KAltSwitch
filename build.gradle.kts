@@ -28,6 +28,9 @@ val xcodegenMacos by tasks.registering(Exec::class) {
     workingDir = macosAppDir.asFile
     loginShell("xcodegen", "generate")
     inputs.file(macosAppDir.file("project.yml"))
+    // xcodegen scans source dirs at generate-time; if a .swift file is added or removed
+    // from macosApp/macosApp/, the xcodeproj must be regenerated.
+    inputs.dir(macosAppDir.dir("macosApp"))
     outputs.file(macosAppDir.file("macosApp.xcodeproj/project.pbxproj"))
 }
 

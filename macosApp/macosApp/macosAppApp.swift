@@ -11,6 +11,7 @@ struct macosAppApp: SwiftUI.App {
 class AppDelegate: NSObject, NSApplicationDelegate {
     var window: NSWindow!
     private var composeDelegate: ComposeNSViewDelegate? = nil
+    private var appRegistry: AppRegistry? = nil
 
     func applicationDidFinishLaunching(_ aNotification: Notification) {
         window = NSWindow(
@@ -26,6 +27,10 @@ class AppDelegate: NSObject, NSApplicationDelegate {
 
         window.makeKeyAndOrderFront(nil)
         NSApp.activate(ignoringOtherApps: true)
+
+        // Bring up the per-app AX watchers. Store is the singleton owned by the framework.
+        appRegistry = AppRegistry(store: ComposeViewKt.store)
+        appRegistry?.start()
     }
 
     func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool {
@@ -46,6 +51,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     func applicationWillTerminate(_ notification: Notification) {
+        appRegistry?.stop()
         composeDelegate?.stop()
         composeDelegate?.destroy()
     }
