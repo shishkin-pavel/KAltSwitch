@@ -6,6 +6,7 @@ import com.shish.kaltswitch.config.AppConfig
 import com.shish.kaltswitch.config.ConfigStore
 import com.shish.kaltswitch.native.requestAxPermission
 import com.shish.kaltswitch.store.WorldStore
+import com.shish.kaltswitch.switcher.SwitcherController
 import com.shish.kaltswitch.viewcontroller.ComposeNSViewDelegate
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -37,6 +38,17 @@ private val configScope = CoroutineScope(Dispatchers.Main).also { scope ->
         .onEach { ConfigStore.save(it) }
         .launchIn(scope)
 }
+
+/**
+ * Singleton switcher controller. Swift's `HotkeyController` calls
+ * `onShortcut` / `onModifierReleased` / `onEsc`; the Compose overlay observes [SwitcherController.ui].
+ *
+ * Swift wires `onRaiseWindow` / `onCommitActivation` to AX-side actions after launch.
+ */
+val switcherController = SwitcherController(
+    store = store,
+    scope = CoroutineScope(Dispatchers.Main),
+)
 
 fun AttachMainComposeView(
     window: NSWindow,

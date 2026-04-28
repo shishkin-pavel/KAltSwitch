@@ -40,6 +40,16 @@ class WorldStore(initial: World = World(ActivationLog(), emptyMap(), emptyMap())
         _filters.value = f
     }
 
+    /** True while a switcher session is open or just closed. AX/Workspace activation
+     *  events arriving in this window are dropped — they describe our own preview-raise
+     *  / commit echo, not user-driven activity, and would otherwise corrupt the log. */
+    private val _switcherActive = MutableStateFlow(false)
+    val switcherActive: StateFlow<Boolean> = _switcherActive.asStateFlow()
+
+    fun setSwitcherActive(active: Boolean) {
+        _switcherActive.value = active
+    }
+
     private val _inspectorFrame = MutableStateFlow<com.shish.kaltswitch.config.WindowFrame?>(null)
     val inspectorFrame: StateFlow<com.shish.kaltswitch.config.WindowFrame?> = _inspectorFrame.asStateFlow()
 
@@ -104,8 +114,10 @@ class WorldStore(initial: World = World(ActivationLog(), emptyMap(), emptyMap())
         }
     }
 
-    /** Append an activation event. */
+    /** Append an activation event. Dropped while a switcher session is live so our
+     *  own preview-raise / commit-induced AX echo doesn't pollute the log. */
     fun recordEvent(event: ActivationEvent) {
+        if (_switcherActive.value) return
         _state.update { it.copy(log = it.log.record(event)) }
     }
 

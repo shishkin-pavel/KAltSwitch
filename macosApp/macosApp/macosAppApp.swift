@@ -12,6 +12,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     var window: NSWindow!
     private var composeDelegate: ComposeNSViewDelegate? = nil
     private var appRegistry: AppRegistry? = nil
+    private var hotkeyController: HotkeyController? = nil
     private var frameObservers: [NSObjectProtocol] = []
 
     func applicationDidFinishLaunching(_ aNotification: Notification) {
@@ -51,6 +52,11 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         // Bring up the per-app AX watchers. Store is the singleton owned by the framework.
         appRegistry = AppRegistry(store: ComposeViewKt.store)
         appRegistry?.start()
+
+        // Global hotkeys + cmd-release detection feed the Kotlin SwitcherController.
+        // M4 will fill in onRaiseWindow / onCommitActivation on this controller.
+        hotkeyController = HotkeyController(controller: ComposeViewKt.switcherController)
+        hotkeyController?.start()
     }
 
     private func persistFrame() {
@@ -103,6 +109,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         let center = NotificationCenter.default
         for obs in frameObservers { center.removeObserver(obs) }
         frameObservers.removeAll()
+        hotkeyController?.stop()
         appRegistry?.stop()
         composeDelegate?.stop()
         composeDelegate?.destroy()
