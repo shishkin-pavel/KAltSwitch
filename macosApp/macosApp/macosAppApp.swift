@@ -2,10 +2,10 @@ import SwiftUI
 import ComposeAppMac
 
 @main
-struct macosAppApp: App {
+struct macosAppApp: SwiftUI.App {
     @NSApplicationDelegateAdaptor(AppDelegate.self) var appDelegate
 
-    var body: some Scene {}
+    var body: some SwiftUI.Scene {}
 }
 
 class AppDelegate: NSObject, NSApplicationDelegate {

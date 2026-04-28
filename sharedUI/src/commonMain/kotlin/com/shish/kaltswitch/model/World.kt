@@ -4,11 +4,12 @@ package com.shish.kaltswitch.model
 data class World(
     val log: ActivationLog,
     val runningApps: Map<Int, App>,
+    /** `null` (key absent) = AX info not yet known for this pid; empty list = knowingly windowless. */
     val windowsByPid: Map<Int, List<Window>>,
 ) {
-    /** Order [pid]'s windows: activation-recency first, then the rest in input order. */
-    fun orderedWindows(pid: Int): List<Window> {
-        val available = windowsByPid[pid].orEmpty()
+    /** Returns ordered windows, or `null` if AX info is unknown for this pid. */
+    fun orderedWindows(pid: Int): List<Window>? {
+        val available = windowsByPid[pid] ?: return null
         if (available.isEmpty()) return emptyList()
         val byId = available.associateBy { it.id }
 
@@ -47,26 +48,27 @@ fun World.snapshot(): SwitcherSnapshot {
     val placedPids = HashSet<Int>()
     val withWindows = ArrayList<AppEntry>()
 
-    // 1. Activation-recency-ordered apps that still have windows.
+    // 1. Activation-recency-ordered apps. Apps whose AX info is unknown (null) get an
+    //    empty-windows AppEntry but still go in front of the separator.
     for (pid in log.appOrder()) {
         if (pid in placedPids) continue
         val app = runningApps[pid] ?: continue
-        val windows = orderedWindows(pid)
-        if (windows.isEmpty()) continue
+        val windows = orderedWindows(pid) ?: emptyList()
+        if (windowsByPid[pid]?.isEmpty() == true) continue   // known windowless → step 3
         placedPids.add(pid)
         withWindows.add(AppEntry(app, windows))
     }
 
-    // 2. Running apps with windows but no activation history yet (e.g. just-launched).
+    // 2. Running apps not in the log yet (just-launched).
     for ((pid, app) in runningApps) {
         if (pid in placedPids) continue
-        val windows = orderedWindows(pid)
-        if (windows.isEmpty()) continue
+        if (windowsByPid[pid]?.isEmpty() == true) continue   // known windowless → step 3
+        val windows = orderedWindows(pid) ?: emptyList()
         placedPids.add(pid)
         withWindows.add(AppEntry(app, windows))
     }
 
-    // 3. Windowless apps go behind the separator, alphabetical for visual stability.
+    // 3. Apps known to have zero windows. Alphabetical for visual stability.
     val windowless = runningApps.values
         .asSequence()
         .filter { it.pid !in placedPids }
