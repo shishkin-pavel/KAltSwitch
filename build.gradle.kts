@@ -57,9 +57,16 @@ val killMacosApp by tasks.registering(Exec::class) {
     commandLine("pkill", "-f", builtAppPath.asFile.absolutePath)
 }
 
+val macosAppLogPath = derivedDataDir.file("macosApp.log").asFile.absolutePath
+
 tasks.register<Exec>("runMacosApp") {
     group = "macos"
-    description = "Build and launch macosApp.app."
+    description = "Build and launch macosApp.app, redirecting stderr/stdout to $macosAppLogPath."
     dependsOn(killMacosApp, buildMacosApp)
-    commandLine("open", builtAppPath.asFile.absolutePath)
+    commandLine(
+        "/usr/bin/open",
+        "--stdout", macosAppLogPath,
+        "--stderr", macosAppLogPath,
+        builtAppPath.asFile.absolutePath,
+    )
 }

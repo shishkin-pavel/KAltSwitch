@@ -113,8 +113,13 @@ final class AppRegistry {
 
     private func handleActivated(_ note: Notification) {
         guard let nsApp = note.userInfo?[NSWorkspace.applicationUserInfoKey] as? NSRunningApplication else { return }
-        store.recordAppActivation(pid: nsApp.processIdentifier, timestampMs: nowMillis())
+        let pid = nsApp.processIdentifier
+        store.recordAppActivation(pid: pid, timestampMs: nowMillis())
         syncActiveStateFromSystem(store: store)
+        // ChatGPT and similar apps refuse AX subscriptions on launch with
+        // kAXErrorAPIDisabled. They typically accept once they've been activated by
+        // the user — kick the watcher to retry subscriptions and refresh windows.
+        watchers[pid]?.requestRefresh()
     }
 
     private func handleHiddenChange(_ note: Notification, hidden: Bool) {
