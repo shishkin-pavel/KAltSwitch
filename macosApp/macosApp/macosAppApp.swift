@@ -77,23 +77,36 @@ class AppDelegate: NSObject, NSApplicationDelegate {
             if trusted { self?.hotkeyController?.start() }
         }
 
-        // Switcher overlay panel. Built eagerly so showing has zero startup cost;
-        // toggled visibility comes from `observeSwitcherVisibility` below.
+        // Switcher overlay panel. Built eagerly so showing has zero startup cost.
+        // Two flow observers below split the lifecycle into two stages:
+        //   * session-active (ui != null) → place the panel and make it key
+        //     so we can observe modifier-release flagsChanged via sendEvent
+        //     without depending on AX-gated CGEventTap.
+        //   * visible (ui.visible == true) → flip alphaValue to actually show
+        //     the contents after `showDelay` has elapsed.
         let panel = SwitcherOverlayWindow()
         overlayWindow = panel
         overlayComposeDelegate = ComposeViewKt.AttachSwitcherOverlay(window: panel)
         overlayComposeDelegate?.create()
         overlayComposeDelegate?.start()
 
+        panel.onCommandReleased = { [weak controller] in
+            controller?.onModifierReleased()
+        }
+
+        ComposeViewKt.observeSwitcherSession { [weak self] active in
+            self?.setOverlayActive(active.boolValue)
+        }
         ComposeViewKt.observeSwitcherVisibility { [weak self] visible in
-            self?.setOverlayVisible(visible.boolValue)
+            self?.overlayWindow?.alphaValue = visible.boolValue ? 1 : 0
         }
     }
 
-    private func setOverlayVisible(_ visible: Bool) {
+    private func setOverlayActive(_ active: Bool) {
         guard let panel = overlayWindow else { return }
-        if visible {
-            panel.centerOnActiveScreen()
+        if active {
+            panel.alphaValue = 0
+            panel.sizeAndCenterOnActiveScreen()
             panel.orderFrontRegardless()
             panel.makeKey()
         } else {

@@ -5,8 +5,10 @@ import androidx.compose.foundation.border
 import androidx.compose.foundation.focusable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
-import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.ExperimentalLayoutApi
+import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
@@ -109,6 +111,7 @@ private fun handleKey(
     }
 }
 
+@OptIn(ExperimentalLayoutApi::class)
 @Composable
 private fun SwitcherPanel(ui: SwitcherUiState, iconsByPid: Map<Int, ByteArray>) {
     val state = ui.state
@@ -117,34 +120,42 @@ private fun SwitcherPanel(ui: SwitcherUiState, iconsByPid: Map<Int, ByteArray>) 
 
     val withWindowsCount = state.snapshot.withWindows.size
 
-    Box(
-        Modifier
-            .clip(RoundedCornerShape(16.dp))
-            .background(Color(0xCC1B1B1F))
-            .border(1.dp, Color(0x33FFFFFF), RoundedCornerShape(16.dp))
-            .padding(horizontal = 18.dp, vertical = 14.dp),
-    ) {
-        Row(
-            verticalAlignment = Alignment.Top,
-            horizontalArrangement = Arrangement.spacedBy(10.dp),
+    BoxWithConstraints(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+        // Cap the panel at the available NSPanel width minus a comfortable
+        // margin so its rounded corners don't kiss the screen edges. FlowRow
+        // wraps within this width, the surrounding bg Box wraps to the actual
+        // content extent, and the rest of the NSPanel stays fully transparent.
+        val maxPanelWidth = (maxWidth - 80.dp).coerceAtLeast(240.dp)
+        Box(
+            Modifier
+                .widthIn(max = maxPanelWidth)
+                .clip(RoundedCornerShape(16.dp))
+                .background(Color(0xCC1B1B1F))
+                .border(1.dp, Color(0x33FFFFFF), RoundedCornerShape(16.dp))
+                .padding(horizontal = 16.dp, vertical = 12.dp),
         ) {
-            entries.forEachIndexed { appIndex, entry ->
-                if (appIndex == withWindowsCount && withWindowsCount > 0 && withWindowsCount < entries.size) {
-                    Spacer(
-                        Modifier
-                            .width(1.dp)
-                            .height(96.dp)
-                            .background(Color(0x33FFFFFF))
+            FlowRow(
+                horizontalArrangement = Arrangement.spacedBy(6.dp),
+                verticalArrangement = Arrangement.spacedBy(8.dp),
+            ) {
+                entries.forEachIndexed { appIndex, entry ->
+                    if (appIndex == withWindowsCount && withWindowsCount > 0 && withWindowsCount < entries.size) {
+                        Spacer(
+                            Modifier
+                                .width(1.dp)
+                                .height(96.dp)
+                                .background(Color(0x33FFFFFF))
+                        )
+                    }
+                    AppCell(
+                        name = entry.app.name,
+                        pid = entry.app.pid,
+                        iconBytes = iconsByPid[entry.app.pid],
+                        windows = entry.windows,
+                        isSelected = appIndex == state.cursor.appIndex,
+                        selectedWindowIndex = if (appIndex == state.cursor.appIndex) state.cursor.windowIndex else -1,
                     )
                 }
-                AppCell(
-                    name = entry.app.name,
-                    pid = entry.app.pid,
-                    iconBytes = iconsByPid[entry.app.pid],
-                    windows = entry.windows,
-                    isSelected = appIndex == state.cursor.appIndex,
-                    selectedWindowIndex = if (appIndex == state.cursor.appIndex) state.cursor.windowIndex else -1,
-                )
             }
         }
     }
@@ -163,10 +174,10 @@ private fun AppCell(
     val nameColor = if (isSelected) Color.White else Color(0xFFCCCCCC)
     Column(
         Modifier
-            .widthIn(min = 88.dp, max = 220.dp)
+            .widthIn(min = 80.dp, max = 120.dp)
             .clip(RoundedCornerShape(10.dp))
             .border(2.dp, borderColor, RoundedCornerShape(10.dp))
-            .padding(horizontal = 8.dp, vertical = 6.dp),
+            .padding(horizontal = 6.dp, vertical = 6.dp),
         horizontalAlignment = Alignment.CenterHorizontally,
         verticalArrangement = Arrangement.spacedBy(4.dp),
     ) {

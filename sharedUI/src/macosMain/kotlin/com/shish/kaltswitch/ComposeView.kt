@@ -56,10 +56,24 @@ val switcherController = SwitcherController(
 private val bridgeScope = CoroutineScope(Dispatchers.Main)
 
 /**
- * Subscribe Swift to overlay-panel visibility transitions. `visible == true` means
- * the overlay should be on screen and key; `false` means closed (or pending —
- * not yet shown). The subscription is active for the lifetime of the process.
+ * Subscribe Swift to overlay session-active transitions. `active == true` means a
+ * switcher session has just started — the overlay panel should be ordered front
+ * and made key (even if it's still inside `showDelay` and visually transparent),
+ * because making it key from t=0 is what lets `NSPanel.sendEvent` see the
+ * modifier-release `flagsChanged` events without relying on AX-permission-gated
+ * `CGEventTap`.
  */
+fun observeSwitcherSession(onChange: (Boolean) -> Unit) {
+    switcherController.ui
+        .map { it != null }
+        .distinctUntilChanged()
+        .onEach(onChange)
+        .launchIn(bridgeScope)
+}
+
+/** Subscribe Swift to overlay visible transitions (post-`showDelay`). The panel
+ *  toggles its `alphaValue` between 0 and 1 on this signal so the contents only
+ *  appear after the delay, while the panel itself stays key from session start. */
 fun observeSwitcherVisibility(onChange: (Boolean) -> Unit) {
     switcherController.ui
         .map { it?.visible == true }
