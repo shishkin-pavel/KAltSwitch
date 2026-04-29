@@ -2,7 +2,6 @@ package com.shish.kaltswitch
 
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
-import com.shish.kaltswitch.config.AppConfig
 import com.shish.kaltswitch.config.ConfigStore
 import com.shish.kaltswitch.native.requestAxPermission
 import com.shish.kaltswitch.store.WorldStore
@@ -17,63 +16,22 @@ import kotlinx.coroutines.flow.onEach
 import kotlinx.coroutines.flow.launchIn
 import platform.AppKit.NSWindow
 
-/** Singleton store. Swift's `AppRegistry` mutates it; the Compose UI observes it. */
-val store = WorldStore().also { initStore ->
-    // Load persisted config on first access so the UI starts with the user's
-    // filters, the saved frame + inspector width, and switcher delays.
-    ConfigStore.load()?.let { cfg ->
-        initStore.setFilters(cfg.filters)
-        initStore.setWindowFrame(cfg.windowFrame)
-        initStore.setInspectorWidth(cfg.inspectorWidth)
-        initStore.setSwitcherSettings(cfg.switcher)
-        initStore.setInspectorVisible(cfg.inspectorVisible)
-        initStore.setShowMenubarIcon(cfg.showMenubarIcon)
-        initStore.setLaunchAtLogin(cfg.launchAtLogin)
-        initStore.setCurrentSpaceOnly(cfg.currentSpaceOnly)
-        initStore.setAccentColor(cfg.accentColor)
-    }
+/** Singleton store. Swift's `AppRegistry` mutates it; the Compose UI observes it.
+ *  Seeded once from `~/Library/Application Support/KAltSwitch/config.json`; if
+ *  the file is missing every StateFlow keeps its declared default. */
+val store = WorldStore().apply {
+    ConfigStore.load()?.let(::applyConfig)
 }
 
 /**
- * Persists config changes to disk. Combine emits whenever any of the underlying
- * StateFlows changes; `drop(1)` skips the initial combined emission so we don't
- * immediately overwrite the file we just loaded.
+ * Persists config changes to disk. `WorldStore.configFlow()` re-emits whenever
+ * any persisted field changes; `drop(1)` skips the initial combined emission
+ * so we don't immediately overwrite the file we just loaded above.
  */
 private val configScope = CoroutineScope(Dispatchers.Main).also { scope ->
-    // combine() has overloads up to 5 flows. Once we cross that, build the
-    // AppConfig in two stages: the inspector-related fields first, then merge
-    // in the system-wide toggles. Functionally equivalent to a single combine.
-    val coreCfg = kotlinx.coroutines.flow.combine(
-        store.filters,
-        store.windowFrame,
-        store.inspectorWidth,
-        store.switcherSettings,
-        store.inspectorVisible,
-    ) { filters, frame, inspW, switcher, inspectorVisible ->
-        AppConfig(
-            filters = filters,
-            windowFrame = frame,
-            inspectorWidth = inspW,
-            switcher = switcher,
-            inspectorVisible = inspectorVisible,
-        )
-    }
-    kotlinx.coroutines.flow.combine(
-        coreCfg,
-        store.showMenubarIcon,
-        store.launchAtLogin,
-        store.currentSpaceOnly,
-        store.accentColor,
-    ) { base, menubar, launchAtLogin, currentSpaceOnly, accent ->
-        base.copy(
-            showMenubarIcon = menubar,
-            launchAtLogin = launchAtLogin,
-            currentSpaceOnly = currentSpaceOnly,
-            accentColor = accent,
-        )
-    }
+    store.configFlow()
         .drop(1)
-        .onEach { ConfigStore.save(it) }
+        .onEach(ConfigStore::save)
         .launchIn(scope)
 }
 

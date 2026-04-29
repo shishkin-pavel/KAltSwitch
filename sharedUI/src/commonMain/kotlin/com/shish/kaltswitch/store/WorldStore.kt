@@ -1,18 +1,21 @@
 package com.shish.kaltswitch.store
 
+import com.shish.kaltswitch.config.AccentColorChoice
+import com.shish.kaltswitch.config.AppConfig
 import com.shish.kaltswitch.config.SwitcherSettings
 import com.shish.kaltswitch.model.ActivationEvent
 import com.shish.kaltswitch.model.ActivationLog
 import com.shish.kaltswitch.model.App
 import com.shish.kaltswitch.model.AppActivationPolicy
-import com.shish.kaltswitch.config.AccentColorChoice
 import com.shish.kaltswitch.model.FilteringRules
 import com.shish.kaltswitch.model.Window
 import com.shish.kaltswitch.model.WindowId
 import com.shish.kaltswitch.model.World
+import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.update
 
 /**
@@ -242,6 +245,67 @@ class WorldStore(initial: World = World(ActivationLog(), emptyMap(), emptyMap())
      *  no app is frontmost (e.g. user logged out of session, all apps quit). */
     fun clearActive() {
         setActive(pid = null, windowId = null)
+    }
+
+    /**
+     * Apply every persisted field from [cfg] in one call. Used at startup
+     * after `ConfigStore.load()` returns a non-null config; centralises the
+     * fan-out so adding a new persisted setting touches one place instead
+     * of two (here + the [configFlow] producer below).
+     */
+    fun applyConfig(cfg: AppConfig) {
+        setFilters(cfg.filters)
+        setWindowFrame(cfg.windowFrame)
+        setInspectorWidth(cfg.inspectorWidth)
+        setSwitcherSettings(cfg.switcher)
+        setInspectorVisible(cfg.inspectorVisible)
+        setShowMenubarIcon(cfg.showMenubarIcon)
+        setLaunchAtLogin(cfg.launchAtLogin)
+        setCurrentSpaceOnly(cfg.currentSpaceOnly)
+        setAccentColor(cfg.accentColor)
+    }
+
+    /**
+     * Cold flow that emits a fresh [AppConfig] snapshot every time any
+     * persisted field changes. The first emission is the current value at
+     * subscribe time; downstream callers typically `.drop(1)` so the load →
+     * combine-replay path doesn't immediately overwrite the file we just
+     * read.
+     *
+     * Built in two stages because `combine` has overloads up to 5 flows;
+     * once we cross that bound we stitch a second `combine` on top. Behaves
+     * identically to a single combine.
+     */
+    fun configFlow(): Flow<AppConfig> {
+        val core = combine(
+            filters,
+            windowFrame,
+            inspectorWidth,
+            switcherSettings,
+            inspectorVisible,
+        ) { filters, frame, inspW, switcher, inspectorVisible ->
+            AppConfig(
+                filters = filters,
+                windowFrame = frame,
+                inspectorWidth = inspW,
+                switcher = switcher,
+                inspectorVisible = inspectorVisible,
+            )
+        }
+        return combine(
+            core,
+            showMenubarIcon,
+            launchAtLogin,
+            currentSpaceOnly,
+            accentColor,
+        ) { base, menubar, launchAtLogin, currentSpaceOnly, accent ->
+            base.copy(
+                showMenubarIcon = menubar,
+                launchAtLogin = launchAtLogin,
+                currentSpaceOnly = currentSpaceOnly,
+                accentColor = accent,
+            )
+        }
     }
 
     /**

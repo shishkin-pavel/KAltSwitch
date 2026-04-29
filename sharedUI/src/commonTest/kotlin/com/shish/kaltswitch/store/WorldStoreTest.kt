@@ -1,5 +1,12 @@
 package com.shish.kaltswitch.store
 
+import com.shish.kaltswitch.config.AccentColorChoice
+import com.shish.kaltswitch.config.AppConfig
+import com.shish.kaltswitch.config.SwitcherSettings
+import com.shish.kaltswitch.config.WindowFrame
+import com.shish.kaltswitch.model.FilteringRules
+import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.test.runTest
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertNull
@@ -76,6 +83,44 @@ class WorldStoreTest {
         assertNull(store.activeWindowId.value)
         // Log untouched.
         assertEquals(listOf(20, 10), store.state.value.log.appOrder())
+    }
+
+    @Test
+    fun applyConfig_seedsEveryPersistedField() = runTest {
+        val store = WorldStore()
+        val cfg = AppConfig(
+            schemaVersion = 3,
+            filters = FilteringRules(),
+            windowFrame = WindowFrame(x = 100.0, y = 200.0, width = 480.0, height = 720.0),
+            inspectorWidth = 555.0,
+            switcher = SwitcherSettings(showDelayMs = 50L, previewEnabled = true),
+            inspectorVisible = false,
+            showMenubarIcon = false,
+            launchAtLogin = true,
+            currentSpaceOnly = true,
+            accentColor = AccentColorChoice.UseSystem,
+        )
+
+        store.applyConfig(cfg)
+
+        // Round-trip via configFlow: first emission is the current snapshot.
+        val snapshot = store.configFlow().first()
+        // schemaVersion isn't part of the round-trip (configFlow uses default).
+        assertEquals(cfg.copy(schemaVersion = 3), snapshot)
+    }
+
+    @Test
+    fun configFlow_reEmitsOnSinglePersistedFieldChange() = runTest {
+        val store = WorldStore()
+        val initial = store.configFlow().first()
+
+        store.setLaunchAtLogin(true)
+        val afterLaunchAtLogin = store.configFlow().first()
+        assertEquals(initial.copy(launchAtLogin = true), afterLaunchAtLogin)
+
+        store.setInspectorWidth(640.0)
+        val afterWidth = store.configFlow().first()
+        assertEquals(initial.copy(launchAtLogin = true, inspectorWidth = 640.0), afterWidth)
     }
 
     @Test
