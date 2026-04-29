@@ -70,22 +70,33 @@ final class HotkeyController {
     // MARK: - Carbon hot keys
 
     private func installEventHandler() {
-        var spec = EventTypeSpec(
-            eventClass: OSType(kEventClassKeyboard),
-            eventKind: UInt32(kEventHotKeyPressed)
-        )
+        // Subscribe to both Pressed (open / advance) and Released (stop the
+        // auto-advance "running" mode) for our hotkey IDs. Carbon fires
+        // Released only when the *non-modifier* key (tab / grave) goes up;
+        // letting go of cmd alone counts as a modifier-state change, not a
+        // hotkey release. That's exactly the signal the controller wants to
+        // distinguish "user finished holding tab/grave" from "OS keyboard
+        // auto-repeat firing the same combo again".
+        let specs: [EventTypeSpec] = [
+            EventTypeSpec(eventClass: OSType(kEventClassKeyboard),
+                          eventKind: UInt32(kEventHotKeyPressed)),
+            EventTypeSpec(eventClass: OSType(kEventClassKeyboard),
+                          eventKind: UInt32(kEventHotKeyReleased)),
+        ]
         let selfPtr = Unmanaged.passUnretained(self).toOpaque()
         // GetEventDispatcherTarget is the canonical target for global hot keys —
         // GetApplicationEventTarget worked but per alt-tab-macos's notes it
         // requires AX permission to be effective in some configurations.
-        let status = InstallEventHandler(
-            GetEventDispatcherTarget(),
-            hotkeyHandlerCallback,
-            1,
-            &spec,
-            selfPtr,
-            &eventHandler
-        )
+        let status = specs.withUnsafeBufferPointer { buf in
+            InstallEventHandler(
+                GetEventDispatcherTarget(),
+                hotkeyHandlerCallback,
+                Int(buf.count),
+                buf.baseAddress,
+                selfPtr,
+                &eventHandler
+            )
+        }
         if status != noErr {
             NSLog("KAltSwitch: InstallEventHandler failed: %d", status)
         }
@@ -129,6 +140,16 @@ final class HotkeyController {
         }
         DispatchQueue.main.async { [weak self] in
             self?.controller.onShortcut(entry: entry, reverse: reverse)
+        }
+    }
+
+    /// Fires when a user releases tab/grave while the modifier is still held.
+    /// All four registered IDs route here uniformly — direction doesn't matter,
+    /// the controller just needs to know "user is no longer holding the alt
+    /// key, stop auto-advancing".
+    fileprivate func handleHotkeyReleased(id: UInt32) {
+        DispatchQueue.main.async { [weak self] in
+            self?.controller.onShortcutKeyReleased()
         }
     }
 
@@ -220,7 +241,9 @@ private final class TapThread {
 }
 
 /// C handler for Carbon hot-key events. Marshals the parameters out of the OSStatus
-/// world and into a Swift method on the controller.
+/// world and into a Swift method on the controller. Dispatches by event kind:
+/// Pressed → onShortcut (advance / open); Released → onShortcutKeyReleased
+/// (stop auto-running).
 private let hotkeyHandlerCallback: EventHandlerUPP = { _, eventRef, refcon -> OSStatus in
     guard let eventRef = eventRef, let refcon = refcon else { return OSStatus(eventNotHandledErr) }
     var hotKeyID = EventHotKeyID()
@@ -236,7 +259,12 @@ private let hotkeyHandlerCallback: EventHandlerUPP = { _, eventRef, refcon -> OS
     if status != noErr { return status }
     guard hotKeyID.signature == 0x4B414C54 else { return OSStatus(eventNotHandledErr) }
     let me = Unmanaged<HotkeyController>.fromOpaque(refcon).takeUnretainedValue()
-    me.handleHotkey(id: hotKeyID.id)
+    let kind = GetEventKind(eventRef)
+    switch Int(kind) {
+    case kEventHotKeyPressed:  me.handleHotkey(id: hotKeyID.id)
+    case kEventHotKeyReleased: me.handleHotkeyReleased(id: hotKeyID.id)
+    default: return OSStatus(eventNotHandledErr)
+    }
     return noErr
 }
 
