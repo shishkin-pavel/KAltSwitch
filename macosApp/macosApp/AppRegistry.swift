@@ -10,9 +10,10 @@ import ComposeAppMac
 /// **Why no KVO on `NSRunningApplication`?** Swift's KVO bridge is unsafe on
 /// `NSRunningApplication`: AppKit's `runningApplicationNotificationCallback`
 /// crashes with a pointer-authentication failure during termination cleanup
-/// when active observations exist. We instead refresh `pushAppRecord` on
-/// every workspace activation, which catches the common runtime mutation
-/// (apps promoting `.accessory` → `.regular` on first-window-open).
+/// when active observations exist. We instead refresh the per-pid record
+/// (via `AppRecordKt.upsertAppRecord`) on every workspace activation, which
+/// catches the common runtime mutation (apps promoting `.accessory` →
+/// `.regular` on first-window-open).
 final class AppRegistry {
     private let store: WorldStore
     private var watchers: [pid_t: AxAppWatcher] = [:]
@@ -244,7 +245,7 @@ final class AppRegistry {
         // shows up live in the inspector and the rule pipeline. Cheap and
         // — critically — does not lean on Swift's KVO bridge, which crashes
         // intermittently on NSRunningApplication during termination cleanup.
-        pushAppRecord(nsApp)
+        AppRecordKt.upsertAppRecord(pid: nsApp.processIdentifier, store: store)
         // ChatGPT and similar apps refuse AX subscriptions on launch with
         // kAXErrorAPIDisabled. They typically accept once they've been activated by
         // the user — kick the watcher to retry subscriptions and refresh windows.
@@ -253,7 +254,7 @@ final class AppRegistry {
 
     private func handleHiddenChange(_ note: Notification, hidden: Bool) {
         guard let nsApp = note.userInfo?[NSWorkspace.applicationUserInfoKey] as? NSRunningApplication else { return }
-        pushAppRecord(nsApp)
+        AppRecordKt.upsertAppRecord(pid: nsApp.processIdentifier, store: store)
     }
 
     // MARK: - Spawn / push
@@ -264,7 +265,7 @@ final class AppRegistry {
         guard nsApp.activationPolicy != .prohibited else { return }
         if watchers[pid] != nil { return }
 
-        pushAppRecord(nsApp)
+        AppRecordKt.upsertAppRecord(pid: pid, store: store)
         let watcher = AxAppWatcher(pid: pid, store: store)
         // Window-set mutation may flip activationPolicy back the other way
         // (apps that drop to `.accessory` after their last window closes).
@@ -273,41 +274,11 @@ final class AppRegistry {
         watcher.onWindowsChanged = { [weak self] pid in
             DispatchQueue.main.async { [weak self] in
                 guard let self = self else { return }
-                guard let live = NSRunningApplication(processIdentifier: pid) else { return }
-                self.pushAppRecord(live)
+                AppRecordKt.upsertAppRecord(pid: pid, store: self.store)
             }
         }
         watchers[pid] = watcher
         watcher.start()
-    }
-
-    private func pushAppRecord(_ nsApp: NSRunningApplication) {
-        let policy: Int64 = {
-            switch nsApp.activationPolicy {
-            case .regular: return 0
-            case .accessory: return 1
-            case .prohibited: return 2
-            @unknown default: return 2
-            }
-        }()
-        let launchMs: Int64 = {
-            guard let date = nsApp.launchDate else { return 0 }
-            return Int64(date.timeIntervalSince1970 * 1000)
-        }()
-        store.upsertAppFields(
-            pid: nsApp.processIdentifier,
-            bundleId: nsApp.bundleIdentifier,
-            name: nsApp.localizedName ?? nsApp.bundleIdentifier ?? "Unknown",
-            activationPolicyRaw: policy,
-            isHidden: nsApp.isHidden,
-            isFinishedLaunching: nsApp.isFinishedLaunching,
-            executablePath: nsApp.executableURL?.path,
-            launchDateMillis: launchMs
-        )
-        // Icon → 128×128 PNG conversion lives in `IconLoader.kt` so the Skia
-        // contract (PNG bytes per-pid) has one home and the byte-by-byte
-        // KotlinByteArray copy that this used to do on the Swift side is gone.
-        IconLoaderKt.renderAndStoreAppIcon(pid: nsApp.processIdentifier, store: store)
     }
 }
 

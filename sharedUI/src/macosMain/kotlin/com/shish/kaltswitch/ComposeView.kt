@@ -141,13 +141,6 @@ fun observeLaunchAtLogin(onChange: (Boolean) -> Unit) {
         .launchIn(bridgeScope)
 }
 
-/** Switcher / inspector hide off-current-space windows when this is on. */
-fun observeCurrentSpaceOnly(onChange: (Boolean) -> Unit) {
-    store.currentSpaceOnly
-        .onEach(onChange)
-        .launchIn(bridgeScope)
-}
-
 /** Compose-reported visible-panel size in dp, used by Swift to size the
  *  NSVisualEffectView that draws the blur backdrop. `null` means there's
  *  no active session — Swift hides the blur view. */
