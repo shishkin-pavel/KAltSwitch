@@ -128,15 +128,27 @@ final class AppRegistry {
         watchers[pid]?.raiseWindow(windowId: windowId)
     }
 
-    /// Final activation on cmd-release: bring the app to front, mark the
-    /// chosen window as main, raise it. If `windowId` is nil we just activate
-    /// the app (its own focus rules pick the window).
+    /// Final activation on cmd-release. Order matters:
+    ///  1. Mark target window as main + raise it inside its app, BEFORE
+    ///     activating the app — otherwise some apps (Safari, iTerm, IDEs)
+    ///     bring forward whatever was their last-frontmost window when they
+    ///     first activate, ignoring our subsequent kAXMain change.
+    ///     This is the same order AeroSpace uses in `MacApp.nativeFocus`.
+    ///  2. Activate the app to bring it to the foreground.
     func commit(pid: pid_t, windowId: Int64?) {
-        guard let nsApp = NSRunningApplication(processIdentifier: pid) else { return }
-        nsApp.activate(options: [.activateIgnoringOtherApps])
-        if let wid = windowId {
-            watchers[pid]?.makeWindowMain(windowId: wid)
+        guard let nsApp = NSRunningApplication(processIdentifier: pid) else {
+            NSLog("KAltSwitch: commit(pid=%d) — no NSRunningApplication", pid)
+            return
         }
+        if let wid = windowId {
+            let raised = watchers[pid]?.makeWindowMain(windowId: wid) ?? false
+            NSLog("KAltSwitch: commit pid=%d wid=%lld raise=%@", pid, wid,
+                  raised ? "ok" : "fail")
+        } else {
+            NSLog("KAltSwitch: commit pid=%d (app-only, no window)", pid)
+        }
+        let activated = nsApp.activate(options: [.activateIgnoringOtherApps])
+        NSLog("KAltSwitch: commit activate=%@", activated ? "ok" : "fail")
     }
 
     private func checkTrust() {

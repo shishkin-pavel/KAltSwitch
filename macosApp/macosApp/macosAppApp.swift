@@ -62,7 +62,17 @@ class AppDelegate: NSObject, NSApplicationDelegate {
             registry?.raise(pid: pid_t(truncatingIfNeeded: pid.int32Value),
                             windowId: windowId.int64Value)
         }
-        controller.onCommitActivation = { [weak registry] pid, windowId in
+        controller.onCommitActivation = { [weak self, weak registry] pid, windowId in
+            // Hide the overlay BEFORE asking macOS to activate the target app.
+            // The StateFlow observer that orderOuts the panel is dispatched
+            // through the bridge scope and would otherwise fire AFTER we've
+            // already issued the activate call, leaving the system to negotiate
+            // focus while our key panel is still on screen — that's enough to
+            // make `nsApp.activate` silently no-op.
+            NSLog("KAltSwitch: onCommitActivation pid=%d wid=%@",
+                  pid.int32Value,
+                  windowId.map { String($0.int64Value) } ?? "nil")
+            self?.overlayWindow?.orderOut(nil)
             registry?.commit(pid: pid_t(truncatingIfNeeded: pid.int32Value),
                              windowId: windowId?.int64Value)
         }
