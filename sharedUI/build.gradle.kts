@@ -1,5 +1,3 @@
-import org.jetbrains.kotlin.gradle.dsl.JvmTarget
-
 plugins {
     alias(libs.plugins.kotlin.multiplatform)
     alias(libs.plugins.compose.compiler)
@@ -8,10 +6,6 @@ plugins {
 }
 
 kotlin {
-    jvm {
-        compilerOptions { jvmTarget = JvmTarget.JVM_17 }
-    }
-
     macosArm64().binaries.framework {
         baseName = "ComposeAppMac"
         isStatic = true
@@ -36,12 +30,5 @@ kotlin {
             implementation(libs.compose.ui.test)
             implementation(libs.kotlinx.coroutines.test)
         }
-
-        jvmMain.dependencies {
-            implementation(compose.desktop.currentOs)
-            implementation(libs.kotlinx.coroutines.swing)
-        }
-
     }
-
 }

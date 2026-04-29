@@ -18,3 +18,5 @@ macosApp/macosApp/macosApp.entitlements
 *.jks
 *.gpg
 *yarn.lock
+# Local crash dumps from running KAltSwitch.app — diagnostic artefacts, not source.
+**/crash.dump*.txt

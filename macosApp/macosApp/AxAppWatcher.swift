@@ -92,24 +92,23 @@ final class AxAppWatcher {
     }
 
     private func handle(name: String, element: AXUIElement) {
-        // Almost every focus-relevant AX event ends in the same place:
-        // refresh window state, then ask the system who's actually frontmost +
-        // focused (`syncActiveStateFromSystem`). That single function is the
-        // sole writer of activation events into the store, so log ordering and
-        // active-pointer highlight can never drift apart.
+        // Three families of events:
+        //   - app/window-focus changes → re-snapshot windows + re-sync the
+        //     authoritative "who's active" pointers from the system. Goes
+        //     through `syncActiveStateFromSystem` which is the sole writer of
+        //     activation events, so log ordering and active-pointer highlight
+        //     can never drift apart.
+        //   - window creation → subscribe to per-window notifications, then
+        //     re-snapshot.
+        //   - per-window mutations (title/minimize/etc.) → upsert that one
+        //     window without re-reading the whole list.
+        // App hidden/shown is handled by NSWorkspace.didHide/didUnhide on the
+        // AppRegistry side, so we don't subscribe to those here.
         switch name {
-        case kAXApplicationActivatedNotification as String:
-            refreshAllWindows()
-            syncActiveStateFromSystem(store: store)
-
-        case kAXApplicationHiddenNotification as String,
-             kAXApplicationShownNotification as String:
-            // NSWorkspace's didHide/didUnhide already triggers AppRegistry to push
-            // a fresh App record with isHidden flipped. Nothing to do here.
-            break
-
-        case kAXMainWindowChangedNotification as String,
-             kAXFocusedWindowChangedNotification as String:
+        case kAXApplicationActivatedNotification as String,
+             kAXMainWindowChangedNotification as String,
+             kAXFocusedWindowChangedNotification as String,
+             kAXUIElementDestroyedNotification as String:
             refreshAllWindows()
             syncActiveStateFromSystem(store: store)
 
@@ -123,15 +122,6 @@ final class AxAppWatcher {
              kAXWindowResizedNotification as String,
              kAXWindowMovedNotification as String:
             pushWindowFromElement(element)
-
-        case kAXUIElementDestroyedNotification as String:
-            // Without a stable id-before-destruction we just re-snapshot; the gone
-            // window will simply be missing from the new list.
-            refreshAllWindows()
-            // The destroyed window may have been the active one, and macOS may have
-            // silently transitioned focus (e.g. closing Finder's last real window).
-            // Re-sync from the system rather than assuming.
-            syncActiveStateFromSystem(store: store)
 
         default:
             break
@@ -308,15 +298,6 @@ final class AxAppWatcher {
         )
     }
 
-    /// Force a re-poll of every window's `spaceIds` without reconstructing
-    /// the AX subscription tree. Called when the user changes Mission
-    /// Control space — windows can get dragged between spaces and our
-    /// snapshot is otherwise only refreshed on AX events from the app
-    /// itself (which a space switch may or may not trigger).
-    func refreshAllWindowsSpaces() {
-        refreshAllWindows()
-    }
-
     // MARK: - Raise / commit (called from main, from the SwitcherController bridge)
 
     /// `kAXRaiseAction` raises a window to the front *of its app* without making
@@ -385,8 +366,6 @@ private let windowLikeRoles: Set<String> = [
 
 private let appNotifications: [String] = [
     kAXApplicationActivatedNotification as String,
-    kAXApplicationHiddenNotification as String,
-    kAXApplicationShownNotification as String,
     kAXMainWindowChangedNotification as String,
     kAXFocusedWindowChangedNotification as String,
     kAXWindowCreatedNotification as String,

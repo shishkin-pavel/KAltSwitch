@@ -29,5 +29,4 @@ dependencyResolutionManagement {
     }
 }
 include(":sharedUI")
-include(":desktopApp")
 

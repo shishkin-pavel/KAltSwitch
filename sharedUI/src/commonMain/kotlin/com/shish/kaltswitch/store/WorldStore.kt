@@ -143,10 +143,6 @@ class WorldStore(initial: World = World(ActivationLog(), emptyMap(), emptyMap())
         _iconsByPid.update { it + (pid to png) }
     }
 
-    fun removeAppIcon(pid: Int) {
-        _iconsByPid.update { it - pid }
-    }
-
     /** Window position + height + settings-only width. See AppConfig.windowFrame. */
     private val _windowFrame = MutableStateFlow<com.shish.kaltswitch.config.WindowFrame?>(null)
     val windowFrame: StateFlow<com.shish.kaltswitch.config.WindowFrame?> = _windowFrame.asStateFlow()
@@ -189,11 +185,6 @@ class WorldStore(initial: World = World(ActivationLog(), emptyMap(), emptyMap())
         _activeWindowId.value = windowId
     }
 
-    /** Replace the entire running-apps set; used at startup seed. */
-    fun setRunningApps(apps: Map<Int, App>) {
-        _state.update { it.copy(runningApps = apps) }
-    }
-
     /** Insert or update one app's record. */
     fun upsertApp(app: App) {
         _state.update { it.copy(runningApps = it.runningApps + (app.pid to app)) }
@@ -221,15 +212,6 @@ class WorldStore(initial: World = World(ActivationLog(), emptyMap(), emptyMap())
             val existing = it.windowsByPid[window.pid].orEmpty()
             val replaced = existing.filter { w -> w.id != window.id } + window
             it.copy(windowsByPid = it.windowsByPid + (window.pid to replaced))
-        }
-    }
-
-    /** Remove a single window. */
-    fun removeWindow(pid: Int, windowId: WindowId) {
-        _state.update {
-            val existing = it.windowsByPid[pid].orEmpty()
-            val filtered = existing.filter { w -> w.id != windowId }
-            it.copy(windowsByPid = it.windowsByPid + (pid to filtered))
         }
     }
 
@@ -292,44 +274,6 @@ class WorldStore(initial: World = World(ActivationLog(), emptyMap(), emptyMap())
                 isFinishedLaunching = isFinishedLaunching,
                 executablePath = executablePath,
                 launchDateMillis = launchDateMillis.takeIf { it != 0L },
-            )
-        )
-    }
-
-    /** Same convenience for windows. */
-    @Suppress("LongParameterList")
-    fun upsertWindowFields(
-        pid: Int,
-        windowId: Long,
-        title: String,
-        role: String?,
-        subrole: String?,
-        isMinimized: Boolean,
-        isFullscreen: Boolean,
-        isFocused: Boolean,
-        isMain: Boolean,
-        x: Double,
-        y: Double,
-        width: Double,
-        height: Double,
-        spaceIds: List<Long> = emptyList(),
-    ) {
-        upsertWindow(
-            Window(
-                id = windowId,
-                pid = pid,
-                title = title,
-                role = role,
-                subrole = subrole,
-                isMinimized = isMinimized,
-                isFullscreen = isFullscreen,
-                isFocused = isFocused,
-                isMain = isMain,
-                x = x.takeIf { !it.isNaN() },
-                y = y.takeIf { !it.isNaN() },
-                width = width.takeIf { !it.isNaN() },
-                height = height.takeIf { !it.isNaN() },
-                spaceIds = spaceIds,
             )
         )
     }

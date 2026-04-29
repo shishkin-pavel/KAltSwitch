@@ -442,7 +442,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     func applicationWillFinishLaunching(_ notification: Notification) {
-        redirectStderrToLogFile()
+        StderrRedirectKt.redirectStderrToLogFile()
         // Take over cmd+tab / cmd+shift+tab / cmd+` from the system. The setting
         // persists past process exit, so we always pair this with restoration
         // in applicationWillTerminate AND in our SIGINT/SIGTERM/SIGHUP handler.
@@ -544,36 +544,6 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         NSApp.windowsMenu = windowMenu
 
         NSApp.mainMenu = mainMenu
-    }
-
-    /// Force NSLog/print/stderr to ~/Library/Logs/KAltSwitch.log, regardless of how
-    /// the app was launched. Without this, double-clicking the .app or running it
-    /// from the IDE sends stderr to /dev/null, hiding all our diagnostics.
-    ///
-    /// Each launch starts with a clearly-greppable separator so a multi-day
-    /// log can be sliced down to the most recent session in one shell command:
-    /// `awk '/^=== SESSION START/{buf=""}{buf=buf$0"\n"}END{print buf}' KAltSwitch.log`
-    /// or just `tail -n +"$(grep -n '^=== SESSION START' KAltSwitch.log | tail -1 | cut -d: -f1)" KAltSwitch.log`.
-    private func redirectStderrToLogFile() {
-        let fm = FileManager.default
-        guard let libraryLogs = fm.urls(for: .libraryDirectory, in: .userDomainMask).first?
-            .appendingPathComponent("Logs", isDirectory: true) else { return }
-        try? fm.createDirectory(at: libraryLogs, withIntermediateDirectories: true)
-        let logPath = libraryLogs.appendingPathComponent("KAltSwitch.log").path
-        // "a" = append. Both stderr and stdout get the same file so NSLog output
-        // (stderr) and any print() output (stdout) sit side-by-side.
-        freopen(logPath, "a", stderr)
-        freopen(logPath, "a", stdout)
-        setbuf(stderr, nil)
-        setbuf(stdout, nil)
-        let pid = ProcessInfo.processInfo.processIdentifier
-        let bundleVersion = (Bundle.main.infoDictionary?["CFBundleVersion"] as? String) ?? "unknown"
-        let bundleShortVersion = (Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String) ?? "unknown"
-        let date = ISO8601DateFormatter().string(from: Date())
-        // print() with explicit \n so the marker stands alone on a line; NSLog
-        // would prefix every line with a timestamp + pid.
-        print("=== SESSION START at \(date) pid=\(pid) version=\(bundleShortVersion) build=\(bundleVersion) log=\(logPath)")
-        fflush(stdout)
     }
 
     func applicationDidBecomeActive(_ notification: Notification) {

@@ -31,6 +31,10 @@ object ConfigStore {
     fun load(): AppConfig? {
         val url = configFileURL() ?: return null
         val data = NSData.dataWithContentsOfURL(url) ?: return null
+        // The cast is the documented NSString→Kotlin String bridge in K/N, even
+        // though the compiler flags it as "no cast needed" — without the cast
+        // `decodeFromString` gets an `NSString` that doesn't satisfy `String`.
+        @Suppress("USELESS_CAST")
         val text = NSString.create(data = data, encoding = NSUTF8StringEncoding) as String? ?: return null
         return try {
             configJson.decodeFromString(AppConfig.serializer(), text)

@@ -131,7 +131,7 @@ final class AppRegistry {
         log("[reg] activeSpaceDidChange — re-poll visible spaces & windows")
         refreshVisibleSpaces()
         for watcher in watchers.values {
-            watcher.refreshAllWindowsSpaces()
+            watcher.requestRefresh()
         }
     }
 
