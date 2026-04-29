@@ -62,6 +62,7 @@ import com.shish.kaltswitch.switcher.SwitcherUiState
  * Captures keyboard navigation: tab/shift-tab and ←/→ move between apps;
  * `/shift-` and ↑/↓ move between windows; Esc cancels.
  */
+@OptIn(ExperimentalComposeUiApi::class)
 @Composable
 fun SwitcherOverlay(
     ui: SwitcherUiState,
@@ -70,6 +71,7 @@ fun SwitcherOverlay(
     onEsc: () -> Unit,
     onShortcut: (SwitcherEntry) -> Unit,
     onPointAt: (appIndex: Int, windowIndex: Int?) -> Unit,
+    onPointerMoved: () -> Unit,
     onCommit: () -> Unit,
 ) {
     val focus = remember { FocusRequester() }
@@ -80,7 +82,12 @@ fun SwitcherOverlay(
             .fillMaxSize()
             .focusRequester(focus)
             .focusable()
-            .onPreviewKeyEvent { ev -> handleKey(ev, onNavigate, onEsc, onShortcut) },
+            .onPreviewKeyEvent { ev -> handleKey(ev, onNavigate, onEsc, onShortcut) }
+            // Real pointer-move events flip the controller's stationary-mouse
+            // gate. Without this, hover-Enter events fired purely because
+            // the panel just appeared under a stationary mouse would yank
+            // the keyboard-selected default cursor away.
+            .onPointerEvent(PointerEventType.Move) { onPointerMoved() },
         contentAlignment = Alignment.Center,
     ) {
         SwitcherPanel(ui, iconsByPid, onPointAt, onCommit)

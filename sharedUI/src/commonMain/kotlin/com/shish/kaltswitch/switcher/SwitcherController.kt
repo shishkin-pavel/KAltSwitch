@@ -97,6 +97,20 @@ class SwitcherController(
     private var heldShortcut: Pair<SwitcherEntry, Boolean>? = null
 
     /**
+     * Has the user moved the mouse pointer at least once since the current
+     * session opened? Until they have, [onPointAt] is ignored — the panel
+     * appearing under a stationary mouse generates Compose `Enter` events
+     * for whichever cell happens to be under the cursor, and without this
+     * gate that hover would yank the keyboard-selected default cursor away
+     * (cmd+tab landing on the third app instead of the second, cmd+\` on
+     * a different app entirely).
+     *
+     * Reset to `false` on every [openSession]; flipped to `true` by the
+     * platform layer's [onPointerMoved] when a real Move event arrives.
+     */
+    private var mouseInteracted: Boolean = false
+
+    /**
      * Hotkey press from the platform layer.
      *
      * `reverse == true` means the shift-modified variant (cmd+shift+tab,
@@ -236,6 +250,10 @@ class SwitcherController(
      */
     fun onPointAt(appIndex: Int, windowIndex: Int? = null) {
         val cur = _ui.value ?: return
+        if (!mouseInteracted) {
+            // Stationary-mouse hover at session-open. See [mouseInteracted].
+            return
+        }
         val items = cur.state.snapshot.all
         if (appIndex !in items.indices) return
         val windows = items[appIndex].windows
@@ -250,6 +268,18 @@ class SwitcherController(
         log("[ctl] onPointAt appIndex=$appIndex windowIndex=$windowIndex resolved=$nextCursor")
         _ui.value = cur.copy(state = cur.state.copy(cursor = nextCursor), previewedWindowId = null)
         schedulePreview()
+    }
+
+    /**
+     * Real `PointerEventType.Move` arrived from the overlay. Flips the
+     * stationary-mouse gate so subsequent [onPointAt] calls take effect.
+     * Idempotent — only the first call per session matters.
+     */
+    fun onPointerMoved() {
+        if (mouseInteracted) return
+        if (_ui.value == null) return
+        mouseInteracted = true
+        log("[ctl] mouse interaction began")
     }
 
     /** Click-to-commit from the overlay UI. Same end state as cmd-release. */
@@ -283,6 +313,11 @@ class SwitcherController(
         val appOrder = snapshot.all.map { it.app.pid to it.app.name }
         log("[ctl] openSession entry=$entry defaultCursor=${state.cursor} apps=$appOrder")
         _ui.value = SwitcherUiState(state, visible = false, previewedWindowId = null)
+        // Hover events that fire purely because the panel just appeared
+        // under a stationary mouse must not move the cursor — see
+        // [mouseInteracted]. Reset on each session-open so the gate kicks
+        // in fresh every time.
+        mouseInteracted = false
         store.setSwitcherActive(true)
 
         showJob?.cancel()

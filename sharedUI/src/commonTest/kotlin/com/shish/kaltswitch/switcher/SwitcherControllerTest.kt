@@ -279,6 +279,10 @@ class SwitcherControllerTest {
 
         ctl.onShortcut(SwitcherEntry.App)  // default cursor: app=1 (IDE), win=0 (IDE A id 21)
         advanceTimeBy(30)
+        // Simulate the user moving the mouse so the stationary-mouse gate
+        // (see SwitcherController.mouseInteracted) doesn't swallow the
+        // following hover events.
+        ctl.onPointerMoved()
 
         // Hover over Safari (appIndex=0). No windowIndex hint → resets to 0
         // (most-recent Safari window = id 11).
@@ -304,6 +308,7 @@ class SwitcherControllerTest {
 
         ctl.onShortcut(SwitcherEntry.App)  // app=1 (IDE), win=0
         advanceTimeBy(30)
+        ctl.onPointerMoved()
         ctl.onPointAt(appIndex = 1, windowIndex = 1)  // IDE B id 22
         assertEquals(1, ctl.ui.value?.state?.cursor?.windowIndex)
 
@@ -318,6 +323,7 @@ class SwitcherControllerTest {
         val ctl = SwitcherController(store, scope = backgroundScope)
 
         ctl.onShortcut(SwitcherEntry.App)
+        ctl.onPointerMoved()
         val before = ctl.ui.value?.state?.cursor
         ctl.onPointAt(appIndex = 99)
         assertEquals(before, ctl.ui.value?.state?.cursor)
@@ -333,6 +339,46 @@ class SwitcherControllerTest {
         val ctl = SwitcherController(store, scope = backgroundScope)
         ctl.onPointAt(appIndex = 0)
         assertNull(ctl.ui.value)
+    }
+
+    @Test
+    fun pointAt_beforeFirstMouseMove_isIgnored() = runTest {
+        // Regression: hover events that fire purely because the panel just
+        // appeared under a stationary mouse must not move the cursor away
+        // from the keyboard-selected default. Only honour onPointAt after
+        // the platform layer reports a real pointer-Move event.
+        val store = seededStore()
+        val ctl = SwitcherController(store, scope = backgroundScope)
+        ctl.onShortcut(SwitcherEntry.App)  // default cursor: app=1
+        advanceTimeBy(30)
+
+        ctl.onPointAt(appIndex = 0)  // hover-Enter from stationary mouse
+        assertEquals(1, ctl.ui.value?.state?.cursor?.appIndex)
+
+        ctl.onPointerMoved()
+        ctl.onPointAt(appIndex = 0)
+        assertEquals(0, ctl.ui.value?.state?.cursor?.appIndex)
+    }
+
+    @Test
+    fun pointAt_gateResetsForEachSession() = runTest {
+        val store = seededStore()
+        val ctl = SwitcherController(store, scope = backgroundScope)
+
+        // Session 1: arm and use the gate.
+        ctl.onShortcut(SwitcherEntry.App)
+        advanceTimeBy(30)
+        ctl.onPointerMoved()
+        ctl.onModifierReleased()  // commit → closeSession
+        advanceUntilIdle()
+        assertNull(ctl.ui.value)
+
+        // Session 2 should re-arm the gate even though the previous one
+        // ended in mouseInteracted=true.
+        ctl.onShortcut(SwitcherEntry.App)
+        advanceTimeBy(30)
+        ctl.onPointAt(appIndex = 0)  // stationary-mouse hover, ignored
+        assertEquals(1, ctl.ui.value?.state?.cursor?.appIndex)
     }
 
     @Test

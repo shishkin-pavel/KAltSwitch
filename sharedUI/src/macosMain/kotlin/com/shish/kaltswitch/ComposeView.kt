@@ -215,6 +215,7 @@ fun AttachSwitcherOverlay(window: NSWindow): ComposeNSViewDelegate = ComposeNSVi
                 onPointAt = { appIndex, windowIndex ->
                     switcherController.onPointAt(appIndex, windowIndex)
                 },
+                onPointerMoved = { switcherController.onPointerMoved() },
                 onCommit = { switcherController.onCommit() },
             )
         }
