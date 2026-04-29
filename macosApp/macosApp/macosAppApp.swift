@@ -20,14 +20,12 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     private var signalSources: [DispatchSourceSignal] = []
     /// Latest applied inspector-visibility state. `nil` until the first
     /// observeInspectorVisible callback fires; afterwards used by
-    /// persistFrame() to route saves to the right slot, and by the toggle
-    /// observer to detect state transitions vs the initial seed emission.
+    /// persistFrame() to know whether the user is editing the
+    /// settings-only width or the inspector's extra width, and by the
+    /// toggle observer to detect transitions vs the initial seed.
     private var inspectorVisibleApplied: Bool? = nil
-    /// Default widths used the first time the user toggles to a state we
-    /// have no saved frame for. Origin/height are kept from the current
-    /// window so only the width changes.
-    private let defaultWithInspectorWidth: CGFloat = 800
-    private let defaultSettingsOnlyWidth: CGFloat = 320
+    /// Used the first time the user resizes before any windowFrame is saved.
+    private let defaultSettingsOnlyWidth: Double = 320
 
     func applicationDidFinishLaunching(_ aNotification: Notification) {
         window = NSWindow(
@@ -48,15 +46,14 @@ class AppDelegate: NSObject, NSApplicationDelegate {
 
         composeDelegate = ComposeViewKt.AttachMainComposeView(window: window)
 
-        // Restore the appropriate window frame for whichever pane layout
-        // (settings-only vs settings+inspector) was last in use. K/N's
-        // StateFlow exposes `value` as `Any?`, so cast to the concrete type.
+        // Restore the saved window frame. Width recorded in windowFrame is
+        // the *settings-only* width — when the inspector starts visible we
+        // add the saved inspectorWidth on top.
         let initialInspectorVisible = (ComposeViewKt.store.inspectorVisible.value as? KotlinBoolean)?.boolValue ?? true
-        let initialFrame: WindowFrame? = initialInspectorVisible
-            ? ComposeViewKt.store.inspectorFrame.value as? WindowFrame
-            : ComposeViewKt.store.settingsFrame.value as? WindowFrame
-        if let saved = initialFrame {
-            let restored = NSRect(x: saved.x, y: saved.y, width: saved.width, height: saved.height)
+        if let saved = ComposeViewKt.store.windowFrame.value as? WindowFrame {
+            let inspW = currentInspectorWidth()
+            let totalWidth = initialInspectorVisible ? saved.width + inspW : saved.width
+            let restored = NSRect(x: saved.x, y: saved.y, width: totalWidth, height: saved.height)
             if NSScreen.screens.contains(where: { $0.visibleFrame.intersects(restored) }) {
                 window.setFrame(restored, display: false)
             }
@@ -227,36 +224,48 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         }
     }
 
+    private func currentInspectorWidth() -> Double {
+        return (ComposeViewKt.store.inspectorWidth.value as? KotlinDouble)?.doubleValue ?? 480.0
+    }
+
+    /// Width the window should collapse to when the inspector is hidden.
+    /// Reads from the saved frame; falls back to a sensible default for
+    /// first-launch persistence.
+    private func currentSettingsWidth() -> Double {
+        return ((ComposeViewKt.store.windowFrame.value as? WindowFrame)?.width) ?? defaultSettingsOnlyWidth
+    }
+
     private func persistFrame() {
         let f = window.frame
-        // Route the save to whichever slot matches the *currently displayed*
-        // pane layout. Until the first observeInspectorVisible callback
-        // settles inspectorVisibleApplied, default to the with-inspector
-        // slot — that's the launch-time layout if we have any saved frame
-        // at all.
-        let toInspectorSlot = inspectorVisibleApplied ?? true
-        if toInspectorSlot {
-            ComposeViewKt.store.saveInspectorFrame(
+        if inspectorVisibleApplied == true {
+            // Inspector visible: window.width = settingsWidth + inspectorWidth.
+            // The settings portion (Compose sidebar = fixed 260dp) doesn't
+            // change as the user resizes — all the delta goes to the
+            // inspector. So keep settingsWidth stable and recompute
+            // inspectorWidth from the new total.
+            let settingsW = currentSettingsWidth()
+            let newInspectorW = max(120, Double(f.size.width) - settingsW)
+            ComposeViewKt.store.saveInspectorWidth(width: newInspectorW)
+            ComposeViewKt.store.saveWindowFrame(
                 x: Double(f.origin.x),
                 y: Double(f.origin.y),
-                width: Double(f.size.width),
-                height: Double(f.size.height)
-            )
+                width: settingsW,
+                height: Double(f.size.height))
         } else {
-            ComposeViewKt.store.saveSettingsFrame(
+            // Inspector hidden: full window width = settings-only width.
+            ComposeViewKt.store.saveWindowFrame(
                 x: Double(f.origin.x),
                 y: Double(f.origin.y),
                 width: Double(f.size.width),
-                height: Double(f.size.height)
-            )
+                height: Double(f.size.height))
         }
     }
 
     /// Inspector visibility transitioned (or just received its initial seed
-    /// from the StateFlow). On first call, only update the title and record
-    /// the state. On subsequent calls that change state, save the current
-    /// frame to the *outgoing* slot, then resize the window to the
-    /// *incoming* slot's frame (or a sensible default if none saved yet).
+    /// from the StateFlow). On first call only update the title and record
+    /// the state. On subsequent state-changing calls, instantly grow or
+    /// shrink the window by exactly `inspectorWidth` — origin.x/y/height
+    /// unchanged so the window stretches/contracts toward the right edge.
     private func applyInspectorVisibility(_ visible: Bool) {
         guard let window = window else { return }
         window.title = visible
@@ -267,34 +276,13 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         inspectorVisibleApplied = visible
         if prev == nil || prev == visible { return }
 
-        // Save current frame to the OUTGOING slot before switching.
         let f = window.frame
-        if prev == true {
-            ComposeViewKt.store.saveInspectorFrame(
-                x: Double(f.origin.x), y: Double(f.origin.y),
-                width: Double(f.size.width), height: Double(f.size.height))
-        } else {
-            ComposeViewKt.store.saveSettingsFrame(
-                x: Double(f.origin.x), y: Double(f.origin.y),
-                width: Double(f.size.width), height: Double(f.size.height))
-        }
-
-        // Load the INCOMING slot's frame, or fall back to a width-only
-        // default. Keep origin.x stable so the window grows/shrinks toward
-        // the right edge — origin.y unchanged so vertical position holds.
-        let incoming: WindowFrame? = visible
-            ? ComposeViewKt.store.inspectorFrame.value as? WindowFrame
-            : ComposeViewKt.store.settingsFrame.value as? WindowFrame
-        let target: NSRect
-        if let saved = incoming,
-           NSScreen.screens.contains(where: { $0.visibleFrame.intersects(NSRect(x: saved.x, y: saved.y, width: saved.width, height: saved.height)) }) {
-            target = NSRect(x: saved.x, y: saved.y, width: saved.width, height: saved.height)
-        } else {
-            var r = window.frame
-            r.size.width = visible ? defaultWithInspectorWidth : defaultSettingsOnlyWidth
-            target = r
-        }
-        window.setFrame(target, display: true, animate: true)
+        let inspW = CGFloat(currentInspectorWidth())
+        let newWidth: CGFloat = visible
+            ? f.size.width + inspW
+            : max(200, f.size.width - inspW)
+        let target = NSRect(x: f.origin.x, y: f.origin.y, width: newWidth, height: f.size.height)
+        window.setFrame(target, display: true, animate: false)
     }
 
     func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool {

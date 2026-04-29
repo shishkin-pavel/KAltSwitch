@@ -48,12 +48,14 @@ data class SwitcherSettings(
 data class AppConfig(
     val schemaVersion: Int = 1,
     val filters: Filters = Filters(),
-    /** Window frame to restore when the inspector pane is visible —
-     *  the wider, "with-inspector" layout. */
-    val inspectorFrame: WindowFrame? = null,
-    /** Window frame to restore when the inspector pane is hidden —
-     *  the narrower, "settings-only" layout. */
-    val settingsFrame: WindowFrame? = null,
+    /** Window position + height + the *settings-only* width — the width
+     *  the window collapses to when the inspector is hidden. Resizing
+     *  while the inspector is visible changes [inspectorWidth] instead. */
+    val windowFrame: WindowFrame? = null,
+    /** Width added to [windowFrame.width] when the inspector pane is shown.
+     *  Toggling the inspector grows/shrinks the window by exactly this
+     *  amount, instantly — no animation. */
+    val inspectorWidth: Double = 480.0,
     val switcher: SwitcherSettings = SwitcherSettings(),
     /** Whether the right-side inspector panel is visible. When false the
      *  sidebar (Settings + Filters) takes the full window width and the

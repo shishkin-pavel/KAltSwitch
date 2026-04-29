@@ -78,28 +78,29 @@ class WorldStore(initial: World = World(ActivationLog(), emptyMap(), emptyMap())
         _iconsByPid.update { it - pid }
     }
 
-    private val _inspectorFrame = MutableStateFlow<com.shish.kaltswitch.config.WindowFrame?>(null)
-    val inspectorFrame: StateFlow<com.shish.kaltswitch.config.WindowFrame?> = _inspectorFrame.asStateFlow()
+    /** Window position + height + settings-only width. See AppConfig.windowFrame. */
+    private val _windowFrame = MutableStateFlow<com.shish.kaltswitch.config.WindowFrame?>(null)
+    val windowFrame: StateFlow<com.shish.kaltswitch.config.WindowFrame?> = _windowFrame.asStateFlow()
 
-    fun setInspectorFrame(frame: com.shish.kaltswitch.config.WindowFrame?) {
-        _inspectorFrame.value = frame
+    fun setWindowFrame(frame: com.shish.kaltswitch.config.WindowFrame?) {
+        _windowFrame.value = frame
     }
 
     /** Swift-friendly variant taking primitives. */
-    fun saveInspectorFrame(x: Double, y: Double, width: Double, height: Double) {
-        _inspectorFrame.value = com.shish.kaltswitch.config.WindowFrame(x, y, width, height)
+    fun saveWindowFrame(x: Double, y: Double, width: Double, height: Double) {
+        _windowFrame.value = com.shish.kaltswitch.config.WindowFrame(x, y, width, height)
     }
 
-    private val _settingsFrame = MutableStateFlow<com.shish.kaltswitch.config.WindowFrame?>(null)
-    val settingsFrame: StateFlow<com.shish.kaltswitch.config.WindowFrame?> = _settingsFrame.asStateFlow()
+    private val _inspectorWidth = MutableStateFlow(480.0)
+    val inspectorWidth: StateFlow<Double> = _inspectorWidth.asStateFlow()
 
-    fun setSettingsFrame(frame: com.shish.kaltswitch.config.WindowFrame?) {
-        _settingsFrame.value = frame
+    fun setInspectorWidth(width: Double) {
+        _inspectorWidth.value = width
     }
 
-    /** Swift-friendly variant for the settings-only frame. */
-    fun saveSettingsFrame(x: Double, y: Double, width: Double, height: Double) {
-        _settingsFrame.value = com.shish.kaltswitch.config.WindowFrame(x, y, width, height)
+    /** Swift-friendly accessor — kept for symmetry with `saveWindowFrame`. */
+    fun saveInspectorWidth(width: Double) {
+        _inspectorWidth.value = width
     }
 
     fun setAxTrusted(trusted: Boolean) {

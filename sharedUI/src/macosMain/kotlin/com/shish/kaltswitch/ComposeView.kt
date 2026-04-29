@@ -20,11 +20,11 @@ import platform.AppKit.NSWindow
 /** Singleton store. Swift's `AppRegistry` mutates it; the Compose UI observes it. */
 val store = WorldStore().also { initStore ->
     // Load persisted config on first access so the UI starts with the user's
-    // filters, both window frames, and the saved switcher delays.
+    // filters, the saved frame + inspector width, and switcher delays.
     ConfigStore.load()?.let { cfg ->
         initStore.setFilters(cfg.filters)
-        initStore.setInspectorFrame(cfg.inspectorFrame)
-        initStore.setSettingsFrame(cfg.settingsFrame)
+        initStore.setWindowFrame(cfg.windowFrame)
+        initStore.setInspectorWidth(cfg.inspectorWidth)
         initStore.setSwitcherSettings(cfg.switcher)
         initStore.setInspectorVisible(cfg.inspectorVisible)
     }
@@ -38,15 +38,15 @@ val store = WorldStore().also { initStore ->
 private val configScope = CoroutineScope(Dispatchers.Main).also { scope ->
     kotlinx.coroutines.flow.combine(
         store.filters,
-        store.inspectorFrame,
-        store.settingsFrame,
+        store.windowFrame,
+        store.inspectorWidth,
         store.switcherSettings,
         store.inspectorVisible,
-    ) { filters, inspFrame, setFrame, switcher, inspectorVisible ->
+    ) { filters, frame, inspW, switcher, inspectorVisible ->
         AppConfig(
             filters = filters,
-            inspectorFrame = inspFrame,
-            settingsFrame = setFrame,
+            windowFrame = frame,
+            inspectorWidth = inspW,
             switcher = switcher,
             inspectorVisible = inspectorVisible,
         )
