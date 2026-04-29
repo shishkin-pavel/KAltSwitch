@@ -50,7 +50,8 @@ class FilteredSwitcherSnapshotTest {
     fun emptyRules_appsWithWindowsAreShown_windowlessAreHidden() {
         // No rules → real windows default Show → apps with windows in Show.
         // Windowless apps fall through to phantom → no rule matches → Hide.
-        val snap = world().filteredSwitcherSnapshot(FilteringRules())
+        // Bypass the seeded ruleset by passing an explicit empty list.
+        val snap = world().filteredSwitcherSnapshot(FilteringRules(rules = emptyList()))
         val primary = snap.withWindows.map { it.app.name }
         val secondary = snap.windowless.map { it.app.name }
         assertEquals(listOf("Regular A", "Regular B", "Accessory"), primary)
@@ -300,6 +301,24 @@ class FilteredSwitcherSnapshotTest {
             snap.hide.any { it.app.pid == windowless.pid },
             "Windowless app's phantom shouldn't match a title rule",
         )
+    }
+
+    @Test
+    fun seedRules_areAppliedWhenNoExplicitRulesGiven() {
+        // Default constructor seeds [SeedRules]. Smoke-test that the seed
+        // makes it through to the classifier — an FF window with
+        // "Picture-in-Picture" in its title should be Demoted.
+        val ff = App(pid = 60, bundleId = "org.mozilla.firefox", name = "Firefox")
+        val pipWin = Window(id = 600, pid = 60, title = "YouTube — Picture-in-Picture")
+        val log = ActivationLog().record(ActivationEvent(ff.pid, pipWin.id))
+        val world = World(
+            log = log,
+            runningApps = mapOf(ff.pid to ff),
+            windowsByPid = mapOf(ff.pid to listOf(pipWin)),
+        )
+        val snap = world.filteredSnapshot(FilteringRules())
+        assertEquals(1, snap.demote.size)
+        assertEquals("Firefox", snap.demote.single().app.name)
     }
 
     @Test

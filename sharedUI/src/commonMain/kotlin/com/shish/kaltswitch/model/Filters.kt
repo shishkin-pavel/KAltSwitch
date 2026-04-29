@@ -40,10 +40,80 @@ fun Rule.matches(app: App, window: Window, isPhantom: Boolean): Boolean {
  * User's classification configuration. A single ordered list of rules —
  * no separate fallback toggles, since the rule chain plus the
  * `noVisibleWindows` predicate cover everything the old fallbacks did.
+ *
+ * The default ruleset ([SeedRules]) ships with a handful of common-sense
+ * rules tuned against a real macOS workload: hide the switcher's own
+ * untitled overlay, hide Finder's untitled menubar window, hide
+ * sub-100-px-area sliver windows, and demote Firefox PiP popouts. Two
+ * accessory-app templates ship disabled — they're examples the user can
+ * enable if those apps start polluting their switcher.
  */
 @Serializable
 data class FilteringRules(
-    val rules: List<Rule> = emptyList(),
+    val rules: List<Rule> = SeedRules,
+)
+
+/**
+ * Default ruleset. IDs are stable strings so JSON round-trips don't churn
+ * them and so the rules are recognisable in `config.json` if a user pokes
+ * around. Tests that want a guaranteed-empty list pass `rules = emptyList()`
+ * explicitly.
+ */
+val SeedRules: List<Rule> = listOf(
+    Rule(
+        id = "default-hide-kaltswitch-untitled",
+        name = "hide KAltSwitch switcher",
+        predicates = listOf(
+            BundleIdPredicate(value = "com.shish.kaltswitch"),
+            TitlePredicate(op = StringOp.Eq, value = ""),
+        ),
+        outcome = TriFilter.Hide,
+    ),
+    Rule(
+        id = "default-hide-finder-untitled",
+        name = "hide MacOs Finder",
+        predicates = listOf(
+            BundleIdPredicate(value = "com.apple.finder"),
+            TitlePredicate(op = StringOp.Eq, value = ""),
+        ),
+        outcome = TriFilter.Hide,
+    ),
+    Rule(
+        id = "default-show-accessory-windows",
+        name = "show Accessory Windows",
+        enabled = false,
+        predicates = listOf(
+            ActivationPolicyPredicate(value = PolicyValue.Accessory),
+            RolePredicate(op = StringOp.Eq, value = "Window"),
+        ),
+        outcome = TriFilter.Show,
+    ),
+    Rule(
+        id = "default-hide-accessory-windowless",
+        name = "hide Accessory windowless apps",
+        enabled = false,
+        predicates = listOf(
+            ActivationPolicyPredicate(value = PolicyValue.Accessory),
+        ),
+        outcome = TriFilter.Hide,
+    ),
+    Rule(
+        id = "default-hide-small-area",
+        name = "hide small-area windows",
+        predicates = listOf(
+            AreaPredicate(op = NumberOp.Lte, value = 100.0),
+        ),
+        outcome = TriFilter.Hide,
+    ),
+    Rule(
+        id = "default-demote-ff-pip",
+        name = "demote FF PiP windows",
+        predicates = listOf(
+            BundleIdPredicate(value = "org.mozilla.firefox"),
+            TitlePredicate(op = StringOp.Contains, value = "Picture-in-Picture"),
+        ),
+        outcome = TriFilter.Demote,
+    ),
 )
 
 /** A window decorated with the filter mode classification. */
