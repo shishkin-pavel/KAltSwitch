@@ -63,19 +63,35 @@ class SwitcherController(
     private var previewJob: Job? = null
     private var activeFlagJob: Job? = null
 
-    fun onShortcut(entry: SwitcherEntry) {
+    /**
+     * Hotkey press from the platform layer.
+     *
+     * `reverse == true` means the shift-modified variant (cmd+shift+tab,
+     * cmd+shift+`). From a closed state, opens the session with the default
+     * cursor and immediately steps backwards once. While the session is open,
+     * advances in the reverse direction.
+     */
+    fun onShortcut(entry: SwitcherEntry, reverse: Boolean = false) {
         val current = _ui.value
         if (current == null) {
             openSession(entry)
-        } else {
-            // Re-press while session is live: advance in the direction implied by
-            // the entry shortcut (cmd+tab → next app; cmd+` → next window in group).
-            val event = when (entry) {
-                SwitcherEntry.App -> SwitcherEvent.NextApp
-                SwitcherEntry.Window -> SwitcherEvent.NextWindow
+            if (reverse) {
+                navigate(reverseEventFor(entry))
             }
+        } else {
+            val event = if (reverse) reverseEventFor(entry) else forwardEventFor(entry)
             navigate(event)
         }
+    }
+
+    private fun forwardEventFor(entry: SwitcherEntry): SwitcherEvent = when (entry) {
+        SwitcherEntry.App -> SwitcherEvent.NextApp
+        SwitcherEntry.Window -> SwitcherEvent.NextWindow
+    }
+
+    private fun reverseEventFor(entry: SwitcherEntry): SwitcherEvent = when (entry) {
+        SwitcherEntry.App -> SwitcherEvent.PrevApp
+        SwitcherEntry.Window -> SwitcherEvent.PrevWindow
     }
 
     fun onNavigate(event: SwitcherEvent) {

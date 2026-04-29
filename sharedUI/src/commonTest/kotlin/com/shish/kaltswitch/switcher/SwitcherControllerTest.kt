@@ -163,6 +163,27 @@ class SwitcherControllerTest {
     }
 
     @Test
+    fun reverseShortcut_fromClosed_opensAndStepsBackOnce() = runTest {
+        val store = seededStore()
+        val ctl = SwitcherController(store, scope = backgroundScope, showDelayMs = 20)
+
+        // Default cursor for App is index 1 (IDE). Reverse shortcut should step
+        // back once → wraps to 0 (Safari).
+        ctl.onShortcut(SwitcherEntry.App, reverse = true)
+        assertEquals(0, ctl.ui.value?.state?.cursor?.appIndex)
+    }
+
+    @Test
+    fun reverseShortcut_whileOpen_navigatesPrev() = runTest {
+        val store = seededStore()
+        val ctl = SwitcherController(store, scope = backgroundScope, showDelayMs = 20)
+
+        ctl.onShortcut(SwitcherEntry.App)  // cursor app=1
+        ctl.onShortcut(SwitcherEntry.App, reverse = true)  // PrevApp → 0
+        assertEquals(0, ctl.ui.value?.state?.cursor?.appIndex)
+    }
+
+    @Test
     fun switcherActive_isTrueDuringSession_andClearsAfterCommit() = runTest {
         val store = seededStore()
         val ctl = SwitcherController(

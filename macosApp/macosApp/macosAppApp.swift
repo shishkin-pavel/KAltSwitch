@@ -117,6 +117,11 @@ class AppDelegate: NSObject, NSApplicationDelegate {
 
     func applicationWillFinishLaunching(_ notification: Notification) {
         redirectStderrToLogFile()
+        // Take over cmd+tab / cmd+shift+tab / cmd+` from the system. The setting
+        // persists past process exit, so we always pair this with restoration in
+        // applicationWillTerminate (and accept that a crash leaves the user in
+        // a broken state until next launch).
+        setSymbolicHotKeysEnabled(false)
         composeDelegate?.create()
         composeDelegate?.start()
     }
@@ -157,5 +162,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         overlayComposeDelegate?.destroy()
         composeDelegate?.stop()
         composeDelegate?.destroy()
+        // Hand cmd+tab / cmd+shift+tab / cmd+` back to macOS.
+        setSymbolicHotKeysEnabled(true)
     }
 }
