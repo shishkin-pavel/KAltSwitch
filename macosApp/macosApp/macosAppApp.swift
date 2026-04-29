@@ -137,8 +137,6 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         let panel = SwitcherOverlayWindow()
         overlayWindow = panel
         overlayComposeDelegate = ComposeViewKt.AttachSwitcherOverlay(window: panel)
-        overlayComposeDelegate?.create()
-        overlayComposeDelegate?.start()
 
         // ComposeNSViewDelegate set the panel's contentView to the Compose
         // NSView. Re-parent it so an NSVisualEffectView sits underneath —
@@ -452,8 +450,6 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         setSymbolicHotKeysEnabled(false)
         installSignalHandlers()
         installMainMenu()
-        composeDelegate?.create()
-        composeDelegate?.start()
     }
 
     /// Catch SIGINT/SIGTERM/SIGHUP (e.g. `kill <pid>`, terminal Ctrl-C, logout)
@@ -546,14 +542,6 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         NSApp.mainMenu = mainMenu
     }
 
-    func applicationDidBecomeActive(_ notification: Notification) {
-        composeDelegate?.resume()
-    }
-
-    func applicationDidResignActive(_ notification: Notification) {
-        composeDelegate?.pause()
-    }
-
     func applicationWillTerminate(_ notification: Notification) {
         let center = NotificationCenter.default
         for obs in frameObservers { center.removeObserver(obs) }
@@ -564,9 +552,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         }
         hotkeyController?.stop()
         appRegistry?.stop()
-        overlayComposeDelegate?.stop()
         overlayComposeDelegate?.destroy()
-        composeDelegate?.stop()
         composeDelegate?.destroy()
         // Hand cmd+tab / cmd+shift+tab / cmd+` back to macOS.
         setSymbolicHotKeysEnabled(true)

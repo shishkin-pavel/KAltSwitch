@@ -154,12 +154,6 @@ class ComposeNSViewDelegate(
         isDisposed = true
     }
 
-    @Suppress("Unused") fun resume() {}
-    @Suppress("Unused") fun stop() {}
-    @Suppress("Unused") fun start() {}
-    @Suppress("Unused") fun pause() {}
-    @Suppress("Unused") fun create() {}
-
     private fun onKeyboardEvent(event: KeyEvent): Boolean {
         if (isDisposed) return false
         return scene.sendKeyEvent(event)
