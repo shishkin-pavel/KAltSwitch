@@ -30,6 +30,13 @@ data class SwitcherSettings(
     val showDelayMs: Long = 20L,
     val previewDelayMs: Long = 250L,
     val previewEnabled: Boolean = false,
+    /** How long to keep the shortcut held before auto-advancing through
+     *  elements. A short tap (release before this delay) advances exactly
+     *  once. Default tuned to be longer than typical OS keyboard repeat
+     *  initial-delay so quick taps stay one-shot. */
+    val repeatInitialDelayMs: Long = 400L,
+    /** Step interval once auto-advance is engaged. */
+    val repeatIntervalMs: Long = 120L,
 )
 
 /**

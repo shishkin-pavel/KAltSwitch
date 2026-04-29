@@ -1,4 +1,5 @@
 import AppKit
+import Carbon.HIToolbox
 import ComposeAppMac
 
 /// Borderless, transparent, non-activating `NSPanel` that hosts the Compose
@@ -18,6 +19,14 @@ final class SwitcherOverlayWindow: NSPanel {
     /// that command is no longer held. The AppDelegate wires this to
     /// `SwitcherController.onModifierReleased`.
     var onCommandReleased: (() -> Void)?
+
+    /// Called when the alt-key (tab or grave/backtick) is released while the
+    /// command modifier is still held. Lets the Kotlin controller distinguish
+    /// "user finished holding the shortcut" from "OS keyboard auto-repeat
+    /// firing the Carbon hotkey again" — both look identical at the Carbon
+    /// API level. AppDelegate wires this to
+    /// `SwitcherController.onShortcutKeyReleased`.
+    var onShortcutKeyReleased: (() -> Void)?
 
     init() {
         super.init(
@@ -63,14 +72,25 @@ final class SwitcherOverlayWindow: NSPanel {
         setFrame(NSRect(origin: origin, size: NSSize(width: width, height: height)), display: false)
     }
 
-    /// Catch modifier-state transitions globally. `flagsChanged` events flow to
-    /// the key window; with `canBecomeKey = true` and the panel made key on
-    /// session start, this fires for every press/release of a modifier key
-    /// while the session is live — no AX permission required.
+    /// Catch modifier-state transitions and tab/grave keyUp events globally.
+    /// `flagsChanged` and key events flow to the key window; with
+    /// `canBecomeKey = true` and the panel made key on session start, both
+    /// fire for every relevant press/release while the session is live — no
+    /// AX permission required.
+    ///
+    /// Carbon's `RegisterEventHotKey` consumes the cmd+tab keyDown at the
+    /// dispatcher level, but the matching keyUp is *not* a hotkey event and
+    /// reaches us normally. That's the signal we need to tell auto-repeat
+    /// from a held key.
     override func sendEvent(_ event: NSEvent) {
         if event.type == .flagsChanged {
             let cmdHeld = event.modifierFlags.contains(.command)
             if !cmdHeld { onCommandReleased?() }
+        } else if event.type == .keyUp {
+            let kc = Int(event.keyCode)
+            if kc == kVK_Tab || kc == kVK_ANSI_Grave {
+                onShortcutKeyReleased?()
+            }
         }
         super.sendEvent(event)
     }

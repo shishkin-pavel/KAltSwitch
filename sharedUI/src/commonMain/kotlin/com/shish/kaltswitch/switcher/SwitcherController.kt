@@ -71,14 +71,47 @@ class SwitcherController(
     private var previewJob: Job? = null
 
     /**
+     * Auto-advance ("running") job. Started on the first hotkey press and
+     * scheduled to fire `repeatInitialDelayMs` later, then advance every
+     * `repeatIntervalMs` until the user releases the alt-key (tab/grave) or
+     * the session ends. Cancelled on each fresh press so a quick re-tap
+     * doesn't immediately enter run-mode mid-cooldown.
+     */
+    private var pressJob: Job? = null
+
+    /**
+     * Which (entry, reverse) combo is currently being held, or `null` if
+     * none. We can't tell from a Carbon `RegisterEventHotKey` fire alone
+     * whether it's a fresh press or OS keyboard auto-repeat — both show up
+     * identically. The platform layer informs us via [onShortcutKeyReleased]
+     * when keyUp fires on the panel (NSPanel.sendEvent — not gated by Compose
+     * focus or AX permission).
+     *
+     * Tracking the combo (rather than a plain bool) so adding shift mid-hold
+     * (cmd+tab → cmd+shift+tab) or switching key (cmd+tab → cmd+\` while tab
+     * still held) registers as a fresh press, not as auto-repeat of the
+     * previous combo.
+     */
+    private var heldShortcut: Pair<SwitcherEntry, Boolean>? = null
+
+    /**
      * Hotkey press from the platform layer.
      *
      * `reverse == true` means the shift-modified variant (cmd+shift+tab,
      * cmd+shift+`). From a closed state, opens the session with the default
      * cursor and immediately steps backwards once. While the session is open,
      * advances in the reverse direction.
+     *
+     * Each fresh press also arms the auto-advance press job (see
+     * [shortcutKeyHeld]). Subsequent fires from OS keyboard auto-repeat are
+     * ignored — they all look identical to fresh presses at the Carbon API
+     * level, so we differentiate via the keyUp signal from the panel.
      */
     fun onShortcut(entry: SwitcherEntry, reverse: Boolean = false) {
+        val combo = entry to reverse
+        if (heldShortcut == combo) return  // OS auto-repeat — pressJob drives navigation.
+        heldShortcut = combo
+
         val current = _ui.value
         if (current == null) {
             openSession(entry)
@@ -88,6 +121,34 @@ class SwitcherController(
         } else {
             val event = if (reverse) reverseEventFor(entry) else forwardEventFor(entry)
             navigate(event)
+        }
+        startPressJob(entry, reverse)
+    }
+
+    /**
+     * Platform-layer signal that the alt-key (tab/grave) was released while
+     * the modifier (cmd) is still held. Stops auto-advancing; the session
+     * stays open so the user can keep navigating with mouse / arrows / re-press
+     * before committing on cmd-release.
+     */
+    fun onShortcutKeyReleased() {
+        heldShortcut = null
+        pressJob?.cancel(); pressJob = null
+    }
+
+    private fun startPressJob(entry: SwitcherEntry, reverse: Boolean) {
+        val event = if (reverse) reverseEventFor(entry) else forwardEventFor(entry)
+        pressJob?.cancel()
+        pressJob = scope.launch {
+            // Snapshot settings at job start; mid-flight changes apply on the
+            // next press cycle, not within this one.
+            val initialDelay = store.switcherSettings.value.repeatInitialDelayMs
+            val interval = store.switcherSettings.value.repeatIntervalMs
+            delay(initialDelay)
+            while (true) {
+                navigate(event)
+                delay(interval)
+            }
         }
     }
 
@@ -218,6 +279,11 @@ class SwitcherController(
     private fun closeSession() {
         showJob?.cancel(); showJob = null
         previewJob?.cancel(); previewJob = null
+        pressJob?.cancel(); pressJob = null
+        // Clear the held combo so the next cmd+tab is recognised as a fresh
+        // press; otherwise a stale value would mask the first onShortcut
+        // after commit/cancel and the user would see no advance.
+        heldShortcut = null
         _ui.value = null
         store.setSwitcherActive(false)
     }

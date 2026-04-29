@@ -110,6 +110,9 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         panel.onCommandReleased = { [weak controller] in
             controller?.onModifierReleased()
         }
+        panel.onShortcutKeyReleased = { [weak controller] in
+            controller?.onShortcutKeyReleased()
+        }
         // Safety net: if the panel ever loses key status while a session is
         // live (e.g. user clicked another app's window with the mouse), close
         // the session via Esc semantics. Without this the controller's

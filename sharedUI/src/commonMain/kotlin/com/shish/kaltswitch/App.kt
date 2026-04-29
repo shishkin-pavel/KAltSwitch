@@ -282,6 +282,18 @@ private fun SettingsPanel(
             range = 50f..1000f,
             onChange = { onChange(settings.copy(previewDelayMs = it)) },
         )
+        DelaySlider(
+            label = "Auto-advance after",
+            valueMs = settings.repeatInitialDelayMs,
+            range = 100f..1500f,
+            onChange = { onChange(settings.copy(repeatInitialDelayMs = it)) },
+        )
+        DelaySlider(
+            label = "Auto-advance step",
+            valueMs = settings.repeatIntervalMs,
+            range = 30f..500f,
+            onChange = { onChange(settings.copy(repeatIntervalMs = it)) },
+        )
         Row(
             verticalAlignment = Alignment.CenterVertically,
             horizontalArrangement = Arrangement.spacedBy(8.dp),

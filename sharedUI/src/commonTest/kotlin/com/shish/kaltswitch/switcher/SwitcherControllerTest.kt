@@ -157,7 +157,11 @@ class SwitcherControllerTest {
         // Default cursor: app=1.
         assertEquals(1, ctl.ui.value?.state?.cursor?.appIndex)
 
-        ctl.onShortcut(SwitcherEntry.App)  // re-press: NextApp → wraps to 0
+        // Real re-press: user releases tab fully, then presses again. Without
+        // the keyUp signal between, the second onShortcut would be treated
+        // as OS auto-repeat of the held key and ignored.
+        ctl.onShortcutKeyReleased()
+        ctl.onShortcut(SwitcherEntry.App)  // NextApp → wraps to 0
         assertEquals(0, ctl.ui.value?.state?.cursor?.appIndex)
     }
 
@@ -178,6 +182,8 @@ class SwitcherControllerTest {
         val ctl = SwitcherController(store, scope = backgroundScope)
 
         ctl.onShortcut(SwitcherEntry.App)  // cursor app=1
+        // Adding shift mid-hold counts as a different combo, so the second
+        // onShortcut is a fresh press, not auto-repeat.
         ctl.onShortcut(SwitcherEntry.App, reverse = true)  // PrevApp → 0
         assertEquals(0, ctl.ui.value?.state?.cursor?.appIndex)
     }
@@ -268,6 +274,97 @@ class SwitcherControllerTest {
         val ctl = SwitcherController(store, scope = backgroundScope)
         ctl.onPointAt(appIndex = 0)
         assertNull(ctl.ui.value)
+    }
+
+    @Test
+    fun heldShortcut_doesNotAdvanceInsideInitialDelay() = runTest {
+        val store = seededStore()
+        store.setSwitcherSettings(SwitcherSettings(repeatInitialDelayMs = 400, repeatIntervalMs = 100))
+        val ctl = SwitcherController(store, scope = backgroundScope)
+
+        ctl.onShortcut(SwitcherEntry.App)  // advances once → cursor=1
+        advanceTimeBy(20)
+        assertEquals(1, ctl.ui.value?.state?.cursor?.appIndex)
+
+        // Inside the initial delay window — no auto-advance yet.
+        advanceTimeBy(350)
+        assertEquals(1, ctl.ui.value?.state?.cursor?.appIndex)
+    }
+
+    @Test
+    fun heldShortcut_autoAdvancesPastInitialDelay() = runTest {
+        val store = seededStore()
+        store.setSwitcherSettings(SwitcherSettings(repeatInitialDelayMs = 400, repeatIntervalMs = 100))
+        val ctl = SwitcherController(store, scope = backgroundScope)
+
+        ctl.onShortcut(SwitcherEntry.App)  // cursor=1 (IDE)
+        advanceTimeBy(420)  // first auto-tick fires at t=400
+        assertEquals(0, ctl.ui.value?.state?.cursor?.appIndex)  // wrapped Safari
+
+        advanceTimeBy(100)  // next tick at t=500
+        assertEquals(1, ctl.ui.value?.state?.cursor?.appIndex)  // back to IDE
+
+        advanceTimeBy(100)  // tick at t=600
+        assertEquals(0, ctl.ui.value?.state?.cursor?.appIndex)
+    }
+
+    @Test
+    fun shortcutKeyReleased_stopsAutoAdvance() = runTest {
+        val store = seededStore()
+        store.setSwitcherSettings(SwitcherSettings(repeatInitialDelayMs = 200, repeatIntervalMs = 100))
+        val ctl = SwitcherController(store, scope = backgroundScope)
+
+        ctl.onShortcut(SwitcherEntry.App)
+        advanceTimeBy(220)  // auto-advance fires once → cursor=0
+        assertEquals(0, ctl.ui.value?.state?.cursor?.appIndex)
+
+        ctl.onShortcutKeyReleased()
+        advanceTimeBy(500)  // would have fired ~5 more times if still running
+        // Cursor stayed put after release.
+        assertEquals(0, ctl.ui.value?.state?.cursor?.appIndex)
+    }
+
+    @Test
+    fun osAutoRepeat_isIgnoredWhileSameComboHeld() = runTest {
+        val store = seededStore()
+        store.setSwitcherSettings(SwitcherSettings(repeatInitialDelayMs = 1_000, repeatIntervalMs = 1_000))
+        val ctl = SwitcherController(store, scope = backgroundScope)
+
+        ctl.onShortcut(SwitcherEntry.App)  // cursor=1
+        // OS keyboard auto-repeat fires the same hotkey at e.g. 30ms intervals.
+        // Without keyUp between, those must NOT advance — initial delay is
+        // far longer than the simulated repeat burst.
+        repeat(10) { ctl.onShortcut(SwitcherEntry.App) }
+        advanceTimeBy(50)
+        assertEquals(1, ctl.ui.value?.state?.cursor?.appIndex)
+    }
+
+    @Test
+    fun shiftAddedMidHold_isFreshPress() = runTest {
+        val store = seededStore()
+        val ctl = SwitcherController(store, scope = backgroundScope)
+
+        ctl.onShortcut(SwitcherEntry.App)  // cursor=1
+        // User adds shift while still holding tab → different combo, treat
+        // as fresh press → step backwards.
+        ctl.onShortcut(SwitcherEntry.App, reverse = true)
+        assertEquals(0, ctl.ui.value?.state?.cursor?.appIndex)
+    }
+
+    @Test
+    fun esc_clearsHeldShortcut_soNextPressAdvances() = runTest {
+        val store = seededStore()
+        val ctl = SwitcherController(store, scope = backgroundScope)
+
+        ctl.onShortcut(SwitcherEntry.App)  // cursor=1
+        advanceTimeBy(30)
+        ctl.onEsc()  // closes session
+        advanceUntilIdle()
+
+        // Without resetting heldShortcut on close, the next press would be
+        // mistaken for auto-repeat of the same combo and ignored.
+        ctl.onShortcut(SwitcherEntry.App)
+        assertEquals(1, ctl.ui.value?.state?.cursor?.appIndex)
     }
 
     @Test
