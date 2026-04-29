@@ -48,13 +48,19 @@ data class SwitcherUiState(
 class SwitcherController(
     private val store: WorldStore,
     private val scope: CoroutineScope,
-    private val showDelayMs: Long = 20L,
-    private val previewDelayMs: Long = 250L,
-    /** Off for MVP — see "Preview-raise on selection" in
-     *  docs/window-state-attributes.md §8. The full code path stays compiled
-     *  and tested so we can re-enable post-MVP without resurrecting it. */
-    private val previewEnabled: Boolean = false,
 ) {
+    // Live-read settings from the store so changes in the inspector's
+    // Settings panel take effect on the next session start without
+    // restarting the controller. The current values are sampled at
+    // session-start (showDelay) and at every cursor change (previewDelay /
+    // previewEnabled), so an in-flight session keeps its initial cadence.
+    private val showDelayMs: Long get() = store.switcherSettings.value.showDelayMs
+    private val previewDelayMs: Long get() = store.switcherSettings.value.previewDelayMs
+
+    /** Off for MVP by default — see "Preview-raise on selection" in
+     *  docs/window-state-attributes.md §8. The full code path stays compiled
+     *  and tested; the inspector exposes a toggle so users can opt in. */
+    private val previewEnabled: Boolean get() = store.switcherSettings.value.previewEnabled
     var onRaiseWindow: ((pid: Int, windowId: WindowId) -> Unit)? = null
     var onCommitActivation: ((pid: Int, windowId: WindowId?) -> Unit)? = null
 

@@ -16,6 +16,8 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     private var overlayWindow: SwitcherOverlayWindow? = nil
     private var overlayComposeDelegate: ComposeNSViewDelegate? = nil
     private var frameObservers: [NSObjectProtocol] = []
+    private var statusItem: NSStatusItem? = nil
+    private var signalSources: [DispatchSourceSignal] = []
 
     func applicationDidFinishLaunching(_ aNotification: Notification) {
         window = NSWindow(
@@ -26,6 +28,11 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         )
         window.title = "KAltSwitch"
         window.center()
+        // Closing or cmd+W on the inspector hides it instead of releasing.
+        // The app keeps running (see applicationShouldTerminateAfterLastWindowClosed)
+        // so cmd+tab still works; the menubar item or Spotlight relaunch can
+        // bring the inspector back.
+        window.isReleasedWhenClosed = false
 
         composeDelegate = ComposeViewKt.AttachMainComposeView(window: window)
 
@@ -124,6 +131,64 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         ComposeViewKt.observeSwitcherVisibility { [weak self] visible in
             self?.overlayWindow?.alphaValue = visible.boolValue ? 1 : 0
         }
+
+        installStatusItem()
+    }
+
+    /// Add a menubar icon so the user can reopen the inspector after closing
+    /// it (the app stays alive without any visible windows since
+    /// `applicationShouldTerminateAfterLastWindowClosed` returns false).
+    private func installStatusItem() {
+        let item = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
+        if let button = item.button {
+            // SF Symbol — falls back to a text glyph on older systems.
+            if let img = NSImage(systemSymbolName: "rectangle.stack",
+                                 accessibilityDescription: "KAltSwitch") {
+                img.isTemplate = true
+                button.image = img
+            } else {
+                button.title = "K⌥"
+            }
+            button.toolTip = "KAltSwitch"
+        }
+        let menu = NSMenu()
+        let openItem = NSMenuItem(
+            title: "Open Inspector",
+            action: #selector(openInspectorFromMenu),
+            keyEquivalent: "")
+        openItem.target = self
+        menu.addItem(openItem)
+        menu.addItem(.separator())
+        menu.addItem(NSMenuItem(
+            title: "Quit KAltSwitch",
+            action: #selector(NSApplication.terminate(_:)),
+            keyEquivalent: "q"))
+        item.menu = menu
+        statusItem = item
+    }
+
+    @objc private func openInspectorFromMenu() {
+        showInspector()
+    }
+
+    /// Bring the inspector to front. Used by the menubar Open action and by
+    /// `applicationShouldHandleReopen` (Spotlight / Dock / `open -a`).
+    private func showInspector() {
+        guard let window = window else { return }
+        // If a switcher session is in flight, cancel it before stealing focus —
+        // settings always win over an in-flight switch (per PLAN.md).
+        ComposeViewKt.switcherController.onEsc()
+        window.makeKeyAndOrderFront(nil)
+        NSApp.activate(ignoringOtherApps: true)
+    }
+
+    /// Spotlight / Dock relaunch / `open -a` while we're already running.
+    /// Surfaces the inspector — same path as the menubar Open action. Returning
+    /// `true` tells AppKit we handled the reopen; otherwise it tries default
+    /// behaviour (which does nothing useful for an LSUIElement-style agent).
+    func applicationShouldHandleReopen(_ sender: NSApplication, hasVisibleWindows flag: Bool) -> Bool {
+        showInspector()
+        return true
     }
 
     private func setOverlayActive(_ active: Bool) {
@@ -149,19 +214,56 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool {
-        return true
+        // We're an alt-tab replacement — Carbon hotkeys keep working without
+        // any window visible. Keep the process alive so cmd+tab still fires
+        // after the user closes the inspector. The menubar `NSStatusItem` is
+        // the way back in.
+        return false
     }
 
     func applicationWillFinishLaunching(_ notification: Notification) {
         redirectStderrToLogFile()
         // Take over cmd+tab / cmd+shift+tab / cmd+` from the system. The setting
-        // persists past process exit, so we always pair this with restoration in
-        // applicationWillTerminate (and accept that a crash leaves the user in
-        // a broken state until next launch).
+        // persists past process exit, so we always pair this with restoration
+        // in applicationWillTerminate AND in our SIGINT/SIGTERM/SIGHUP handler.
+        // A hard crash (SIGSEGV, SIGKILL, kernel panic) still leaves the user
+        // without system cmd+tab until next launch — documented in
+        // docs/decisions.md.
         setSymbolicHotKeysEnabled(false)
+        installSignalHandlers()
         installMainMenu()
         composeDelegate?.create()
         composeDelegate?.start()
+    }
+
+    /// Catch SIGINT/SIGTERM/SIGHUP (e.g. `kill <pid>`, terminal Ctrl-C, logout)
+    /// and run the same teardown as applicationWillTerminate before exiting.
+    /// Pattern from alt-tab-macos's `Sigtrap`: ignore the default action with
+    /// `signal(_:SIG_IGN)` so the process isn't killed before our handler runs,
+    /// then observe via `DispatchSourceSignal` (off the actual signal context,
+    /// so it's safe to call non-async-signal-safe APIs like CGS).
+    private func installSignalHandlers() {
+        let sigs: [Int32] = [SIGINT, SIGTERM, SIGHUP]
+        for sig in sigs { signal(sig, SIG_IGN) }
+        for sig in sigs {
+            let src = DispatchSource.makeSignalSource(signal: sig, queue: .main)
+            src.setEventHandler { [weak self] in
+                NSLog("KAltSwitch: received signal %d, restoring symbolic hotkeys and exiting", sig)
+                self?.gracefulShutdown()
+                exit(0)
+            }
+            src.resume()
+            signalSources.append(src)
+        }
+    }
+
+    /// Tear down anything that has cross-process side-effects. Must be safe
+    /// to run from a dispatch queue (i.e. not a raw signal handler).
+    private func gracefulShutdown() {
+        hotkeyController?.stop()
+        // Most important: restore the system's command-tab so the user isn't
+        // stuck without a switcher after we're gone.
+        setSymbolicHotKeysEnabled(true)
     }
 
     /// Standard macOS main menu: app menu (About / Hide / Quit) + Window menu

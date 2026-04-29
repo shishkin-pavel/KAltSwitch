@@ -20,21 +20,27 @@ import platform.AppKit.NSWindow
 /** Singleton store. Swift's `AppRegistry` mutates it; the Compose UI observes it. */
 val store = WorldStore().also { initStore ->
     // Load persisted config on first access so the UI starts with the user's
-    // filters and the inspector window restores its last frame.
+    // filters, the inspector window restores its last frame, and the switcher
+    // honours the saved show/preview delays.
     ConfigStore.load()?.let { cfg ->
         initStore.setFilters(cfg.filters)
         initStore.setInspectorFrame(cfg.inspectorFrame)
+        initStore.setSwitcherSettings(cfg.switcher)
     }
 }
 
 /**
- * Persists config changes to disk. Combine emits whenever either of the underlying
+ * Persists config changes to disk. Combine emits whenever any of the underlying
  * StateFlows changes; `drop(1)` skips the initial combined emission so we don't
  * immediately overwrite the file we just loaded.
  */
 private val configScope = CoroutineScope(Dispatchers.Main).also { scope ->
-    kotlinx.coroutines.flow.combine(store.filters, store.inspectorFrame) { filters, frame ->
-        AppConfig(filters = filters, inspectorFrame = frame)
+    kotlinx.coroutines.flow.combine(
+        store.filters,
+        store.inspectorFrame,
+        store.switcherSettings,
+    ) { filters, frame, switcher ->
+        AppConfig(filters = filters, inspectorFrame = frame, switcher = switcher)
     }
         .drop(1)
         .onEach { ConfigStore.save(it) }
@@ -92,6 +98,7 @@ fun AttachMainComposeView(
         val activeAppPid by store.activeAppPid.collectAsState()
         val activeWindowId by store.activeWindowId.collectAsState()
         val filters by store.filters.collectAsState()
+        val switcherSettings by store.switcherSettings.collectAsState()
         App(
             world = world,
             axTrusted = axTrusted,
@@ -99,6 +106,8 @@ fun AttachMainComposeView(
             activeWindowId = activeWindowId,
             filters = filters,
             onFiltersChange = { store.setFilters(it) },
+            switcherSettings = switcherSettings,
+            onSwitcherSettingsChange = { store.setSwitcherSettings(it) },
             onGrantAxClick = {
                 val granted = requestAxPermission()
                 store.setAxTrusted(granted)

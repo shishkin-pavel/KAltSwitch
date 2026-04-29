@@ -1,5 +1,6 @@
 package com.shish.kaltswitch.store
 
+import com.shish.kaltswitch.config.SwitcherSettings
 import com.shish.kaltswitch.model.ActivationEvent
 import com.shish.kaltswitch.model.ActivationLog
 import com.shish.kaltswitch.model.App
@@ -38,6 +39,13 @@ class WorldStore(initial: World = World(ActivationLog(), emptyMap(), emptyMap())
 
     fun setFilters(f: Filters) {
         _filters.value = f
+    }
+
+    private val _switcherSettings = MutableStateFlow(SwitcherSettings())
+    val switcherSettings: StateFlow<SwitcherSettings> = _switcherSettings.asStateFlow()
+
+    fun setSwitcherSettings(s: SwitcherSettings) {
+        _switcherSettings.value = s
     }
 
     /** True while a switcher session is open or just closed. AX/Workspace activation

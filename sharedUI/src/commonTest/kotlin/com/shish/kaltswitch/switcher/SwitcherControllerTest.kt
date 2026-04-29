@@ -1,5 +1,6 @@
 package com.shish.kaltswitch.switcher
 
+import com.shish.kaltswitch.config.SwitcherSettings
 import com.shish.kaltswitch.model.ActivationEvent
 import com.shish.kaltswitch.model.ActivationLog
 import com.shish.kaltswitch.model.App
@@ -45,7 +46,7 @@ class SwitcherControllerTest {
     @Test
     fun shortcut_pendingState_isInvisibleUntilShowDelay() = runTest {
         val store = seededStore()
-        val ctl = SwitcherController(store, scope = backgroundScope, showDelayMs = 20, previewDelayMs = 250)
+        val ctl = SwitcherController(store, scope = backgroundScope)
 
         ctl.onShortcut(SwitcherEntry.App)
         // Pending: state exists but visible == false.
@@ -65,7 +66,7 @@ class SwitcherControllerTest {
     fun earlyRelease_commitsCursor_withoutEverShowingUi() = runTest {
         val store = seededStore()
         val commits = mutableListOf<Pair<Int, Long?>>()
-        val ctl = SwitcherController(store, scope = backgroundScope, showDelayMs = 20)
+        val ctl = SwitcherController(store, scope = backgroundScope)
             .also { it.onCommitActivation = { pid, wid -> commits += pid to wid } }
 
         ctl.onShortcut(SwitcherEntry.App)
@@ -83,7 +84,7 @@ class SwitcherControllerTest {
     fun lateRelease_aftersUiVisible_commitsSelection() = runTest {
         val store = seededStore()
         val commits = mutableListOf<Pair<Int, Long?>>()
-        val ctl = SwitcherController(store, scope = backgroundScope, showDelayMs = 20)
+        val ctl = SwitcherController(store, scope = backgroundScope)
             .also { it.onCommitActivation = { pid, wid -> commits += pid to wid } }
 
         ctl.onShortcut(SwitcherEntry.App)
@@ -99,7 +100,7 @@ class SwitcherControllerTest {
     fun esc_cancels_withoutCommit() = runTest {
         val store = seededStore()
         val commits = mutableListOf<Pair<Int, Long?>>()
-        val ctl = SwitcherController(store, scope = backgroundScope, showDelayMs = 20)
+        val ctl = SwitcherController(store, scope = backgroundScope)
             .also { it.onCommitActivation = { pid, wid -> commits += pid to wid } }
 
         ctl.onShortcut(SwitcherEntry.App)
@@ -114,11 +115,10 @@ class SwitcherControllerTest {
     @Test
     fun previewRaise_firesAfterPreviewDelay_onlyWhenVisible() = runTest {
         val store = seededStore()
+        store.setSwitcherSettings(SwitcherSettings(showDelayMs = 20, previewDelayMs = 100, previewEnabled = true))
         val raises = mutableListOf<Pair<Int, Long>>()
-        val ctl = SwitcherController(
-            store, scope = backgroundScope,
-            showDelayMs = 20, previewDelayMs = 100, previewEnabled = true,
-        ).also { it.onRaiseWindow = { pid, wid -> raises += pid to wid } }
+        val ctl = SwitcherController(store, scope = backgroundScope)
+            .also { it.onRaiseWindow = { pid, wid -> raises += pid to wid } }
 
         ctl.onShortcut(SwitcherEntry.App)
         advanceTimeBy(50)  // UI visible at t=20; preview will fire 100ms later
@@ -131,11 +131,10 @@ class SwitcherControllerTest {
     @Test
     fun navigation_resetsPreviewTimer() = runTest {
         val store = seededStore()
+        store.setSwitcherSettings(SwitcherSettings(showDelayMs = 20, previewDelayMs = 100, previewEnabled = true))
         val raises = mutableListOf<Pair<Int, Long>>()
-        val ctl = SwitcherController(
-            store, scope = backgroundScope,
-            showDelayMs = 20, previewDelayMs = 100, previewEnabled = true,
-        ).also { it.onRaiseWindow = { pid, wid -> raises += pid to wid } }
+        val ctl = SwitcherController(store, scope = backgroundScope)
+            .also { it.onRaiseWindow = { pid, wid -> raises += pid to wid } }
 
         ctl.onShortcut(SwitcherEntry.App)
         advanceTimeBy(20)  // UI now visible
@@ -151,7 +150,7 @@ class SwitcherControllerTest {
     @Test
     fun rePress_advancesApp() = runTest {
         val store = seededStore()
-        val ctl = SwitcherController(store, scope = backgroundScope, showDelayMs = 20)
+        val ctl = SwitcherController(store, scope = backgroundScope)
 
         ctl.onShortcut(SwitcherEntry.App)
         advanceTimeBy(20)
@@ -165,7 +164,7 @@ class SwitcherControllerTest {
     @Test
     fun reverseShortcut_fromClosed_opensAndStepsBackOnce() = runTest {
         val store = seededStore()
-        val ctl = SwitcherController(store, scope = backgroundScope, showDelayMs = 20)
+        val ctl = SwitcherController(store, scope = backgroundScope)
 
         // Default cursor for App is index 1 (IDE). Reverse shortcut should step
         // back once → wraps to 0 (Safari).
@@ -176,7 +175,7 @@ class SwitcherControllerTest {
     @Test
     fun reverseShortcut_whileOpen_navigatesPrev() = runTest {
         val store = seededStore()
-        val ctl = SwitcherController(store, scope = backgroundScope, showDelayMs = 20)
+        val ctl = SwitcherController(store, scope = backgroundScope)
 
         ctl.onShortcut(SwitcherEntry.App)  // cursor app=1
         ctl.onShortcut(SwitcherEntry.App, reverse = true)  // PrevApp → 0
@@ -186,7 +185,7 @@ class SwitcherControllerTest {
     @Test
     fun switcherActive_isTrueDuringSession_clearsImmediatelyOnCommit() = runTest {
         val store = seededStore()
-        val ctl = SwitcherController(store, scope = backgroundScope, showDelayMs = 20)
+        val ctl = SwitcherController(store, scope = backgroundScope)
         ctl.onShortcut(SwitcherEntry.App)
         assertEquals(true, store.switcherActive.value)
         advanceTimeBy(30)
@@ -199,7 +198,7 @@ class SwitcherControllerTest {
     @Test
     fun switcherActive_clearsImmediatelyOnEsc() = runTest {
         val store = seededStore()
-        val ctl = SwitcherController(store, scope = backgroundScope, showDelayMs = 20)
+        val ctl = SwitcherController(store, scope = backgroundScope)
         ctl.onShortcut(SwitcherEntry.App)
         advanceTimeBy(30)
         ctl.onEsc()
@@ -210,7 +209,7 @@ class SwitcherControllerTest {
     fun pointAt_movesCursor_andCommitsOnClick() = runTest {
         val store = seededStore()
         val commits = mutableListOf<Pair<Int, Long?>>()
-        val ctl = SwitcherController(store, scope = backgroundScope, showDelayMs = 20)
+        val ctl = SwitcherController(store, scope = backgroundScope)
             .also { it.onCommitActivation = { pid, wid -> commits += pid to wid } }
 
         ctl.onShortcut(SwitcherEntry.App)  // default cursor: app=1 (IDE), win=0 (IDE A id 21)
@@ -236,7 +235,7 @@ class SwitcherControllerTest {
     @Test
     fun pointAt_sameApp_preservesWindowIndexWhenWindowIndexNull() = runTest {
         val store = seededStore()
-        val ctl = SwitcherController(store, scope = backgroundScope, showDelayMs = 20)
+        val ctl = SwitcherController(store, scope = backgroundScope)
 
         ctl.onShortcut(SwitcherEntry.App)  // app=1 (IDE), win=0
         advanceTimeBy(30)
@@ -251,7 +250,7 @@ class SwitcherControllerTest {
     @Test
     fun pointAt_outOfRange_isIgnored() = runTest {
         val store = seededStore()
-        val ctl = SwitcherController(store, scope = backgroundScope, showDelayMs = 20)
+        val ctl = SwitcherController(store, scope = backgroundScope)
 
         ctl.onShortcut(SwitcherEntry.App)
         val before = ctl.ui.value?.state?.cursor
@@ -266,7 +265,7 @@ class SwitcherControllerTest {
     @Test
     fun pointAt_beforeOpen_isIgnored() = runTest {
         val store = seededStore()
-        val ctl = SwitcherController(store, scope = backgroundScope, showDelayMs = 20)
+        val ctl = SwitcherController(store, scope = backgroundScope)
         ctl.onPointAt(appIndex = 0)
         assertNull(ctl.ui.value)
     }
@@ -274,7 +273,7 @@ class SwitcherControllerTest {
     @Test
     fun store_recordActivation_isDroppedWhileSwitcherActive() = runTest {
         val store = seededStore()
-        val ctl = SwitcherController(store, scope = backgroundScope, showDelayMs = 20)
+        val ctl = SwitcherController(store, scope = backgroundScope)
         ctl.onShortcut(SwitcherEntry.App)
 
         val before = store.state.value.log.events.size

@@ -22,6 +22,10 @@ import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.Slider
+import androidx.compose.material3.SliderDefaults
+import androidx.compose.material3.Switch
+import androidx.compose.material3.SwitchDefaults
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.remember
@@ -32,6 +36,7 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import com.shish.kaltswitch.config.SwitcherSettings
 import com.shish.kaltswitch.model.AppActivationPolicy
 import com.shish.kaltswitch.model.AppView
 import com.shish.kaltswitch.model.FilteredSnapshot
@@ -50,20 +55,31 @@ fun App(
     activeWindowId: WindowId? = null,
     filters: Filters = Filters(),
     onFiltersChange: (Filters) -> Unit = {},
+    switcherSettings: SwitcherSettings = SwitcherSettings(),
+    onSwitcherSettingsChange: (SwitcherSettings) -> Unit = {},
     onGrantAxClick: () -> Unit = {},
 ) {
     val snapshot = remember(world, filters) { world.filteredSnapshot(filters) }
     Row(Modifier.fillMaxSize().background(Color(0xFF1E1E1E))) {
-        FiltersPanel(
-            filters = filters,
-            onFiltersChange = onFiltersChange,
-            modifier = Modifier
+        Column(
+            Modifier
                 .width(260.dp)
                 .fillMaxHeight()
                 .background(Color(0xFF181818))
                 .padding(12.dp)
                 .verticalScroll(rememberScrollState()),
-        )
+            verticalArrangement = Arrangement.spacedBy(14.dp),
+        ) {
+            SettingsPanel(
+                settings = switcherSettings,
+                onChange = onSwitcherSettingsChange,
+            )
+            Spacer(Modifier.height(2.dp))
+            FiltersPanel(
+                filters = filters,
+                onFiltersChange = onFiltersChange,
+            )
+        }
         InspectorPanel(
             snapshot = snapshot,
             axTrusted = axTrusted,
@@ -241,6 +257,84 @@ private fun Color.dimmedFor(mode: TriFilter): Color = when (mode) {
 }
 
 // ─────────── Filters panel (left) ───────────
+
+@Composable
+private fun SettingsPanel(
+    settings: SwitcherSettings,
+    onChange: (SwitcherSettings) -> Unit,
+) {
+    Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+        Text(
+            "Settings",
+            color = Color.White,
+            fontWeight = FontWeight.Bold,
+            style = MaterialTheme.typography.titleMedium,
+        )
+        DelaySlider(
+            label = "Show delay",
+            valueMs = settings.showDelayMs,
+            range = 0f..200f,
+            onChange = { onChange(settings.copy(showDelayMs = it)) },
+        )
+        DelaySlider(
+            label = "Preview delay",
+            valueMs = settings.previewDelayMs,
+            range = 50f..1000f,
+            onChange = { onChange(settings.copy(previewDelayMs = it)) },
+        )
+        Row(
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(8.dp),
+        ) {
+            Switch(
+                checked = settings.previewEnabled,
+                onCheckedChange = { onChange(settings.copy(previewEnabled = it)) },
+                colors = SwitchDefaults.colors(
+                    checkedTrackColor = Color(0xFFFFC107),
+                    checkedThumbColor = Color.Black,
+                ),
+            )
+            Text(
+                "Preview-raise on hover",
+                color = Color(0xFFE0E0E0),
+                style = MaterialTheme.typography.bodySmall,
+            )
+        }
+    }
+}
+
+@Composable
+private fun DelaySlider(
+    label: String,
+    valueMs: Long,
+    range: ClosedFloatingPointRange<Float>,
+    onChange: (Long) -> Unit,
+) {
+    Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
+        Row(
+            Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.SpaceBetween,
+        ) {
+            Text(label, color = Color(0xFFE0E0E0), style = MaterialTheme.typography.bodySmall)
+            Text(
+                "${valueMs} ms",
+                color = Color(0xFFFFC107),
+                fontWeight = FontWeight.SemiBold,
+                style = MaterialTheme.typography.bodySmall,
+            )
+        }
+        Slider(
+            value = valueMs.toFloat().coerceIn(range),
+            onValueChange = { onChange(it.toLong()) },
+            valueRange = range,
+            colors = SliderDefaults.colors(
+                thumbColor = Color(0xFFFFC107),
+                activeTrackColor = Color(0xFFFFC107),
+                inactiveTrackColor = Color(0x33FFFFFF),
+            ),
+        )
+    }
+}
 
 @Composable
 private fun FiltersPanel(
