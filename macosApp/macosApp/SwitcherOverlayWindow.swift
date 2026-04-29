@@ -60,22 +60,25 @@ final class SwitcherOverlayWindow: NSPanel {
 
     /// Install the blur backdrop. Called once after the Compose contentView
     /// is attached: we re-parent the Compose NSView into a wrapper that has
-    /// an [NSVisualEffectView] underneath, both children sized to the
-    /// panel. The blur frame is then driven from Compose's reported panel
-    /// size so the rounded backdrop hugs the visible Compose surface
-    /// rather than smearing across the whole panel.
+    /// an [NSVisualEffectView] underneath. The blur frame is driven from
+    /// Compose's reported panel size so the rounded backdrop hugs the
+    /// visible Compose surface rather than smearing across the whole panel.
+    ///
+    /// Rounded corners go via `maskImage` (a 9-slice rounded rect) instead
+    /// of `layer.cornerRadius + masksToBounds`. The `cornerRadius` route
+    /// breaks NSVisualEffectView's blending on some macOS versions —
+    /// behaviour ranges from "no blur, just solid colour" to "rectangular
+    /// blur with rounded shadow". `maskImage` is the documented API and
+    /// works consistently from 10.10 onwards.
     func installBlurBackdrop(under composeView: NSView) {
         let wrapper = NSView(frame: contentView?.bounds ?? composeView.bounds)
-        wrapper.wantsLayer = true
         wrapper.autoresizingMask = [.width, .height]
 
         let blur = NSVisualEffectView(frame: .zero)
         blur.material = .hudWindow
         blur.blendingMode = .behindWindow
         blur.state = .active
-        blur.wantsLayer = true
-        blur.layer?.cornerRadius = 16
-        blur.layer?.masksToBounds = true
+        blur.maskImage = SwitcherOverlayWindow.roundedMaskImage(radius: 16)
         blur.alphaValue = 0   // session not active yet
         wrapper.addSubview(blur)
 
@@ -85,6 +88,7 @@ final class SwitcherOverlayWindow: NSPanel {
 
         contentView = wrapper
         blurView = blur
+        log("[panel] blur backdrop installed wrapperBounds=\(wrapper.bounds)")
     }
 
     /// Position and size the blur backdrop. `sizeDp` comes from Compose,
@@ -103,6 +107,22 @@ final class SwitcherOverlayWindow: NSPanel {
         )
         blur.frame = NSRect(origin: origin, size: NSSize(width: w, height: h))
         blur.alphaValue = 1
+        log("[panel] blur frame -> \(blur.frame)")
+    }
+
+    /// 9-slice rounded-rect mask image for [NSVisualEffectView.maskImage].
+    /// `capInsets` matching `radius` keeps the corners crisp regardless of
+    /// the view's runtime size.
+    private static func roundedMaskImage(radius: CGFloat) -> NSImage {
+        let edge = radius * 2 + 1
+        let img = NSImage(size: NSSize(width: edge, height: edge), flipped: false) { rect in
+            NSColor.black.setFill()
+            NSBezierPath(roundedRect: rect, xRadius: radius, yRadius: radius).fill()
+            return true
+        }
+        img.capInsets = NSEdgeInsets(top: radius, left: radius, bottom: radius, right: radius)
+        img.resizingMode = .stretch
+        return img
     }
 
     override var canBecomeKey: Bool { true }

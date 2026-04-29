@@ -152,7 +152,12 @@ private fun SwitcherPanel(
             Modifier
                 .widthIn(max = maxPanelWidth)
                 .clip(RoundedCornerShape(16.dp))
-                .background(Color(0xCC1B1B1F))
+                // Faint dark tint over the NSVisualEffectView blur Swift
+                // installs underneath. Low alpha so the blurred backdrop
+                // dominates; doubles as a fallback when the user has
+                // "Reduce transparency" enabled in Accessibility (which
+                // turns NSVisualEffectView into a solid-colour fill).
+                .background(Color(0x661B1B1F))
                 .border(1.dp, Color(0x33FFFFFF), RoundedCornerShape(16.dp))
                 // Push the box's measured size out to Swift so it can drop
                 // an NSVisualEffectView underneath, exactly matching the
