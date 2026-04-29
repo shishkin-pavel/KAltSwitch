@@ -26,7 +26,9 @@ class AppDelegate: NSObject, NSApplicationDelegate {
             backing: .buffered,
             defer: false
         )
-        window.title = "KAltSwitch"
+        // Initial title — overwritten as soon as observeInspectorVisible
+        // delivers the persisted state below.
+        window.title = "KAltSwitch — Settings/Inspector"
         window.center()
         // Closing or cmd+W on the inspector hides it instead of releasing.
         // The app keeps running (see applicationShouldTerminateAfterLastWindowClosed)
@@ -133,6 +135,14 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         }
         ComposeViewKt.observeSwitcherVisibility { [weak self] visible in
             self?.overlayWindow?.alphaValue = visible.boolValue ? 1 : 0
+        }
+        ComposeViewKt.observeInspectorVisible { [weak self] visible in
+            // Reflect inspector visibility in the window title — the user's
+            // ask was that the title flip between "Settings" and
+            // "Settings/Inspector" depending on which panes are showing.
+            self?.window?.title = visible.boolValue
+                ? "KAltSwitch — Settings/Inspector"
+                : "KAltSwitch — Settings"
         }
 
         installStatusItem()

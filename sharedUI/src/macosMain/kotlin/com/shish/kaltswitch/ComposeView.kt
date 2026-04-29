@@ -26,6 +26,7 @@ val store = WorldStore().also { initStore ->
         initStore.setFilters(cfg.filters)
         initStore.setInspectorFrame(cfg.inspectorFrame)
         initStore.setSwitcherSettings(cfg.switcher)
+        initStore.setInspectorVisible(cfg.inspectorVisible)
     }
 }
 
@@ -39,8 +40,14 @@ private val configScope = CoroutineScope(Dispatchers.Main).also { scope ->
         store.filters,
         store.inspectorFrame,
         store.switcherSettings,
-    ) { filters, frame, switcher ->
-        AppConfig(filters = filters, inspectorFrame = frame, switcher = switcher)
+        store.inspectorVisible,
+    ) { filters, frame, switcher, inspectorVisible ->
+        AppConfig(
+            filters = filters,
+            inspectorFrame = frame,
+            switcher = switcher,
+            inspectorVisible = inspectorVisible,
+        )
     }
         .drop(1)
         .onEach { ConfigStore.save(it) }
@@ -88,6 +95,15 @@ fun observeSwitcherVisibility(onChange: (Boolean) -> Unit) {
         .launchIn(bridgeScope)
 }
 
+/** Subscribe Swift to inspector-visibility transitions so the inspector
+ *  window's title can switch between "Settings" and "Settings/Inspector".
+ *  StateFlow is already conflated, so no extra `distinctUntilChanged`. */
+fun observeInspectorVisible(onChange: (Boolean) -> Unit) {
+    store.inspectorVisible
+        .onEach(onChange)
+        .launchIn(bridgeScope)
+}
+
 fun AttachMainComposeView(
     window: NSWindow,
 ): ComposeNSViewDelegate = ComposeNSViewDelegate(
@@ -99,6 +115,7 @@ fun AttachMainComposeView(
         val activeWindowId by store.activeWindowId.collectAsState()
         val filters by store.filters.collectAsState()
         val switcherSettings by store.switcherSettings.collectAsState()
+        val inspectorVisible by store.inspectorVisible.collectAsState()
         App(
             world = world,
             axTrusted = axTrusted,
@@ -108,6 +125,8 @@ fun AttachMainComposeView(
             onFiltersChange = { store.setFilters(it) },
             switcherSettings = switcherSettings,
             onSwitcherSettingsChange = { store.setSwitcherSettings(it) },
+            inspectorVisible = inspectorVisible,
+            onInspectorVisibleChange = { store.setInspectorVisible(it) },
             onGrantAxClick = {
                 val granted = requestAxPermission()
                 store.setAxTrusted(granted)

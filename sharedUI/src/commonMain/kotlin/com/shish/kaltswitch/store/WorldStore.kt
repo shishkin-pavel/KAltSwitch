@@ -48,6 +48,13 @@ class WorldStore(initial: World = World(ActivationLog(), emptyMap(), emptyMap())
         _switcherSettings.value = s
     }
 
+    private val _inspectorVisible = MutableStateFlow(true)
+    val inspectorVisible: StateFlow<Boolean> = _inspectorVisible.asStateFlow()
+
+    fun setInspectorVisible(visible: Boolean) {
+        _inspectorVisible.value = visible
+    }
+
     /** True while a switcher session is open or just closed. AX/Workspace activation
      *  events arriving in this window are dropped — they describe our own preview-raise
      *  / commit echo, not user-driven activity, and would otherwise corrupt the log. */

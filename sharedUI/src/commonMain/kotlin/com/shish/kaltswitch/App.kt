@@ -57,13 +57,22 @@ fun App(
     onFiltersChange: (Filters) -> Unit = {},
     switcherSettings: SwitcherSettings = SwitcherSettings(),
     onSwitcherSettingsChange: (SwitcherSettings) -> Unit = {},
+    inspectorVisible: Boolean = true,
+    onInspectorVisibleChange: (Boolean) -> Unit = {},
     onGrantAxClick: () -> Unit = {},
 ) {
     val snapshot = remember(world, filters) { world.filteredSnapshot(filters) }
     Row(Modifier.fillMaxSize().background(Color(0xFF1E1E1E))) {
+        // Sidebar: fixed-width when inspector is visible, full-width when
+        // hidden so the user has room to read the settings comfortably
+        // without an empty right pane.
+        val sidebarModifier = if (inspectorVisible) {
+            Modifier.width(260.dp)
+        } else {
+            Modifier.fillMaxWidth()
+        }
         Column(
-            Modifier
-                .width(260.dp)
+            sidebarModifier
                 .fillMaxHeight()
                 .background(Color(0xFF181818))
                 .padding(12.dp)
@@ -78,18 +87,22 @@ fun App(
             FiltersPanel(
                 filters = filters,
                 onFiltersChange = onFiltersChange,
+                inspectorVisible = inspectorVisible,
+                onToggleInspector = { onInspectorVisibleChange(!inspectorVisible) },
             )
         }
-        InspectorPanel(
-            snapshot = snapshot,
-            axTrusted = axTrusted,
-            activeAppPid = activeAppPid,
-            activeWindowId = activeWindowId,
-            onGrantAxClick = onGrantAxClick,
-            modifier = Modifier
-                .fillMaxHeight()
-                .padding(16.dp),
-        )
+        if (inspectorVisible) {
+            InspectorPanel(
+                snapshot = snapshot,
+                axTrusted = axTrusted,
+                activeAppPid = activeAppPid,
+                activeWindowId = activeWindowId,
+                onGrantAxClick = onGrantAxClick,
+                modifier = Modifier
+                    .fillMaxHeight()
+                    .padding(16.dp),
+            )
+        }
     }
 }
 
@@ -263,13 +276,14 @@ private fun SettingsPanel(
     settings: SwitcherSettings,
     onChange: (SwitcherSettings) -> Unit,
 ) {
-    Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+    Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
         Text(
             "Settings",
             color = Color.White,
-            fontWeight = FontWeight.Bold,
-            style = MaterialTheme.typography.titleMedium,
+            fontWeight = FontWeight.SemiBold,
+            style = MaterialTheme.typography.labelLarge,
         )
+        Spacer(Modifier.height(4.dp))
         DelaySlider(
             label = "Show delay",
             valueMs = settings.showDelayMs,
@@ -295,9 +309,16 @@ private fun SettingsPanel(
             onChange = { onChange(settings.copy(repeatIntervalMs = it)) },
         )
         Row(
+            Modifier.fillMaxWidth().padding(top = 4.dp),
             verticalAlignment = Alignment.CenterVertically,
             horizontalArrangement = Arrangement.spacedBy(8.dp),
         ) {
+            Text(
+                "Preview-raise on hover",
+                color = Color(0xFFE0E0E0),
+                style = MaterialTheme.typography.labelSmall,
+                modifier = Modifier.weight(1f),
+            )
             Switch(
                 checked = settings.previewEnabled,
                 onCheckedChange = { onChange(settings.copy(previewEnabled = it)) },
@@ -305,11 +326,6 @@ private fun SettingsPanel(
                     checkedTrackColor = Color(0xFFFFC107),
                     checkedThumbColor = Color.Black,
                 ),
-            )
-            Text(
-                "Preview-raise on hover",
-                color = Color(0xFFE0E0E0),
-                style = MaterialTheme.typography.bodySmall,
             )
         }
     }
@@ -322,17 +338,19 @@ private fun DelaySlider(
     range: ClosedFloatingPointRange<Float>,
     onChange: (Long) -> Unit,
 ) {
-    Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
+    // macOS settings-style row: label left, value right, slider underneath
+    // with reduced height. labelSmall keeps it visually quiet.
+    Column(verticalArrangement = Arrangement.spacedBy(0.dp)) {
         Row(
             Modifier.fillMaxWidth(),
             horizontalArrangement = Arrangement.SpaceBetween,
         ) {
-            Text(label, color = Color(0xFFE0E0E0), style = MaterialTheme.typography.bodySmall)
+            Text(label, color = Color(0xFFE0E0E0), style = MaterialTheme.typography.labelSmall)
             Text(
                 "${valueMs} ms",
                 color = Color(0xFFFFC107),
-                fontWeight = FontWeight.SemiBold,
-                style = MaterialTheme.typography.bodySmall,
+                fontWeight = FontWeight.Medium,
+                style = MaterialTheme.typography.labelSmall,
             )
         }
         Slider(
@@ -344,6 +362,7 @@ private fun DelaySlider(
                 activeTrackColor = Color(0xFFFFC107),
                 inactiveTrackColor = Color(0x33FFFFFF),
             ),
+            modifier = Modifier.height(20.dp),
         )
     }
 }
@@ -352,15 +371,38 @@ private fun DelaySlider(
 private fun FiltersPanel(
     filters: Filters,
     onFiltersChange: (Filters) -> Unit,
+    inspectorVisible: Boolean = true,
+    onToggleInspector: () -> Unit = {},
     modifier: Modifier = Modifier,
 ) {
     Column(modifier, verticalArrangement = Arrangement.spacedBy(10.dp)) {
-        Text(
-            "Filters",
-            color = Color.White,
-            fontWeight = FontWeight.Bold,
-            style = MaterialTheme.typography.titleMedium,
-        )
+        Row(
+            Modifier.fillMaxWidth(),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Text(
+                "Filters",
+                color = Color.White,
+                fontWeight = FontWeight.SemiBold,
+                style = MaterialTheme.typography.labelLarge,
+                modifier = Modifier.weight(1f),
+            )
+            // Toggle the right-side inspector pane. Chevron flips direction
+            // depending on which way the toggle would move the divider.
+            Box(
+                Modifier
+                    .clip(RoundedCornerShape(4.dp))
+                    .background(Color(0x22FFFFFF))
+                    .clickable(onClick = onToggleInspector)
+                    .padding(horizontal = 8.dp, vertical = 2.dp),
+            ) {
+                Text(
+                    if (inspectorVisible) "›" else "‹",
+                    color = Color(0xFFE0E0E0),
+                    style = MaterialTheme.typography.labelMedium,
+                )
+            }
+        }
         FilterGroup("Apps")
         TriRow("Windowless apps", filters.windowlessApps) { onFiltersChange(filters.copy(windowlessApps = it)) }
         TriRow("Accessory apps", filters.accessoryApps) { onFiltersChange(filters.copy(accessoryApps = it)) }

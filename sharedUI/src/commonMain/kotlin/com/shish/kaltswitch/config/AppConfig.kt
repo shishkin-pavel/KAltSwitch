@@ -50,6 +50,10 @@ data class AppConfig(
     val filters: Filters = Filters(),
     val inspectorFrame: WindowFrame? = null,
     val switcher: SwitcherSettings = SwitcherSettings(),
+    /** Whether the right-side inspector panel is visible. When false the
+     *  sidebar (Settings + Filters) takes the full window width and the
+     *  window title drops "Inspector". */
+    val inspectorVisible: Boolean = true,
 )
 
 /** Single shared JSON instance — pretty-printed so the file is hand-editable. */
