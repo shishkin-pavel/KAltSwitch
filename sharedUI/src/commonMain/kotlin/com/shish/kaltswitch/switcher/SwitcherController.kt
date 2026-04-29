@@ -7,8 +7,8 @@ import com.shish.kaltswitch.model.SwitcherSnapshot
 import com.shish.kaltswitch.model.SwitcherState
 import com.shish.kaltswitch.model.WindowId
 import com.shish.kaltswitch.model.apply
+import com.shish.kaltswitch.model.filteredSwitcherSnapshot
 import com.shish.kaltswitch.model.openSwitcher
-import com.shish.kaltswitch.model.snapshot
 import com.shish.kaltswitch.store.WorldStore
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Job
@@ -114,7 +114,9 @@ class SwitcherController(
     }
 
     private fun openSession(entry: SwitcherEntry) {
-        val snapshot = store.state.value.snapshot()
+        val world = store.state.value
+        val filters = store.filters.value
+        val snapshot = world.filteredSwitcherSnapshot(filters)
         val state = openSwitcher(snapshot, entry)
         _ui.value = SwitcherUiState(state, visible = false, previewedWindowId = null)
         store.setSwitcherActive(true)

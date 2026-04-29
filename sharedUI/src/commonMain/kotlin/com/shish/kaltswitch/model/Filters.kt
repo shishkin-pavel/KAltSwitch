@@ -119,3 +119,28 @@ private fun modeOrder(v: TriFilter): Int = when (v) {
 }
 
 private fun modeOrder(v: WindowView): Int = modeOrder(v.mode)
+
+/**
+ * Build the switcher's snapshot from the same filter pipeline the inspector
+ * uses. `Show` apps land in the primary group (`withWindows`), `Demote` apps
+ * land in the secondary group (`windowless` — same field, repurposed name) and
+ * sit behind the vertical separator, `Hide` apps are dropped entirely.
+ *
+ * Within each app, hidden windows are dropped; the rest keep their inspector
+ * order (Show first, then Demote — already pre-sorted by [filteredSnapshot]).
+ * Child windows (sheets/drawers) are flattened out — they're not navigation
+ * targets in the switcher.
+ */
+fun World.filteredSwitcherSnapshot(filters: Filters): SwitcherSnapshot {
+    val fs = filteredSnapshot(filters)
+    fun toEntry(av: AppView): AppEntry = AppEntry(
+        app = av.app,
+        windows = av.windows
+            .filter { it.mode != TriFilter.Hide }
+            .map { it.window },
+    )
+    return SwitcherSnapshot(
+        withWindows = fs.show.map(::toEntry),
+        windowless = fs.demote.map(::toEntry),
+    )
+}
