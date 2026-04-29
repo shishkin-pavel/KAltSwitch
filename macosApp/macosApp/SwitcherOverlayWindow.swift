@@ -86,13 +86,13 @@ final class SwitcherOverlayWindow: NSPanel {
         if event.type == .flagsChanged {
             let cmdHeld = event.modifierFlags.contains(.command)
             if !cmdHeld {
-                NSLog("KAltSwitch: [panel] cmd released")
+                log("[panel] cmd released")
                 onCommandReleased?()
             }
         } else if event.type == .keyUp {
             let kc = Int(event.keyCode)
             if kc == kVK_Tab || kc == kVK_ANSI_Grave {
-                NSLog("KAltSwitch: [panel] keyup keyCode=%d", kc)
+                log("[panel] keyup keyCode=\(kc)")
                 onShortcutKeyReleased?()
             }
         }

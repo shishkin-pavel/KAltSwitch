@@ -24,7 +24,7 @@ final class AppRegistry {
     func start() {
         lastTrusted = AXIsProcessTrusted()
         store.setAxTrusted(trusted: lastTrusted)
-        NSLog("KAltSwitch: AX trusted = %@", lastTrusted ? "true" : "false")
+        log("[reg] AX trusted = \(lastTrusted)")
 
         // Poll AX trust state every second. The moment macOS flips it to true
         // (after the user toggles us in Settings), we re-spawn all watchers.
@@ -144,11 +144,8 @@ final class AppRegistry {
         }
         let nsAppOk = NSRunningApplication(processIdentifier: pid)?
             .activate(options: [.activateIgnoringOtherApps]) ?? false
-        NSLog("KAltSwitch: commit pid=%d ax=%lld cg=%u cgs=%@ axRaise=%@ nsapp=%@",
-              pid, windowId ?? 0, cgWid ?? 0,
-              cgsOk ? "ok" : "fail",
-              axOk ? "ok" : "fail",
-              nsAppOk ? "ok" : "fail")
+        log("[reg] commit pid=\(pid) ax=\(windowId ?? 0) cg=\(cgWid ?? 0) " +
+            "cgs=\(cgsOk ? "ok" : "fail") axRaise=\(axOk ? "ok" : "fail") nsapp=\(nsAppOk ? "ok" : "fail")")
     }
 
     private func checkTrust() {
@@ -156,7 +153,7 @@ final class AppRegistry {
         if trusted != lastTrusted {
             lastTrusted = trusted
             store.setAxTrusted(trusted: trusted)
-            NSLog("KAltSwitch: AX trust changed to %@", trusted ? "true" : "false")
+            log("[reg] AX trust changed to \(trusted)")
             if trusted {
                 respawnAllWatchers()
             }

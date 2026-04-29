@@ -1,5 +1,6 @@
 package com.shish.kaltswitch.switcher
 
+import com.shish.kaltswitch.log.log
 import com.shish.kaltswitch.model.SwitcherCursor
 import com.shish.kaltswitch.model.SwitcherEntry
 import com.shish.kaltswitch.model.SwitcherEvent
@@ -113,7 +114,7 @@ class SwitcherController(
     fun onShortcut(entry: SwitcherEntry, reverse: Boolean = false) {
         val combo = entry to reverse
         if (heldShortcut == combo) {
-            println("[ctl] shortcut entry=$entry reverse=$reverse SKIPPED (auto-repeat)")
+            log("[ctl] shortcut entry=$entry reverse=$reverse SKIPPED (auto-repeat)")
             return  // OS auto-repeat — pressJob drives navigation.
         }
         heldShortcut = combo
@@ -129,7 +130,7 @@ class SwitcherController(
             navigate(event)
         }
         val cursor = _ui.value?.state?.cursor
-        println("[ctl] shortcut entry=$entry reverse=$reverse cursor=$cursor")
+        log("[ctl] shortcut entry=$entry reverse=$reverse cursor=$cursor")
         startPressJob(entry, reverse)
     }
 
@@ -156,6 +157,7 @@ class SwitcherController(
                 )
             }
         }
+        log("[ctl] placeOnLastInRecency entry=$entry cursor=$lastCursor")
         _ui.value = cur.copy(state = cur.state.copy(cursor = lastCursor), previewedWindowId = null)
     }
 
@@ -169,22 +171,25 @@ class SwitcherController(
         val wasRunning = pressJob != null
         heldShortcut = null
         pressJob?.cancel(); pressJob = null
-        println("[ctl] shortcut-key released wasRunning=$wasRunning cursor=${_ui.value?.state?.cursor}")
+        log("[ctl] shortcut-key released wasRunning=$wasRunning cursor=${_ui.value?.state?.cursor}")
     }
 
     private fun startPressJob(entry: SwitcherEntry, reverse: Boolean) {
         val event = if (reverse) reverseEventFor(entry) else forwardEventFor(entry)
         pressJob?.cancel()
+        val initialDelay = store.switcherSettings.value.repeatInitialDelayMs
+        val interval = store.switcherSettings.value.repeatIntervalMs
+        log("[ctl] press-job start event=$event initialDelay=${initialDelay}ms interval=${interval}ms")
         pressJob = scope.launch {
-            // Snapshot settings at job start; mid-flight changes apply on the
-            // next press cycle, not within this one.
-            val initialDelay = store.switcherSettings.value.repeatInitialDelayMs
-            val interval = store.switcherSettings.value.repeatIntervalMs
-            delay(initialDelay)
-            while (true) {
-                navigate(event)
-                println("[ctl] press-tick event=$event cursor=${_ui.value?.state?.cursor}")
-                delay(interval)
+            try {
+                delay(initialDelay)
+                while (true) {
+                    navigate(event)
+                    log("[ctl] press-tick event=$event cursor=${_ui.value?.state?.cursor}")
+                    delay(interval)
+                }
+            } finally {
+                log("[ctl] press-job end event=$event")
             }
         }
     }
@@ -201,6 +206,7 @@ class SwitcherController(
 
     fun onNavigate(event: SwitcherEvent) {
         if (_ui.value == null) return
+        log("[ctl] onNavigate event=$event cursor=${_ui.value?.state?.cursor}")
         navigate(event)
     }
 
@@ -227,6 +233,7 @@ class SwitcherController(
         }
         val nextCursor = SwitcherCursor(appIndex, resolvedWindowIndex)
         if (nextCursor == cur.state.cursor) return
+        log("[ctl] onPointAt appIndex=$appIndex windowIndex=$windowIndex resolved=$nextCursor")
         _ui.value = cur.copy(state = cur.state.copy(cursor = nextCursor), previewedWindowId = null)
         schedulePreview()
     }
@@ -234,16 +241,19 @@ class SwitcherController(
     /** Click-to-commit from the overlay UI. Same end state as cmd-release. */
     fun onCommit() {
         val cur = _ui.value ?: return
+        log("[ctl] onCommit (click) cursor=${cur.state.cursor}")
         commit(cur)
     }
 
     fun onModifierReleased() {
         val cur = _ui.value ?: return
+        log("[ctl] onModifierReleased cursor=${cur.state.cursor}")
         commit(cur)
     }
 
     fun onEsc() {
         if (_ui.value == null) return
+        log("[ctl] onEsc cursor=${_ui.value?.state?.cursor}")
         cancel()
     }
 
@@ -253,7 +263,7 @@ class SwitcherController(
         val snapshot = world.filteredSwitcherSnapshot(filters)
         val state = openSwitcher(snapshot, entry)
         val appOrder = snapshot.all.map { it.app.pid to it.app.name }
-        println("[ctl] openSession entry=$entry defaultCursor=${state.cursor} apps=$appOrder")
+        log("[ctl] openSession entry=$entry defaultCursor=${state.cursor} apps=$appOrder")
         _ui.value = SwitcherUiState(state, visible = false, previewedWindowId = null)
         store.setSwitcherActive(true)
 
@@ -292,7 +302,7 @@ class SwitcherController(
     private fun commit(cur: SwitcherUiState) {
         val app = cur.state.selectedAppEntry?.app
         val window = cur.state.selectedWindow
-        println("[ctl] commit cursor=${cur.state.cursor} app=${app?.pid}/${app?.name} window=${window?.id}/${window?.title}")
+        log("[ctl] commit cursor=${cur.state.cursor} app=${app?.pid}/${app?.name} window=${window?.id}/${window?.title}")
         closeSession()
         if (app != null) {
             // Record the user's intent into the activation log *synchronously*
@@ -317,6 +327,7 @@ class SwitcherController(
      *  AX/NSWorkspace activation events flow into the store again — which is
      *  exactly what we want for the commit's own echo. */
     private fun closeSession() {
+        log("[ctl] closeSession")
         showJob?.cancel(); showJob = null
         previewJob?.cancel(); previewJob = null
         pressJob?.cancel(); pressJob = null

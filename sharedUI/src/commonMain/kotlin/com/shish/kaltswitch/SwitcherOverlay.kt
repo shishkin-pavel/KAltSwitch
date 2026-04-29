@@ -88,7 +88,17 @@ fun SwitcherOverlay(
 }
 
 /** Translates a single [KeyEvent] into the appropriate controller call.
- *  Returns true if the event was consumed. */
+ *  Returns true if the event was consumed.
+ *
+ *  Tab and grave (`/~`) are deliberately NOT handled here even though the
+ *  panel has keyboard focus: cmd+tab / cmd+grave are registered as global
+ *  Carbon hotkeys and that's the canonical entry point. macOS keyboard
+ *  auto-repeat for the cmd+tab combo can leak plain `tab` keyDown events
+ *  through to Compose despite Carbon claiming the hotkey, and acting on
+ *  them here causes the cursor to skip several elements per actual press
+ *  (each repeat advances once). Arrow keys and Esc remain — they aren't
+ *  Carbon-registered, and arrow navigation is the common keyboard fallback
+ *  for users who want to step around without re-tapping the modifier-key. */
 private fun handleKey(
     ev: KeyEvent,
     onNavigate: (SwitcherEvent) -> Unit,
@@ -96,24 +106,12 @@ private fun handleKey(
     onShortcut: (SwitcherEntry) -> Unit,
 ): Boolean {
     if (ev.type != KeyEventType.KeyDown) return false
-    val shift = ev.isShiftPressed
     return when (ev.key) {
         Key.Escape -> { onEsc(); true }
-        Key.Tab -> {
-            // Re-firing the cmd+tab Carbon hotkey already advances apps. The
-            // bare tab path here is the same intent for users who think of the
-            // overlay as captured.
-            if (shift) onNavigate(SwitcherEvent.PrevApp) else onNavigate(SwitcherEvent.NextApp)
-            true
-        }
         Key.DirectionRight -> { onNavigate(SwitcherEvent.NextApp); true }
         Key.DirectionLeft -> { onNavigate(SwitcherEvent.PrevApp); true }
         Key.DirectionDown -> { onNavigate(SwitcherEvent.NextWindow); true }
         Key.DirectionUp -> { onNavigate(SwitcherEvent.PrevWindow); true }
-        Key.Grave -> {
-            if (shift) onNavigate(SwitcherEvent.PrevWindow) else onNavigate(SwitcherEvent.NextWindow)
-            true
-        }
         else -> false
     }
 }

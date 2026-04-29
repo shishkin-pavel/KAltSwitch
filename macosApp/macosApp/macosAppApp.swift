@@ -98,9 +98,8 @@ class AppDelegate: NSObject, NSApplicationDelegate {
             // already issued the activate call, leaving the system to negotiate
             // focus while our key panel is still on screen — that's enough to
             // make `nsApp.activate` silently no-op.
-            NSLog("KAltSwitch: onCommitActivation pid=%d wid=%@",
-                  pid.int32Value,
-                  windowId.map { String($0.int64Value) } ?? "nil")
+            let widStr = windowId.map { String($0.int64Value) } ?? "nil"
+            log("[swift] onCommitActivation pid=\(pid.int32Value) wid=\(widStr)")
             self?.overlayWindow?.orderOut(nil)
             registry?.commit(pid: pid_t(truncatingIfNeeded: pid.int32Value),
                              windowId: windowId?.int64Value)
@@ -172,15 +171,16 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     /// since AX permission is granted.
     private func installGlobalKeyMonitor() {
         globalKeyMonitor = NSEvent.addGlobalMonitorForEvents(matching: [.keyUp]) { [weak self] event in
+            _ = self
             let kc = Int(event.keyCode)
             guard kc == kVK_Tab || kc == kVK_ANSI_Grave else { return }
-            NSLog("KAltSwitch: [global] keyup keyCode=%d", kc)
+            log("[global] keyup keyCode=\(kc)")
             DispatchQueue.main.async {
                 ComposeViewKt.switcherController.onShortcutKeyReleased()
             }
         }
         if globalKeyMonitor == nil {
-            NSLog("KAltSwitch: [global] keyUp monitor failed (AX permission?)")
+            log("[global] keyUp monitor failed (AX permission?)")
         }
     }
 
@@ -218,6 +218,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     @objc private func openInspectorFromMenu() {
+        log("[swift] openInspector via menubar")
         showInspector()
     }
 
@@ -237,6 +238,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     /// `true` tells AppKit we handled the reopen; otherwise it tries default
     /// behaviour (which does nothing useful for an LSUIElement-style agent).
     func applicationShouldHandleReopen(_ sender: NSApplication, hasVisibleWindows flag: Bool) -> Bool {
+        log("[swift] applicationShouldHandleReopen hasVisibleWindows=\(flag)")
         showInspector()
         return true
     }
@@ -303,7 +305,10 @@ class AppDelegate: NSObject, NSApplicationDelegate {
 
         let prev = inspectorVisibleApplied
         inspectorVisibleApplied = visible
-        if prev == nil || prev == visible { return }
+        if prev == nil || prev == visible {
+            log("[swift] applyInspectorVisibility seed visible=\(visible)")
+            return
+        }
 
         let f = window.frame
         let inspW = CGFloat(currentInspectorWidth())
@@ -311,6 +316,8 @@ class AppDelegate: NSObject, NSApplicationDelegate {
             ? f.size.width + inspW
             : max(200, f.size.width - inspW)
         let target = NSRect(x: f.origin.x, y: f.origin.y, width: newWidth, height: f.size.height)
+        log("[swift] applyInspectorVisibility prev=\(prev ?? false) -> visible=\(visible) " +
+            "width \(f.size.width) -> \(newWidth) (inspW=\(inspW))")
         window.setFrame(target, display: true, animate: false)
     }
 
