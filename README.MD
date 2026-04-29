@@ -1,6 +1,7 @@
 # KAltSwitch
 
-### Desktop
-Run the desktop application: `./gradlew :desktopApp:run`  
-Run the desktop **hot reload** application: `./gradlew :desktopApp:hotRun --auto`  
+### Running
+Run the desktop application: `./gradlew runMacosApp`
+allow accessibility permissions in Settings -> Privacy & Security -> Accessibility -> KAltSwitch
 
+after building you can run the app via `open KAltSwitch/macosApp/build/derived-data/Build/Products/Debug/KAltSwitch.app`
