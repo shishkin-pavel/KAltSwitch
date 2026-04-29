@@ -29,6 +29,11 @@ targets:
         com.apple.security.cs.disable-library-validation: true
     settings:
       base:
+        # Renames the .app bundle, the executable, and CFBundleName to
+        # KAltSwitch — the target is still called `macosApp` for build-tree
+        # stability (changing target name churns derived-data paths and the
+        # configuration cache key).
+        PRODUCT_NAME: KAltSwitch
         PRODUCT_BUNDLE_IDENTIFIER: com.shish.kaltswitch.macosApp
         CODE_SIGN_STYLE: Automatic
         CODE_SIGN_IDENTITY: "-"

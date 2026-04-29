@@ -13,7 +13,9 @@ plugins {
 
 val macosAppDir = layout.projectDirectory.dir("macosApp")
 val derivedDataDir = macosAppDir.dir("build/derived-data")
-val builtAppPath = derivedDataDir.dir("Build/Products/Debug/macosApp.app")
+// PRODUCT_NAME=KAltSwitch in macosApp/project.yml — the bundle is
+// KAltSwitch.app even though the xcodeproj target is still `macosApp`.
+val builtAppPath = derivedDataDir.dir("Build/Products/Debug/KAltSwitch.app")
 
 // Wrap commands in a login shell so Homebrew (/opt/homebrew, /usr/local) is on PATH
 // at execution time. Avoids touching processes at configuration time, which would
