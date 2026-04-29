@@ -16,6 +16,8 @@ import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.onEach
 import kotlinx.coroutines.flow.launchIn
 import platform.AppKit.NSWindow
+import platform.Foundation.NSDate
+import platform.Foundation.timeIntervalSince1970
 
 /** Singleton store. Swift's `AppRegistry` mutates it; the Compose UI observes it. */
 val store = WorldStore().also { initStore ->
@@ -50,6 +52,7 @@ private val configScope = CoroutineScope(Dispatchers.Main).also { scope ->
 val switcherController = SwitcherController(
     store = store,
     scope = CoroutineScope(Dispatchers.Main),
+    clock = { (NSDate().timeIntervalSince1970 * 1000.0).toLong() },
 )
 
 /** Lifetime scope for cross-boundary observers. Cancelled on app termination. */
