@@ -85,9 +85,13 @@ final class AxAppWatcher {
     }
 
     private func handle(name: String, element: AXUIElement) {
+        // Almost every focus-relevant AX event ends in the same place:
+        // refresh window state, then ask the system who's actually frontmost +
+        // focused (`syncActiveStateFromSystem`). That single function is the
+        // sole writer of activation events into the store, so log ordering and
+        // active-pointer highlight can never drift apart.
         switch name {
         case kAXApplicationActivatedNotification as String:
-            store.recordAppActivation(pid: pid, timestampMs: nowMillis())
             refreshAllWindows()
             syncActiveStateFromSystem(store: store)
 
@@ -100,12 +104,6 @@ final class AxAppWatcher {
         case kAXMainWindowChangedNotification as String,
              kAXFocusedWindowChangedNotification as String:
             refreshAllWindows()
-            // Only record this as activation history if our app is actually frontmost
-            // — otherwise we'd reorder the log based on a no-longer-active app's
-            // events. Sync active-state from the system to authoritative truth.
-            if NSWorkspace.shared.frontmostApplication?.processIdentifier == pid {
-                store.recordWindowActivation(pid: pid, windowId: Int64(CFHash(element)), timestampMs: nowMillis())
-            }
             syncActiveStateFromSystem(store: store)
 
         case kAXWindowCreatedNotification as String:

@@ -79,7 +79,7 @@ class WorldStore(initial: World = World(ActivationLog(), emptyMap(), emptyMap())
         _axTrusted.value = trusted
     }
 
-    fun setActive(pid: Int?, windowId: WindowId?) {
+    private fun setActive(pid: Int?, windowId: WindowId?) {
         _activeAppPid.value = pid
         _activeWindowId.value = windowId
     }
@@ -128,36 +128,33 @@ class WorldStore(initial: World = World(ActivationLog(), emptyMap(), emptyMap())
         }
     }
 
-    /** Append an activation event. Dropped while a switcher session is live so our
-     *  own preview-raise / commit-induced AX echo doesn't pollute the log. */
-    fun recordEvent(event: ActivationEvent) {
+    /**
+     * Single canonical "an activation happened" event. Atomically appends to the
+     * activation log AND updates the [activeAppPid] / [activeWindowId] pointers,
+     * so the inspector's row order (driven by the log) and active-row highlight
+     * (driven by the pointers) can never disagree.
+     *
+     * Dropped while a switcher session is live so our own preview-raise / commit
+     * AX echo doesn't pollute either side. The commit's AX echo arrives
+     * *after* the session ends (we clear `switcherActive` synchronously when
+     * `_ui.value` flips to null), so it lands naturally in the log.
+     *
+     * `windowId == null` means "we know an app got focus but not which of its
+     * windows" — that becomes an app-level event in the log, with the active
+     * window pointer cleared until a more specific event arrives.
+     */
+    fun recordActivation(pid: Int, windowId: WindowId?, timestampMs: Long) {
         if (_switcherActive.value) return
-        _state.update { it.copy(log = it.log.record(event)) }
+        _state.update {
+            it.copy(log = it.log.record(ActivationEvent(timestampMs, pid, windowId)))
+        }
+        setActive(pid = pid, windowId = windowId)
     }
 
-    /** Swift-friendly: record an app-level activation (no window id). */
-    fun recordAppActivation(pid: Int, timestampMs: Long) {
-        recordEvent(ActivationEvent(timestampMs, pid, windowId = null))
-    }
-
-    /** Swift-friendly: record a window-level activation. */
-    fun recordWindowActivation(pid: Int, windowId: WindowId, timestampMs: Long) {
-        recordEvent(ActivationEvent(timestampMs, pid, windowId))
-    }
-
-    /** Swift-friendly: clear active state. */
+    /** Clear the active-app/window pointers without touching the log. Used when
+     *  no app is frontmost (e.g. user logged out of session, all apps quit). */
     fun clearActive() {
         setActive(pid = null, windowId = null)
-    }
-
-    /** Swift-friendly: set active app (no window). */
-    fun setActiveApp(pid: Int) {
-        setActive(pid = pid, windowId = null)
-    }
-
-    /** Swift-friendly: set active app + window. */
-    fun setActiveAppAndWindow(pid: Int, windowId: WindowId) {
-        setActive(pid = pid, windowId = windowId)
     }
 
     /**

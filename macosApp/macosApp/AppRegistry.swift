@@ -66,8 +66,9 @@ final class AppRegistry {
             spawn(for: nsApp)
         }
 
+        // seedActivationLog ends in syncActiveStateFromSystem itself, so no
+        // redundant call here.
         seedActivationLog()
-        syncActiveStateFromSystem(store: store)
     }
 
     /// Pre-fill the activation log with one event per running app, descending
@@ -88,28 +89,19 @@ final class AppRegistry {
         }
         for (i, nsApp) in backgroundApps.enumerated() {
             let offsetMs = Int64(backgroundApps.count - i + 1) * 1000
-            store.recordAppActivation(pid: nsApp.processIdentifier, timestampMs: now - offsetMs)
+            store.recordActivation(
+                pid: Int32(nsApp.processIdentifier),
+                windowId: nil,
+                timestampMs: now - offsetMs
+            )
         }
 
-        // Frontmost gets the latest timestamp and, if AX cooperates, also a
-        // window-level event so cmd+` (window-mode) has a default target.
-        if let frontPid = frontPid {
-            store.recordAppActivation(pid: frontPid, timestampMs: now)
-            let appEl = AXUIElementCreateApplication(frontPid)
-            var focusedRef: AnyObject?
-            let err = AXUIElementCopyAttributeValue(
-                appEl, kAXFocusedWindowAttribute as CFString, &focusedRef)
-            if err == .success,
-               let v = focusedRef,
-               CFGetTypeID(v as CFTypeRef) == AXUIElementGetTypeID() {
-                let focused = v as! AXUIElement
-                store.recordWindowActivation(
-                    pid: frontPid,
-                    windowId: Int64(CFHash(focused)),
-                    timestampMs: now
-                )
-            }
-        }
+        // Frontmost gets the latest timestamp via the same unified path that
+        // every later activation goes through (`syncActiveStateFromSystem`),
+        // so the seed is indistinguishable from a real activation event. If
+        // there is no frontmost (login screen, all apps quit), this clears
+        // the active pointers — also the right thing to do.
+        syncActiveStateFromSystem(store: store)
     }
 
     func stop() {
@@ -200,13 +192,14 @@ final class AppRegistry {
 
     private func handleActivated(_ note: Notification) {
         guard let nsApp = note.userInfo?[NSWorkspace.applicationUserInfoKey] as? NSRunningApplication else { return }
-        let pid = nsApp.processIdentifier
-        store.recordAppActivation(pid: pid, timestampMs: nowMillis())
+        // syncActiveStateFromSystem records the activation through the unified
+        // recordActivation API, updating both the log (row order) and the active
+        // pointers (highlight) under the same switcherActive gate.
         syncActiveStateFromSystem(store: store)
         // ChatGPT and similar apps refuse AX subscriptions on launch with
         // kAXErrorAPIDisabled. They typically accept once they've been activated by
         // the user — kick the watcher to retry subscriptions and refresh windows.
-        watchers[pid]?.requestRefresh()
+        watchers[nsApp.processIdentifier]?.requestRefresh()
     }
 
     private func handleHiddenChange(_ note: Notification, hidden: Bool) {
@@ -294,6 +287,12 @@ func nowMillis() -> Int64 {
 /// could move focus, including window destruction (e.g. closing Finder's last
 /// real window — Finder may stay frontmost but with no usable focused window,
 /// or focus may transition to another app silently).
+///
+/// Goes through `WorldStore.recordActivation` so the activation log AND the
+/// active-app/window pointers update **atomically through one gate**. Every
+/// AX/NSWorkspace handler in this file delegates to this function — that's
+/// what guarantees the inspector's row order can never disagree with its
+/// active-row highlight.
 func syncActiveStateFromSystem(store: WorldStore) {
     guard let frontmost = NSWorkspace.shared.frontmostApplication else {
         store.clearActive()
@@ -303,12 +302,14 @@ func syncActiveStateFromSystem(store: WorldStore) {
     let appEl = AXUIElementCreateApplication(pid)
     var focusedRef: AnyObject?
     let err = AXUIElementCopyAttributeValue(appEl, kAXFocusedWindowAttribute as CFString, &focusedRef)
+    let windowId: KotlinLong?
     if err == .success,
        let v = focusedRef,
        CFGetTypeID(v as CFTypeRef) == AXUIElementGetTypeID() {
         let focused = v as! AXUIElement
-        store.setActiveAppAndWindow(pid: pid, windowId: Int64(CFHash(focused)))
+        windowId = KotlinLong(value: Int64(CFHash(focused)))
     } else {
-        store.setActiveApp(pid: pid)
+        windowId = nil
     }
+    store.recordActivation(pid: Int32(pid), windowId: windowId, timestampMs: nowMillis())
 }

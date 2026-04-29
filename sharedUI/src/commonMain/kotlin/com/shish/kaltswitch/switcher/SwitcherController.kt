@@ -51,7 +51,6 @@ class SwitcherController(
     private val scope: CoroutineScope,
     private val showDelayMs: Long = 20L,
     private val previewDelayMs: Long = 250L,
-    private val activeFlagDebounceMs: Long = 200L,
     /** Off for MVP — see "Preview-raise on selection" in
      *  docs/window-state-attributes.md §8. The full code path stays compiled
      *  and tested so we can re-enable post-MVP without resurrecting it. */
@@ -65,7 +64,6 @@ class SwitcherController(
 
     private var showJob: Job? = null
     private var previewJob: Job? = null
-    private var activeFlagJob: Job? = null
 
     /**
      * Hotkey press from the platform layer.
@@ -120,7 +118,6 @@ class SwitcherController(
         val state = openSwitcher(snapshot, entry)
         _ui.value = SwitcherUiState(state, visible = false, previewedWindowId = null)
         store.setSwitcherActive(true)
-        activeFlagJob?.cancel(); activeFlagJob = null
 
         showJob?.cancel()
         showJob = scope.launch {
@@ -155,31 +152,31 @@ class SwitcherController(
     }
 
     private fun commit(cur: SwitcherUiState) {
-        showJob?.cancel(); showJob = null
-        previewJob?.cancel(); previewJob = null
+        closeSession()
         val app = cur.state.selectedAppEntry?.app
         val window = cur.state.selectedWindow
-        _ui.value = null
         if (app != null) {
+            // The AX/NSWorkspace echo of this activation is what writes the new
+            // top-of-log entry; we don't pre-record here because the system
+            // event will arrive *after* `closeSession()` cleared switcherActive,
+            // so it will land in the log naturally and consistently with
+            // every other activation in the system.
             onCommitActivation?.invoke(app.pid, window?.id)
         }
-        scheduleClearActive()
     }
 
     private fun cancel() {
+        closeSession()
+    }
+
+    /** Tear down everything that constitutes a "live session": UI state, pending
+     *  timers, and the [WorldStore.switcherActive] gate. After this returns,
+     *  AX/NSWorkspace activation events flow into the store again — which is
+     *  exactly what we want for the commit's own echo. */
+    private fun closeSession() {
         showJob?.cancel(); showJob = null
         previewJob?.cancel(); previewJob = null
         _ui.value = null
-        scheduleClearActive()
-    }
-
-    /** Keep [WorldStore.switcherActive] true a touch longer so the AX/Workspace echo
-     *  from our own commit/raise doesn't leak into the activation log. */
-    private fun scheduleClearActive() {
-        activeFlagJob?.cancel()
-        activeFlagJob = scope.launch {
-            delay(activeFlagDebounceMs)
-            store.setSwitcherActive(false)
-        }
+        store.setSwitcherActive(false)
     }
 }

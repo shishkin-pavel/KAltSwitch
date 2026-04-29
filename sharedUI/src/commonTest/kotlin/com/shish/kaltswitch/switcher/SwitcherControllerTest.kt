@@ -184,30 +184,47 @@ class SwitcherControllerTest {
     }
 
     @Test
-    fun switcherActive_isTrueDuringSession_andClearsAfterCommit() = runTest {
+    fun switcherActive_isTrueDuringSession_clearsImmediatelyOnCommit() = runTest {
         val store = seededStore()
-        val ctl = SwitcherController(
-            store, scope = backgroundScope,
-            showDelayMs = 20, activeFlagDebounceMs = 50,
-        )
+        val ctl = SwitcherController(store, scope = backgroundScope, showDelayMs = 20)
         ctl.onShortcut(SwitcherEntry.App)
         assertEquals(true, store.switcherActive.value)
         advanceTimeBy(30)
         ctl.onModifierReleased()
-        // Flag stays true through the debounce so AX echo from the commit is dropped.
-        assertEquals(true, store.switcherActive.value)
-        advanceTimeBy(60)
+        // No debounce — flag clears synchronously so the commit's AX echo can
+        // land in the log without being dropped.
         assertEquals(false, store.switcherActive.value)
     }
 
     @Test
-    fun store_recordEvent_isDroppedWhileSwitcherActive() = runTest {
+    fun switcherActive_clearsImmediatelyOnEsc() = runTest {
+        val store = seededStore()
+        val ctl = SwitcherController(store, scope = backgroundScope, showDelayMs = 20)
+        ctl.onShortcut(SwitcherEntry.App)
+        advanceTimeBy(30)
+        ctl.onEsc()
+        assertEquals(false, store.switcherActive.value)
+    }
+
+    @Test
+    fun store_recordActivation_isDroppedWhileSwitcherActive() = runTest {
         val store = seededStore()
         val ctl = SwitcherController(store, scope = backgroundScope, showDelayMs = 20)
         ctl.onShortcut(SwitcherEntry.App)
 
         val before = store.state.value.log.events.size
-        store.recordEvent(ActivationEvent(timestampMs = 999, pid = 1, windowId = 11))
+        store.recordActivation(pid = 1, windowId = 11, timestampMs = 999)
         assertEquals(before, store.state.value.log.events.size)
+    }
+
+    @Test
+    fun store_recordActivation_updatesBothLogAndActivePointer() = runTest {
+        val store = seededStore()
+        // No active session — call is allowed.
+        store.recordActivation(pid = 2, windowId = 22, timestampMs = 5000)
+        assertEquals(2, store.activeAppPid.value)
+        assertEquals(22L, store.activeWindowId.value)
+        // App with pid=2 should be at the head of the order now.
+        assertEquals(2, store.state.value.log.appOrder().first())
     }
 }

@@ -103,6 +103,20 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         panel.onCommandReleased = { [weak controller] in
             controller?.onModifierReleased()
         }
+        // Safety net: if the panel ever loses key status while a session is
+        // live (e.g. user clicked another app's window with the mouse), close
+        // the session via Esc semantics. Without this the controller's
+        // switcherActive flag could stay true indefinitely, blocking all
+        // subsequent activation events from reaching the inspector and
+        // freezing the row order on stale state.
+        let resignObs = NotificationCenter.default.addObserver(
+            forName: NSWindow.didResignKeyNotification,
+            object: panel,
+            queue: .main
+        ) { [weak controller] _ in
+            controller?.onEsc()
+        }
+        frameObservers.append(resignObs)
 
         ComposeViewKt.observeSwitcherSession { [weak self] active in
             self?.setOverlayActive(active.boolValue)
