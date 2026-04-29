@@ -280,3 +280,120 @@ debounce vs. CGS-driven raise instead of AX.
 **Revisit-trigger.** First user feedback session, or when we dogfood the
 switcher long enough to build intuition for what "preview" should *feel*
 like.
+
+---
+
+## 10. Leaf platform-glue lives in Kotlin, lifecycle orchestration stays in Swift
+
+**Question.** §1 fixed the high-level split (Swift host shell hosting a
+Kotlin/Native Compose framework). But the boundary between Swift and
+Kotlin within that split was set tactically rather than principle-first
+— several pieces ended up on the Swift side because the day-1 spike
+landed there, not because they had a structural reason to be in Swift.
+What's the principle?
+
+**Sources.** Iter1–4 cleanup pass. Specifically: stderr-to-log redirect
+(POSIX), `NSColor.controlAccentColor` → 0xRRGGBB packing, the
+`NSImage` → 128×128 PNG icon path, and the `pushAppRecord` per-pid
+field translation each lived in Swift purely because that was where
+they got first written. None of them touched anything that's
+materially uglier in K/N than Swift — they're all leaf functions
+calling Foundation/AppKit/CoreGraphics public API.
+
+**Decision.** Leaf utilities — pure functions, finite-call subscriptions,
+no AppKit lifecycle responsibility — belong in `sharedUI/.../native/`
+on the Kotlin side. The Swift host keeps responsibilities that are
+materially uglier in K/N: AppKit `@main` + `NSApplicationDelegate`
+boilerplate, AppKit window subclassing (`NSPanel.sendEvent` override
+in `SwitcherOverlayWindow`), `AXObserver` C-callback trampolines and
+the dedicated CFRunLoop thread, Carbon `RegisterEventHotKey` C-callback
+trampolines and the `CGEventTap`'s userInteractive-thread CFRunLoop,
+`@_silgen_name` private-framework references for SkyLight.
+
+After iter1–4 the Kotlin side owns: log formatter, stderr redirect,
+icon PNG conversion, system-accent observation, per-pid record upsert,
+config persistence, AX-trust prompt. The Swift side owns: AppDelegate
+lifecycle (~570 LOC), AppRegistry (workspace observers + AX-trust poll
++ space changes), AxAppWatcher (per-app AX observer thread),
+HotkeyController (Carbon + CGEventTap), SwitcherOverlayWindow (NSPanel
+subclass), SkyLight (private bindings), Log (3-line shim).
+
+**Confidence.** High. Each move during iter1–4 reduced Swift→Kotlin
+boundary surface (one function call instead of N argument crossings),
+removed duplicated logic (the timestamp formatter; the byte-by-byte
+KotlinByteArray copy in `pushAppIcon`), and didn't trip on K/N AppKit
+binding gaps that wouldn't have a clean workaround.
+
+**Revisit-trigger.** A K/N release that lands clean ObjC subclassing
+support (lets us host `NSPanel` from Kotlin without
+`@Convention(c)`-style trampolines) — at that point the panel + AX
+observers become candidates. Or if the Swift side grows beyond
+~1.5k LOC and starts hosting non-trivial logic that's hard to test
+from `kotlinx-test`.
+
+**Caveats / known K/N AppKit binding gaps documented during iter3–4.**
+These took non-trivial detective work the first time; capturing them
+here saves the next contributor.
+
+  - `NSCompositingOperationCopy` (the post-10.14 enum case) is **not**
+    exposed by the K/N AppKit binding; the deprecated
+    `NSCompositeCopy` ULong constant *is*. Used in `IconLoader.kt`.
+  - `NSBitmapImageFileTypePNG` is **not** at the package top level for
+    the same reason; the legacy `NSPNGFileType` ULong is. Used in
+    `IconLoader.kt`.
+  - `NSBitmapImageRep.representationUsingType:properties:` is exposed
+    as a *top-level extension* on `NSBitmapImageRep`, not a member
+    method — requires an explicit
+    `import platform.AppKit.representationUsingType` to resolve.
+  - `NSApplicationActivationPolicy` is a strict CEnum (rather than a
+    ULong typealias with top-level constants), so cases must be
+    qualified:
+    `NSApplicationActivationPolicy.NSApplicationActivationPolicyRegular`.
+    Used in `AppRecord.kt`.
+  - `NSDate.timeIntervalSince1970` is a top-level extension *function*,
+    not a property — needs explicit import + `()` at the call site.
+  - `NSLog(format, vararg)` does **not** reliably bridge Kotlin String
+    through C-style `%@` varargs. The K/N→ObjC arg conversion produces
+    a non-NSObject pointer that crashes in
+    `_NSDescriptionWithStringProxyFunc` / `objc_opt_respondsToSelector`.
+    See the iter1 commit (`StderrRedirect.kt`) for the detection +
+    fix; in general, prefer `println` for K/N diagnostic output.
+
+---
+
+## 11. Single mutable `WorldStore` fronted by `MutableStateFlow`, not Compose-state-only
+
+**Question.** PLAN.md envisaged the activation log etc. living on the
+Compose side as plain runtime state. But our writers are *not*
+Compose: they're the Swift AX/Workspace observers + the Kotlin
+SwitcherController commit path. How do those producers feed the UI
+without the UI being the source of truth?
+
+**Sources.** Native code can't drive Compose recomposition directly —
+recomposition happens inside the Compose runtime, which the Swift
+side doesn't know exists. Need a producer-thread-safe boundary that
+both Swift and Compose can observe. `MutableStateFlow` fits both:
+thread-safe atomic mutators (called from Swift main and AX threads
+through the framework boundary), and `collectAsState()` for the
+Compose UI. Equality conflation is built-in.
+
+**Decision.** Single `WorldStore` singleton, exposed via the framework
+as `ComposeViewKt.store`. Every piece of mutable global state lives
+in there as a `MutableStateFlow<T>`; mutators are public methods.
+Compose UI uses `collectAsState()`. The Swift side both writes
+(`recordActivation`, `setWindows`, etc.) and reads (`store.windowFrame
+.value`, `store.inspectorVisible.value`) directly through the
+framework export.
+
+**Confidence.** High. The pattern carried iter1–5 cleanly; the
+contract is now pinned by `WorldStoreTest`. Re-reads from Swift via
+`store.<field>.value` work, are thread-safe, and don't require any
+`KotlinNativeFreezeAfterCompose` workarounds (Kotlin/Native's
+new-mm doesn't need them).
+
+**Revisit-trigger.** If we ever need Compose-driven derived state to
+flow *back* to the Swift host beyond the existing
+`observe*` bridges, consider exporting the StateFlows directly to
+Swift (Kotlin/Native can produce ObjC-callable `Cancellable` adapters)
+rather than growing the bespoke-callback bridge.
+

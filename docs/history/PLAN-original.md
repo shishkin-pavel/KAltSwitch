@@ -1,4 +1,18 @@
-# KAltSwitch — Compose Multiplatform alt-tab alternative for macOS
+# [HISTORICAL] KAltSwitch — Compose Multiplatform alt-tab alternative for macOS
+
+> **This is the original day-zero plan, kept for archaeology.**
+>
+> It assumed pure Kotlin/Native + cinterop. The actual architecture
+> moved to a Swift host shell hosting a Kotlin/Native Compose framework
+> after the day-1 spike — see [`docs/decisions.md`](../decisions.md) §1.
+> Module names (`shared`, `macos`) and several file names (`Ax.kt`,
+> `Hotkeys.kt`, `PanelWindow.kt`) never landed; the actual layout is
+> `sharedUI/` (Compose framework) + `macosApp/` (Swift host) and the
+> equivalent files live under `macosApp/macosApp/*.swift`.
+>
+> For the current architecture see
+> [`docs/architecture.md`](../architecture.md).
+
 
 ## Context
 
