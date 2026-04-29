@@ -144,9 +144,10 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     private func installStatusItem() {
         let item = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
         if let button = item.button {
-            // SF Symbol — falls back to a text glyph on older systems.
-            if let img = NSImage(systemSymbolName: "rectangle.stack",
-                                 accessibilityDescription: "KAltSwitch") {
+            // Bundled MenubarIcon imageset (white-on-transparent, marked
+            // template-rendering-intent in Contents.json) — macOS auto-tints
+            // for light/dark menubar.
+            if let img = NSImage(named: "MenubarIcon") {
                 img.isTemplate = true
                 button.image = img
             } else {
