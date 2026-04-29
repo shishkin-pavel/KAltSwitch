@@ -166,14 +166,68 @@ class SwitcherControllerTest {
     }
 
     @Test
-    fun reverseShortcut_fromClosed_opensAndStepsBackOnce() = runTest {
+    fun reverseShortcut_fromClosed_landsOnLastInRecency() = runTest {
         val store = seededStore()
         val ctl = SwitcherController(store, scope = backgroundScope)
 
-        // Default cursor for App is index 1 (IDE). Reverse shortcut should step
-        // back once → wraps to 0 (Safari).
+        // 2 apps. cmd+shift+tab from closed lands on the last in recency
+        // (= app[size-1] = IDE). With only two apps that coincides with
+        // cmd+tab's "next-most-recent" target — the 3-app test below
+        // discriminates the two semantics.
         ctl.onShortcut(SwitcherEntry.App, reverse = true)
+        assertEquals(1, ctl.ui.value?.state?.cursor?.appIndex)
+    }
+
+    @Test
+    fun reverseShortcut_threeApps_landsOnLastNotPenultimate() = runTest {
+        // Custom 3-app world to verify "land on last in recency" instead of
+        // the old "step back from default cursor" (which would put cursor on
+        // app[0] = current app, the bug this test guards against).
+        val a1 = App(pid = 1, bundleId = "a1", name = "A1")
+        val a2 = App(pid = 2, bundleId = "a2", name = "A2")
+        val a3 = App(pid = 3, bundleId = "a3", name = "A3")
+        val w1 = Window(id = 11, pid = 1, title = "A1 win")
+        val w2 = Window(id = 21, pid = 2, title = "A2 win")
+        val w3 = Window(id = 31, pid = 3, title = "A3 win")
+        val log = ActivationLog()
+            .record(ActivationEvent(pid = 3, windowId = 31))
+            .record(ActivationEvent(pid = 2, windowId = 21))
+            .record(ActivationEvent(pid = 1, windowId = 11))  // A1 most recent
+        val store = WorldStore(World(
+            log = log,
+            runningApps = mapOf(1 to a1, 2 to a2, 3 to a3),
+            windowsByPid = mapOf(1 to listOf(w1), 2 to listOf(w2), 3 to listOf(w3)),
+        ))
+        val ctl = SwitcherController(store, scope = backgroundScope)
+
+        // Recency: A1 (current), A2, A3. cmd+shift+tab → A3 = app[2].
+        ctl.onShortcut(SwitcherEntry.App, reverse = true)
+        assertEquals(2, ctl.ui.value?.state?.cursor?.appIndex)
+    }
+
+    @Test
+    fun reverseWindowShortcut_fromClosed_landsOnLastWindowOfCurrent() = runTest {
+        // 3 windows in the current app to discriminate "default cursor's
+        // window[1]" from "window[size-1]".
+        val a1 = App(pid = 1, bundleId = "a1", name = "A1")
+        val w1 = Window(id = 11, pid = 1, title = "win 1")
+        val w2 = Window(id = 12, pid = 1, title = "win 2")
+        val w3 = Window(id = 13, pid = 1, title = "win 3")
+        val log = ActivationLog()
+            .record(ActivationEvent(pid = 1, windowId = 13))
+            .record(ActivationEvent(pid = 1, windowId = 12))
+            .record(ActivationEvent(pid = 1, windowId = 11))  // win 11 most recent
+        val store = WorldStore(World(
+            log = log,
+            runningApps = mapOf(1 to a1),
+            windowsByPid = mapOf(1 to listOf(w1, w2, w3)),
+        ))
+        val ctl = SwitcherController(store, scope = backgroundScope)
+
+        // cmd+shift+` from closed → app[0].window[size-1] = window[2] (= "win 3").
+        ctl.onShortcut(SwitcherEntry.Window, reverse = true)
         assertEquals(0, ctl.ui.value?.state?.cursor?.appIndex)
+        assertEquals(2, ctl.ui.value?.state?.cursor?.windowIndex)
     }
 
     @Test

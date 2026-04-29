@@ -98,12 +98,15 @@ class SwitcherController(
      * Hotkey press from the platform layer.
      *
      * `reverse == true` means the shift-modified variant (cmd+shift+tab,
-     * cmd+shift+`). From a closed state, opens the session with the default
-     * cursor and immediately steps backwards once. While the session is open,
-     * advances in the reverse direction.
+     * cmd+shift+`). From a closed state, the cursor lands on the *last*
+     * element in recency (skip current going backwards):
+     *  - `cmd+shift+tab` → app[size-1] (least-recently-used app).
+     *  - `cmd+shift+\``  → window[size-1] of current app.
+     * While the session is already open, the shift variant just navigates
+     * one step backwards.
      *
      * Each fresh press also arms the auto-advance press job (see
-     * [shortcutKeyHeld]). Subsequent fires from OS keyboard auto-repeat are
+     * [heldShortcut]). Subsequent fires from OS keyboard auto-repeat are
      * ignored — they all look identical to fresh presses at the Carbon API
      * level, so we differentiate via the keyUp signal from the panel.
      */
@@ -119,7 +122,7 @@ class SwitcherController(
         if (current == null) {
             openSession(entry)
             if (reverse) {
-                navigate(reverseEventFor(entry))
+                placeOnLastInRecency(entry)
             }
         } else {
             val event = if (reverse) reverseEventFor(entry) else forwardEventFor(entry)
@@ -128,6 +131,32 @@ class SwitcherController(
         val cursor = _ui.value?.state?.cursor
         println("[ctl] shortcut entry=$entry reverse=$reverse cursor=$cursor")
         startPressJob(entry, reverse)
+    }
+
+    /**
+     * Override the just-opened session's default cursor to point at the
+     * *last* element in recency. For `App` entry that means the
+     * least-recently-used app (`app[size-1]`); for `Window` entry, the
+     * least-recently-used window of the current app.
+     */
+    private fun placeOnLastInRecency(entry: SwitcherEntry) {
+        val cur = _ui.value ?: return
+        val items = cur.state.snapshot.all
+        if (items.isEmpty()) return
+        val lastCursor = when (entry) {
+            SwitcherEntry.App -> SwitcherCursor(
+                appIndex = items.lastIndex,
+                windowIndex = 0,
+            )
+            SwitcherEntry.Window -> {
+                val windows = items[0].windows
+                SwitcherCursor(
+                    appIndex = 0,
+                    windowIndex = (windows.size - 1).coerceAtLeast(0),
+                )
+            }
+        }
+        _ui.value = cur.copy(state = cur.state.copy(cursor = lastCursor), previewedWindowId = null)
     }
 
     /**
