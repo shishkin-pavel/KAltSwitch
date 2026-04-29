@@ -1,8 +1,27 @@
 package com.shish.kaltswitch.config
 
 import com.shish.kaltswitch.model.FilteringRules
+import kotlinx.serialization.SerialName
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.json.Json
+
+/**
+ * User's choice for the highlight / selection colour. `UseSystem` defers
+ * to `NSColor.controlAccentColor` (Swift refreshes the value on
+ * `NSSystemColorsDidChangeNotification`); `Custom` carries an opaque
+ * 0xRRGGBB hex (alpha is implicit 0xFF — there's no use case for a
+ * translucent accent yet).
+ */
+@Serializable
+sealed interface AccentColorChoice {
+    @Serializable
+    @SerialName("system")
+    object UseSystem : AccentColorChoice
+
+    @Serializable
+    @SerialName("custom")
+    data class Custom(val rgb: Long) : AccentColorChoice
+}
 
 /**
  * Bottom-left origin and size of a window. macOS native uses bottom-left
@@ -71,6 +90,10 @@ data class AppConfig(
      *  current Mission Control space. Default false → show windows from
      *  every space (the alt-tab-macos default). */
     val currentSpaceOnly: Boolean = false,
+    /** Highlight colour. Default is the warm yellow-orange the app shipped
+     *  with; toggling to [AccentColorChoice.UseSystem] mirrors the macOS
+     *  control-accent setting in real time. */
+    val accentColor: AccentColorChoice = AccentColorChoice.Custom(0xFFC107),
 )
 
 /**

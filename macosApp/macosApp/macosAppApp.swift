@@ -140,6 +140,21 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         overlayComposeDelegate?.create()
         overlayComposeDelegate?.start()
 
+        // ComposeNSViewDelegate set the panel's contentView to the Compose
+        // NSView. Re-parent it so an NSVisualEffectView sits underneath —
+        // that's the blur backdrop. Sized later via observeSwitcherPanelSize.
+        if let composeView = panel.contentView {
+            panel.installBlurBackdrop(under: composeView)
+        }
+        ComposeViewKt.observeSwitcherPanelSize(
+            onChange: { [weak panel] w, h in
+                panel?.updateBlurFrame(widthPts: CGFloat(w.doubleValue), heightPts: CGFloat(h.doubleValue))
+            },
+            onCleared: { [weak panel] in
+                panel?.updateBlurFrame(widthPts: nil, heightPts: nil)
+            },
+        )
+
         panel.onCommandReleased = { [weak controller] in
             controller?.onModifierReleased()
         }

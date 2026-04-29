@@ -43,6 +43,8 @@ import androidx.compose.ui.input.pointer.onPointerEvent
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.layout.onSizeChanged
+import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
@@ -72,6 +74,7 @@ fun SwitcherOverlay(
     onShortcut: (SwitcherEntry) -> Unit,
     onPointAt: (appIndex: Int, windowIndex: Int?) -> Unit,
     onPointerMoved: () -> Unit,
+    onPanelSize: (Float, Float) -> Unit,
     onCommit: () -> Unit,
 ) {
     val focus = remember { FocusRequester() }
@@ -90,7 +93,7 @@ fun SwitcherOverlay(
             .onPointerEvent(PointerEventType.Move) { onPointerMoved() },
         contentAlignment = Alignment.Center,
     ) {
-        SwitcherPanel(ui, iconsByPid, onPointAt, onCommit)
+        SwitcherPanel(ui, iconsByPid, onPointAt, onCommit, onPanelSize)
     }
 }
 
@@ -130,12 +133,14 @@ private fun SwitcherPanel(
     iconsByPid: Map<Int, ByteArray>,
     onPointAt: (appIndex: Int, windowIndex: Int?) -> Unit,
     onCommit: () -> Unit,
+    onPanelSize: (Float, Float) -> Unit,
 ) {
     val state = ui.state
     val entries = state.snapshot.all
     if (entries.isEmpty()) return
 
     val withWindowsCount = state.snapshot.withWindows.size
+    val density = LocalDensity.current
 
     BoxWithConstraints(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
         // Cap the panel at the available NSPanel width minus a comfortable
@@ -149,6 +154,15 @@ private fun SwitcherPanel(
                 .clip(RoundedCornerShape(16.dp))
                 .background(Color(0xCC1B1B1F))
                 .border(1.dp, Color(0x33FFFFFF), RoundedCornerShape(16.dp))
+                // Push the box's measured size out to Swift so it can drop
+                // an NSVisualEffectView underneath, exactly matching the
+                // visible rounded rectangle. dp not px — Swift wants
+                // points-coordinates for window math.
+                .onSizeChanged { size ->
+                    with(density) {
+                        onPanelSize(size.width.toDp().value, size.height.toDp().value)
+                    }
+                }
                 .padding(horizontal = 16.dp, vertical = 12.dp),
         ) {
             FlowRow(
@@ -157,11 +171,14 @@ private fun SwitcherPanel(
             ) {
                 entries.forEachIndexed { appIndex, entry ->
                     if (appIndex == withWindowsCount && withWindowsCount > 0 && withWindowsCount < entries.size) {
+                        // Vertical separator between Show and Demote app
+                        // buckets. Coloured with the accent so it reads as
+                        // a deliberate boundary, not visual noise.
                         Spacer(
                             Modifier
                                 .width(1.dp)
                                 .height(96.dp)
-                                .background(Color(0x33FFFFFF))
+                                .background(AccentColor)
                         )
                     }
                     AppCell(
@@ -169,6 +186,7 @@ private fun SwitcherPanel(
                         pid = entry.app.pid,
                         iconBytes = iconsByPid[entry.app.pid],
                         windows = entry.windows,
+                        shownWindowCount = entry.shownWindowCount,
                         isSelected = appIndex == state.cursor.appIndex,
                         selectedWindowIndex = if (appIndex == state.cursor.appIndex) state.cursor.windowIndex else -1,
                         onHoverApp = { onPointAt(appIndex, null) },
@@ -189,6 +207,7 @@ private fun AppCell(
     pid: Int,
     iconBytes: ByteArray?,
     windows: List<com.shish.kaltswitch.model.Window>,
+    shownWindowCount: Int,
     isSelected: Boolean,
     selectedWindowIndex: Int,
     onHoverApp: () -> Unit,
@@ -196,7 +215,7 @@ private fun AppCell(
     onClickApp: () -> Unit,
     onClickWindow: (Int) -> Unit,
 ) {
-    val borderColor = if (isSelected) Color(0xFFFFC107) else Color.Transparent
+    val borderColor = if (isSelected) AccentColor else Color.Transparent
     val nameColor = if (isSelected) Color.White else Color(0xFFCCCCCC)
     // Hover/click handlers stay on the cell-level Column so the entire app
     // cell (icon + name + window list) is one click target. Per-window rows
@@ -229,8 +248,19 @@ private fun AppCell(
                 verticalArrangement = Arrangement.spacedBy(1.dp),
             ) {
                 windows.forEachIndexed { i, w ->
+                    if (i == shownWindowCount && shownWindowCount > 0 && shownWindowCount < windows.size) {
+                        // Horizontal hairline between Show and Demote
+                        // windows of the same app. Same accent colour as the
+                        // app-bucket separator above for visual consistency.
+                        Box(
+                            Modifier
+                                .fillMaxWidth()
+                                .height(1.dp)
+                                .background(AccentColor)
+                        )
+                    }
                     WindowTitleRow(
-                        title = w.title.ifBlank { "(untitled)" },
+                        title = effectiveWindowTitle(w.title, name),
                         isActive = isSelected && i == selectedWindowIndex,
                         onHover = { onHoverWindow(i) },
                         onClick = { onClickWindow(i) },
@@ -277,7 +307,7 @@ private fun WindowTitleRow(
     onHover: () -> Unit,
     onClick: () -> Unit,
 ) {
-    val bg = if (isActive) Color(0xFFFFC107) else Color.Transparent
+    val bg = if (isActive) AccentColor else Color.Transparent
     val fg = if (isActive) Color.Black else Color(0xFFBBBBBB)
     Box(
         Modifier

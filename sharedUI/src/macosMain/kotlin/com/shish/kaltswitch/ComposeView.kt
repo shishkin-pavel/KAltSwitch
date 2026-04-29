@@ -30,6 +30,7 @@ val store = WorldStore().also { initStore ->
         initStore.setShowMenubarIcon(cfg.showMenubarIcon)
         initStore.setLaunchAtLogin(cfg.launchAtLogin)
         initStore.setCurrentSpaceOnly(cfg.currentSpaceOnly)
+        initStore.setAccentColor(cfg.accentColor)
     }
 }
 
@@ -62,11 +63,13 @@ private val configScope = CoroutineScope(Dispatchers.Main).also { scope ->
         store.showMenubarIcon,
         store.launchAtLogin,
         store.currentSpaceOnly,
-    ) { base, menubar, launchAtLogin, currentSpaceOnly ->
+        store.accentColor,
+    ) { base, menubar, launchAtLogin, currentSpaceOnly, accent ->
         base.copy(
             showMenubarIcon = menubar,
             launchAtLogin = launchAtLogin,
             currentSpaceOnly = currentSpaceOnly,
+            accentColor = accent,
         )
     }
         .drop(1)
@@ -145,6 +148,17 @@ fun observeCurrentSpaceOnly(onChange: (Boolean) -> Unit) {
         .launchIn(bridgeScope)
 }
 
+/** Compose-reported visible-panel size in dp, used by Swift to size the
+ *  NSVisualEffectView that draws the blur backdrop. `null` means there's
+ *  no active session — Swift hides the blur view. */
+fun observeSwitcherPanelSize(onChange: (Double, Double) -> Unit, onCleared: () -> Unit) {
+    store.switcherPanelSize
+        .onEach { size ->
+            if (size == null) onCleared() else onChange(size.first, size.second)
+        }
+        .launchIn(bridgeScope)
+}
+
 fun AttachMainComposeView(
     window: NSWindow,
 ): ComposeNSViewDelegate = ComposeNSViewDelegate(
@@ -161,6 +175,8 @@ fun AttachMainComposeView(
         val launchAtLogin by store.launchAtLogin.collectAsState()
         val currentSpaceOnly by store.currentSpaceOnly.collectAsState()
         val visibleSpaceIds by store.visibleSpaceIds.collectAsState()
+        val accentColor by store.accentColor.collectAsState()
+        val systemAccentRgb by store.systemAccentRgb.collectAsState()
         val windowFrame by store.windowFrame.collectAsState()
         // Sidebar width is stored alongside the rest of the window frame —
         // when the inspector is hidden it's the whole window's width, when
@@ -187,6 +203,9 @@ fun AttachMainComposeView(
             currentSpaceOnly = currentSpaceOnly,
             onCurrentSpaceOnlyChange = { store.setCurrentSpaceOnly(it) },
             visibleSpaceIds = visibleSpaceIds,
+            accentColor = accentColor,
+            onAccentColorChange = { store.setAccentColor(it) },
+            systemAccentRgb = systemAccentRgb,
             onGrantAxClick = {
                 val granted = requestAxPermission()
                 store.setAxTrusted(granted)
@@ -204,20 +223,27 @@ fun AttachSwitcherOverlay(window: NSWindow): ComposeNSViewDelegate = ComposeNSVi
     content = {
         val ui by switcherController.ui.collectAsState()
         val icons by store.iconsByPid.collectAsState()
+        val accentColor by store.accentColor.collectAsState()
+        val systemAccentRgb by store.systemAccentRgb.collectAsState()
         val current = ui
         if (current != null && current.visible) {
-            SwitcherOverlay(
-                ui = current,
-                iconsByPid = icons,
-                onNavigate = { switcherController.onNavigate(it) },
-                onEsc = { switcherController.onEsc() },
-                onShortcut = { switcherController.onShortcut(it) },
-                onPointAt = { appIndex, windowIndex ->
-                    switcherController.onPointAt(appIndex, windowIndex)
-                },
-                onPointerMoved = { switcherController.onPointerMoved() },
-                onCommit = { switcherController.onCommit() },
-            )
+            ProvideAccent(resolveAccent(accentColor, systemAccentRgb)) {
+                SwitcherOverlay(
+                    ui = current,
+                    iconsByPid = icons,
+                    onNavigate = { switcherController.onNavigate(it) },
+                    onEsc = { switcherController.onEsc() },
+                    onShortcut = { switcherController.onShortcut(it) },
+                    onPointAt = { appIndex, windowIndex ->
+                        switcherController.onPointAt(appIndex, windowIndex)
+                    },
+                    onPointerMoved = { switcherController.onPointerMoved() },
+                    onPanelSize = { w, h ->
+                        store.setSwitcherPanelSize(w.toDouble(), h.toDouble())
+                    },
+                    onCommit = { switcherController.onCommit() },
+                )
+            }
         }
     },
 )

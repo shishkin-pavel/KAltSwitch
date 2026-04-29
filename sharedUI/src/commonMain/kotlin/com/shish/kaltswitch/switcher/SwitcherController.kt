@@ -390,5 +390,8 @@ class SwitcherController(
         heldShortcut = null
         _ui.value = null
         store.setSwitcherActive(false)
+        // Stale size would let the blur backdrop linger past the session;
+        // clearing it tells Swift to hide the NSVisualEffectView.
+        store.clearSwitcherPanelSize()
     }
 }

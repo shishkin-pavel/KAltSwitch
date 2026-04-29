@@ -138,7 +138,7 @@ private fun Header(inspectorVisible: Boolean, onToggleInspector: () -> Unit) {
             )
             Text(
                 if (inspectorVisible) "‹" else "›",
-                color = Color(0xFFFFC107),
+                color = AccentColor,
                 fontWeight = FontWeight.Bold,
                 style = MaterialTheme.typography.titleSmall,
             )
@@ -202,7 +202,7 @@ private fun RuleCard(
                 checked = rule.enabled,
                 onCheckedChange = { onChange(rule.copy(enabled = it)) },
                 colors = SwitchDefaults.colors(
-                    checkedTrackColor = Color(0xFFFFC107),
+                    checkedTrackColor = AccentColor,
                     checkedThumbColor = Color.Black,
                 ),
             )
@@ -269,7 +269,7 @@ private fun NameField(
             value = value,
             onValueChange = onChange,
             singleLine = true,
-            cursorBrush = SolidColor(Color(0xFFFFC107)),
+            cursorBrush = SolidColor(AccentColor),
             textStyle = TextStyle(
                 color = Color(0xFFE0E0E0),
                 fontSize = 13.sp,
@@ -293,7 +293,7 @@ private fun PredicateRow(
         Checkbox(
             checked = predicate.enabled,
             onCheckedChange = { onChange(predicate.withEnabled(it)) },
-            colors = CheckboxDefaults.colors(checkedColor = Color(0xFFFFC107)),
+            colors = CheckboxDefaults.colors(checkedColor = AccentColor),
             modifier = Modifier.size(20.dp),
         )
         // Inversion (NOT) toggle, rendered as a small chip rather than a
@@ -501,7 +501,7 @@ private fun ValueTextField(
             onValueChange = onChange,
             singleLine = true,
             visualTransformation = VisualTransformation.None,
-            cursorBrush = SolidColor(Color(0xFFFFC107)),
+            cursorBrush = SolidColor(AccentColor),
             textStyle = TextStyle(color = Color(0xFFE0E0E0), fontSize = 11.sp),
             modifier = Modifier.fillMaxWidth(),
         )
@@ -573,7 +573,7 @@ private fun IconButton(glyph: String, onClick: () -> Unit, color: Color) {
 
 @Composable
 private fun SegmentChip(text: String, selected: Boolean, onClick: () -> Unit) {
-    val bg = if (selected) Color(0xFFFFC107) else Color(0xFF2A2A2A)
+    val bg = if (selected) AccentColor else Color(0xFF2A2A2A)
     val fg = if (selected) Color.Black else Color(0xFFCCCCCC)
     Box(
         Modifier

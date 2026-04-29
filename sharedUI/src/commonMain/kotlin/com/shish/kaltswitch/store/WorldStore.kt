@@ -5,6 +5,7 @@ import com.shish.kaltswitch.model.ActivationEvent
 import com.shish.kaltswitch.model.ActivationLog
 import com.shish.kaltswitch.model.App
 import com.shish.kaltswitch.model.AppActivationPolicy
+import com.shish.kaltswitch.config.AccentColorChoice
 import com.shish.kaltswitch.model.FilteringRules
 import com.shish.kaltswitch.model.Window
 import com.shish.kaltswitch.model.WindowId
@@ -88,6 +89,39 @@ class WorldStore(initial: World = World(ActivationLog(), emptyMap(), emptyMap())
 
     fun setVisibleSpaceIds(ids: List<Long>) {
         _visibleSpaceIds.value = ids
+    }
+
+    /** User-selected accent. Resolved to an actual RGB by combining with
+     *  [systemAccentRgb] downstream (see ComposeView.effectiveAccentRgb). */
+    private val _accentColor = MutableStateFlow<AccentColorChoice>(AccentColorChoice.Custom(0xFFC107))
+    val accentColor: StateFlow<AccentColorChoice> = _accentColor.asStateFlow()
+
+    fun setAccentColor(choice: AccentColorChoice) {
+        _accentColor.value = choice
+    }
+
+    /** Swift pushes `NSColor.controlAccentColor` packed as 0xRRGGBB whenever
+     *  the system colour changes (via `NSSystemColorsDidChangeNotification`).
+     *  Null means we haven't read it yet — UI falls back to the Custom default. */
+    private val _systemAccentRgb = MutableStateFlow<Long?>(null)
+    val systemAccentRgb: StateFlow<Long?> = _systemAccentRgb.asStateFlow()
+
+    fun setSystemAccentRgb(rgb: Long) {
+        _systemAccentRgb.value = rgb
+    }
+
+    /** Compose-reported size of the visible switcher panel (in dp).
+     *  Swift uses it to position an NSVisualEffectView under the panel for
+     *  the blur backdrop. Null when there is no active session. */
+    private val _switcherPanelSize = MutableStateFlow<Pair<Double, Double>?>(null)
+    val switcherPanelSize: StateFlow<Pair<Double, Double>?> = _switcherPanelSize.asStateFlow()
+
+    fun setSwitcherPanelSize(width: Double, height: Double) {
+        _switcherPanelSize.value = width to height
+    }
+
+    fun clearSwitcherPanelSize() {
+        _switcherPanelSize.value = null
     }
 
     /** True while a switcher session is open or just closed. AX/Workspace activation

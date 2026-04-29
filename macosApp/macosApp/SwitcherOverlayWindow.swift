@@ -28,6 +28,14 @@ final class SwitcherOverlayWindow: NSPanel {
     /// `SwitcherController.onShortcutKeyReleased`.
     var onShortcutKeyReleased: (() -> Void)?
 
+    /// NSVisualEffectView placed behind the Compose-rendered rounded
+    /// panel. Sized and positioned dynamically from a Compose-side flow
+    /// (`observeSwitcherPanelSize`) so it tracks whatever the layout
+    /// produces — number of apps, FlowRow wrap behaviour, etc. Hidden
+    /// (alphaValue = 0) when there's no active session so the empty panel
+    /// margins don't show a stray blur halo.
+    private(set) var blurView: NSVisualEffectView?
+
     init() {
         super.init(
             contentRect: NSRect(x: 0, y: 0, width: 1200, height: 480),
@@ -48,6 +56,53 @@ final class SwitcherOverlayWindow: NSPanel {
         ignoresMouseEvents = false
         alphaValue = 0
         collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary, .transient]
+    }
+
+    /// Install the blur backdrop. Called once after the Compose contentView
+    /// is attached: we re-parent the Compose NSView into a wrapper that has
+    /// an [NSVisualEffectView] underneath, both children sized to the
+    /// panel. The blur frame is then driven from Compose's reported panel
+    /// size so the rounded backdrop hugs the visible Compose surface
+    /// rather than smearing across the whole panel.
+    func installBlurBackdrop(under composeView: NSView) {
+        let wrapper = NSView(frame: contentView?.bounds ?? composeView.bounds)
+        wrapper.wantsLayer = true
+        wrapper.autoresizingMask = [.width, .height]
+
+        let blur = NSVisualEffectView(frame: .zero)
+        blur.material = .hudWindow
+        blur.blendingMode = .behindWindow
+        blur.state = .active
+        blur.wantsLayer = true
+        blur.layer?.cornerRadius = 16
+        blur.layer?.masksToBounds = true
+        blur.alphaValue = 0   // session not active yet
+        wrapper.addSubview(blur)
+
+        composeView.frame = wrapper.bounds
+        composeView.autoresizingMask = [.width, .height]
+        wrapper.addSubview(composeView)
+
+        contentView = wrapper
+        blurView = blur
+    }
+
+    /// Position and size the blur backdrop. `sizeDp` comes from Compose,
+    /// converted to points (Compose dp == AppKit point on macOS). Pass
+    /// nil to hide the backdrop (between sessions).
+    func updateBlurFrame(widthPts: CGFloat?, heightPts: CGFloat?) {
+        guard let blur = blurView else { return }
+        guard let w = widthPts, let h = heightPts, w > 0, h > 0 else {
+            blur.alphaValue = 0
+            return
+        }
+        let bounds = contentView?.bounds ?? frame
+        let origin = NSPoint(
+            x: (bounds.size.width - w) / 2,
+            y: (bounds.size.height - h) / 2,
+        )
+        blur.frame = NSRect(origin: origin, size: NSSize(width: w, height: h))
+        blur.alphaValue = 1
     }
 
     override var canBecomeKey: Bool { true }

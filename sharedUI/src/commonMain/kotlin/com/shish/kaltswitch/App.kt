@@ -41,6 +41,7 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import com.shish.kaltswitch.config.AccentColorChoice
 import com.shish.kaltswitch.config.SwitcherSettings
 import com.shish.kaltswitch.model.AppActivationPolicy
 import com.shish.kaltswitch.model.AppView
@@ -74,12 +75,17 @@ fun App(
     currentSpaceOnly: Boolean = false,
     onCurrentSpaceOnlyChange: (Boolean) -> Unit = {},
     visibleSpaceIds: List<Long> = emptyList(),
+    accentColor: AccentColorChoice = AccentColorChoice.Custom(0xFFC107),
+    onAccentColorChange: (AccentColorChoice) -> Unit = {},
+    systemAccentRgb: Long? = null,
     onGrantAxClick: () -> Unit = {},
 ) {
     val snapshot = remember(world, filters, currentSpaceOnly, visibleSpaceIds) {
         world.filteredSnapshot(filters, currentSpaceOnly, visibleSpaceIds)
     }
     val density = LocalDensity.current
+    val resolvedAccent = resolveAccent(accentColor, systemAccentRgb)
+    ProvideAccent(resolvedAccent) {
     BoxWithConstraints(Modifier.fillMaxSize().background(Color(0xFF1E1E1E))) {
         val totalWidthPx = with(density) { maxWidth.toPx() }
         val handleWidthPx = with(density) { SeparatorWidth.toPx() }
@@ -119,6 +125,8 @@ fun App(
                     onLaunchAtLoginChange = onLaunchAtLoginChange,
                     currentSpaceOnly = currentSpaceOnly,
                     onCurrentSpaceOnlyChange = onCurrentSpaceOnlyChange,
+                    accentColor = accentColor,
+                    onAccentColorChange = onAccentColorChange,
                 )
                 Spacer(Modifier.height(2.dp))
                 FilteringRulesPanel(
@@ -159,6 +167,7 @@ fun App(
                 )
             }
         }
+    }
     }
 }
 
@@ -242,13 +251,13 @@ private fun AxBanner(onGrantClick: () -> Unit) {
     ) {
         Text(
             "⚠️  Accessibility permission not granted. Without it we can't see other apps' windows.",
-            color = Color(0xFFFFC107),
+            color = AccentColor,
             modifier = Modifier.weight(1f),
             style = MaterialTheme.typography.bodyMedium,
         )
         Button(
             onClick = onGrantClick,
-            colors = ButtonDefaults.buttonColors(containerColor = Color(0xFFFFC107), contentColor = Color.Black),
+            colors = ButtonDefaults.buttonColors(containerColor = AccentColor, contentColor = Color.Black),
         ) { Text("Grant…") }
     }
 }
@@ -274,7 +283,7 @@ private fun AppRow(view: AppView, activeAppPid: Int?, activeWindowId: WindowId?)
             style = MaterialTheme.typography.bodyMedium,
         )
         view.windows.forEach { wv ->
-            WindowSubtree(wv, depth = 1, activeAppPid == app.pid, activeWindowId)
+            WindowSubtree(wv, appName = app.name, depth = 1, isInActiveApp = activeAppPid == app.pid, activeWindowId = activeWindowId)
         }
     }
 }
@@ -282,18 +291,19 @@ private fun AppRow(view: AppView, activeAppPid: Int?, activeWindowId: WindowId?)
 @Composable
 private fun WindowSubtree(
     view: WindowView,
+    appName: String,
     depth: Int,
     isInActiveApp: Boolean,
     activeWindowId: WindowId?,
 ) {
-    WindowRow(view, depth = depth, isActive = isInActiveApp && view.window.id == activeWindowId)
+    WindowRow(view, appName = appName, depth = depth, isActive = isInActiveApp && view.window.id == activeWindowId)
     view.children.forEach { child ->
-        WindowSubtree(child, depth + 1, isInActiveApp, activeWindowId)
+        WindowSubtree(child, appName, depth + 1, isInActiveApp, activeWindowId)
     }
 }
 
 @Composable
-private fun WindowRow(view: WindowView, depth: Int, isActive: Boolean) {
+private fun WindowRow(view: WindowView, appName: String, depth: Int, isActive: Boolean) {
     val w = view.window
     val baseColor = if (isActive) Color(0xFFFFFFFF) else Color(0xFF9E9E9E)
     val color = baseColor.dimmedFor(view.mode)
@@ -308,7 +318,7 @@ private fun WindowRow(view: WindowView, depth: Int, isActive: Boolean) {
     }.joinToString(" · ")
     val indent = "    ".repeat(depth)
     Text(
-        "$indent$pictogram ${w.title.ifBlank { "(untitled)" }}  ${tagText(tags)}",
+        "$indent$pictogram ${effectiveWindowTitle(w.title, appName)}  ${tagText(tags)}",
         color = color,
         fontWeight = if (isActive) FontWeight.SemiBold else FontWeight.Normal,
         style = MaterialTheme.typography.bodySmall,
@@ -357,6 +367,8 @@ private fun SettingsPanel(
     onLaunchAtLoginChange: (Boolean) -> Unit,
     currentSpaceOnly: Boolean,
     onCurrentSpaceOnlyChange: (Boolean) -> Unit,
+    accentColor: AccentColorChoice,
+    onAccentColorChange: (AccentColorChoice) -> Unit,
 ) {
     Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
         Text(
@@ -410,6 +422,89 @@ private fun SettingsPanel(
             checked = currentSpaceOnly,
             onCheckedChange = onCurrentSpaceOnlyChange,
         )
+        Spacer(Modifier.height(2.dp))
+        AccentColorRow(
+            choice = accentColor,
+            onChange = onAccentColorChange,
+        )
+    }
+}
+
+/**
+ * Two-row "Accent colour" widget: a Use-system toggle and (when off) a hex
+ * input the user types directly into. We accept 6-digit hex with or without
+ * a leading `#`; bad input is silently ignored so partial typing doesn't
+ * spam invalid `setAccentColor` calls.
+ */
+@Composable
+private fun AccentColorRow(
+    choice: AccentColorChoice,
+    onChange: (AccentColorChoice) -> Unit,
+) {
+    val isSystem = choice is AccentColorChoice.UseSystem
+    val customRgb = (choice as? AccentColorChoice.Custom)?.rgb ?: 0xFFC107L
+    ToggleRow(
+        label = "Use system accent color",
+        checked = isSystem,
+        onCheckedChange = { wantSystem ->
+            onChange(if (wantSystem) AccentColorChoice.UseSystem else AccentColorChoice.Custom(customRgb))
+        },
+    )
+    if (!isSystem) {
+        Row(
+            Modifier.fillMaxWidth().padding(top = 4.dp),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(8.dp),
+        ) {
+            Text(
+                "Custom color",
+                color = Color(0xFFE0E0E0),
+                style = MaterialTheme.typography.labelSmall,
+                modifier = Modifier.weight(1f),
+            )
+            // Visual swatch + hex input. Click-to-edit happens via the
+            // BasicTextField; the swatch reflects the currently-stored
+            // RGB so the user has a feedback loop while typing.
+            Box(
+                Modifier
+                    .width(20.dp)
+                    .height(20.dp)
+                    .clip(RoundedCornerShape(4.dp))
+                    .background(rgbToColor(customRgb)),
+            )
+            HexField(
+                rgb = customRgb,
+                onChange = { onChange(AccentColorChoice.Custom(it)) },
+            )
+        }
+    }
+}
+
+@Composable
+private fun HexField(rgb: Long, onChange: (Long) -> Unit) {
+    val text = rgb.toString(16).padStart(6, '0').uppercase()
+    Box(
+        Modifier
+            .width(80.dp)
+            .clip(RoundedCornerShape(4.dp))
+            .background(Color(0xFF1A1A1A))
+            .padding(horizontal = 6.dp, vertical = 4.dp),
+    ) {
+        androidx.compose.foundation.text.BasicTextField(
+            value = text,
+            onValueChange = { raw ->
+                val cleaned = raw.trimStart('#').take(6).uppercase()
+                if (cleaned.length == 6) {
+                    cleaned.toLongOrNull(16)?.let(onChange)
+                }
+            },
+            singleLine = true,
+            cursorBrush = androidx.compose.ui.graphics.SolidColor(AccentColor),
+            textStyle = androidx.compose.ui.text.TextStyle(
+                color = Color(0xFFE0E0E0),
+                fontSize = 12.sp,
+            ),
+        )
     }
 }
 
@@ -434,7 +529,7 @@ private fun ToggleRow(
             checked = checked,
             onCheckedChange = onCheckedChange,
             colors = SwitchDefaults.colors(
-                checkedTrackColor = Color(0xFFFFC107),
+                checkedTrackColor = AccentColor,
                 checkedThumbColor = Color.Black,
             ),
         )
@@ -458,7 +553,7 @@ private fun DelaySlider(
             Text(label, color = Color(0xFFE0E0E0), style = MaterialTheme.typography.labelSmall)
             Text(
                 "${valueMs} ms",
-                color = Color(0xFFFFC107),
+                color = AccentColor,
                 fontWeight = FontWeight.Medium,
                 style = MaterialTheme.typography.labelSmall,
             )
@@ -468,8 +563,8 @@ private fun DelaySlider(
             onValueChange = { onChange(it.toLong()) },
             valueRange = range,
             colors = SliderDefaults.colors(
-                thumbColor = Color(0xFFFFC107),
-                activeTrackColor = Color(0xFFFFC107),
+                thumbColor = AccentColor,
+                activeTrackColor = AccentColor,
                 inactiveTrackColor = Color(0x33FFFFFF),
             ),
             modifier = Modifier.height(20.dp),
