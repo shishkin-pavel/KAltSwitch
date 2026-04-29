@@ -3,7 +3,6 @@ package com.shish.kaltswitch.switcher
 import com.shish.kaltswitch.model.SwitcherCursor
 import com.shish.kaltswitch.model.SwitcherEntry
 import com.shish.kaltswitch.model.SwitcherEvent
-import com.shish.kaltswitch.model.SwitcherSnapshot
 import com.shish.kaltswitch.model.SwitcherState
 import com.shish.kaltswitch.model.WindowId
 import com.shish.kaltswitch.model.apply
@@ -99,6 +98,39 @@ class SwitcherController(
     fun onNavigate(event: SwitcherEvent) {
         if (_ui.value == null) return
         navigate(event)
+    }
+
+    /**
+     * Mouse-driven cursor move from the overlay UI. `windowIndex == null` means
+     * "the user is pointing at the app cell as a whole" — keep the existing
+     * window index if we're still on the same app, otherwise reset to 0
+     * (newest window of the newly-pointed app), matching the keyboard NextApp
+     * behaviour.
+     *
+     * Out-of-range coordinates are silently ignored — easier than asking
+     * callers to validate against a snapshot they don't own.
+     */
+    fun onPointAt(appIndex: Int, windowIndex: Int? = null) {
+        val cur = _ui.value ?: return
+        val items = cur.state.snapshot.all
+        if (appIndex !in items.indices) return
+        val windows = items[appIndex].windows
+        val resolvedWindowIndex = when {
+            windows.isEmpty() -> 0
+            windowIndex != null -> windowIndex.coerceIn(0, windows.size - 1)
+            appIndex == cur.state.cursor.appIndex -> cur.state.cursor.windowIndex.coerceIn(0, windows.size - 1)
+            else -> 0
+        }
+        val nextCursor = SwitcherCursor(appIndex, resolvedWindowIndex)
+        if (nextCursor == cur.state.cursor) return
+        _ui.value = cur.copy(state = cur.state.copy(cursor = nextCursor), previewedWindowId = null)
+        schedulePreview()
+    }
+
+    /** Click-to-commit from the overlay UI. Same end state as cmd-release. */
+    fun onCommit() {
+        val cur = _ui.value ?: return
+        commit(cur)
     }
 
     fun onModifierReleased() {

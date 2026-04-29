@@ -28,6 +28,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.ui.focus.focusRequester
+import androidx.compose.ui.ExperimentalComposeUiApi
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.ImageBitmap
 import androidx.compose.ui.input.key.Key
@@ -37,6 +38,10 @@ import androidx.compose.ui.input.key.isShiftPressed
 import androidx.compose.ui.input.key.key
 import androidx.compose.ui.input.key.onPreviewKeyEvent
 import androidx.compose.ui.input.key.type
+import androidx.compose.ui.input.pointer.PointerEventType
+import androidx.compose.ui.input.pointer.onPointerEvent
+import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
@@ -64,6 +69,8 @@ fun SwitcherOverlay(
     onNavigate: (SwitcherEvent) -> Unit,
     onEsc: () -> Unit,
     onShortcut: (SwitcherEntry) -> Unit,
+    onPointAt: (appIndex: Int, windowIndex: Int?) -> Unit,
+    onCommit: () -> Unit,
 ) {
     val focus = remember { FocusRequester() }
     LaunchedEffect(Unit) { focus.requestFocus() }
@@ -76,7 +83,7 @@ fun SwitcherOverlay(
             .onPreviewKeyEvent { ev -> handleKey(ev, onNavigate, onEsc, onShortcut) },
         contentAlignment = Alignment.Center,
     ) {
-        SwitcherPanel(ui, iconsByPid)
+        SwitcherPanel(ui, iconsByPid, onPointAt, onCommit)
     }
 }
 
@@ -113,7 +120,12 @@ private fun handleKey(
 
 @OptIn(ExperimentalLayoutApi::class)
 @Composable
-private fun SwitcherPanel(ui: SwitcherUiState, iconsByPid: Map<Int, ByteArray>) {
+private fun SwitcherPanel(
+    ui: SwitcherUiState,
+    iconsByPid: Map<Int, ByteArray>,
+    onPointAt: (appIndex: Int, windowIndex: Int?) -> Unit,
+    onCommit: () -> Unit,
+) {
     val state = ui.state
     val entries = state.snapshot.all
     if (entries.isEmpty()) return
@@ -154,6 +166,10 @@ private fun SwitcherPanel(ui: SwitcherUiState, iconsByPid: Map<Int, ByteArray>) 
                         windows = entry.windows,
                         isSelected = appIndex == state.cursor.appIndex,
                         selectedWindowIndex = if (appIndex == state.cursor.appIndex) state.cursor.windowIndex else -1,
+                        onHoverApp = { onPointAt(appIndex, null) },
+                        onHoverWindow = { wi -> onPointAt(appIndex, wi) },
+                        onClickApp = { onPointAt(appIndex, null); onCommit() },
+                        onClickWindow = { wi -> onPointAt(appIndex, wi); onCommit() },
                     )
                 }
             }
@@ -161,6 +177,7 @@ private fun SwitcherPanel(ui: SwitcherUiState, iconsByPid: Map<Int, ByteArray>) 
     }
 }
 
+@OptIn(ExperimentalComposeUiApi::class)
 @Composable
 private fun AppCell(
     name: String,
@@ -169,14 +186,23 @@ private fun AppCell(
     windows: List<com.shish.kaltswitch.model.Window>,
     isSelected: Boolean,
     selectedWindowIndex: Int,
+    onHoverApp: () -> Unit,
+    onHoverWindow: (Int) -> Unit,
+    onClickApp: () -> Unit,
+    onClickWindow: (Int) -> Unit,
 ) {
     val borderColor = if (isSelected) Color(0xFFFFC107) else Color.Transparent
     val nameColor = if (isSelected) Color.White else Color(0xFFCCCCCC)
+    // Hover/click handlers stay on the cell-level Column so the entire app
+    // cell (icon + name + window list) is one click target. Per-window rows
+    // override the windowIndex via their own handlers.
     Column(
         Modifier
             .widthIn(min = 80.dp, max = 120.dp)
             .clip(RoundedCornerShape(10.dp))
             .border(2.dp, borderColor, RoundedCornerShape(10.dp))
+            .onPointerEvent(PointerEventType.Enter) { onHoverApp() }
+            .pointerInput(Unit) { detectTapGestures(onTap = { onClickApp() }) }
             .padding(horizontal = 6.dp, vertical = 6.dp),
         horizontalAlignment = Alignment.CenterHorizontally,
         verticalArrangement = Arrangement.spacedBy(4.dp),
@@ -201,6 +227,8 @@ private fun AppCell(
                     WindowTitleRow(
                         title = w.title.ifBlank { "(untitled)" },
                         isActive = isSelected && i == selectedWindowIndex,
+                        onHover = { onHoverWindow(i) },
+                        onClick = { onClickWindow(i) },
                     )
                 }
             }
@@ -236,8 +264,14 @@ private fun AppIconBox(pid: Int, iconBytes: ByteArray?, name: String) {
     }
 }
 
+@OptIn(ExperimentalComposeUiApi::class)
 @Composable
-private fun WindowTitleRow(title: String, isActive: Boolean) {
+private fun WindowTitleRow(
+    title: String,
+    isActive: Boolean,
+    onHover: () -> Unit,
+    onClick: () -> Unit,
+) {
     val bg = if (isActive) Color(0xFFFFC107) else Color.Transparent
     val fg = if (isActive) Color.Black else Color(0xFFBBBBBB)
     Box(
@@ -245,6 +279,11 @@ private fun WindowTitleRow(title: String, isActive: Boolean) {
             .fillMaxWidth()
             .clip(RoundedCornerShape(4.dp))
             .background(bg)
+            // Per-row hover/click handlers run BEFORE the parent cell's,
+            // so pointing at a specific window row updates windowIndex
+            // instead of resetting to the cell-level default.
+            .onPointerEvent(PointerEventType.Enter) { onHover() }
+            .pointerInput(Unit) { detectTapGestures(onTap = { onClick() }) }
             .padding(horizontal = 6.dp, vertical = 2.dp),
     ) {
         Text(

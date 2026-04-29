@@ -159,8 +159,69 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         // applicationWillTerminate (and accept that a crash leaves the user in
         // a broken state until next launch).
         setSymbolicHotKeysEnabled(false)
+        installMainMenu()
         composeDelegate?.create()
         composeDelegate?.start()
+    }
+
+    /// Standard macOS main menu: app menu (About / Hide / Quit) + Window menu
+    /// (Close / Minimize / Zoom). Without it, cmd+Q/cmd+W/cmd+M don't reach
+    /// the responder chain. Only fires when our app is frontmost (i.e. the
+    /// inspector is in front) — the switcher panel is `.nonactivatingPanel`,
+    /// so our menu doesn't show during a switcher session and the menu
+    /// shortcuts can't accidentally fire on the inspected app.
+    private func installMainMenu() {
+        let appName = ProcessInfo.processInfo.processName
+        let mainMenu = NSMenu()
+
+        let appMenuItem = NSMenuItem()
+        mainMenu.addItem(appMenuItem)
+        let appMenu = NSMenu()
+        appMenu.addItem(NSMenuItem(
+            title: "About \(appName)",
+            action: #selector(NSApplication.orderFrontStandardAboutPanel(_:)),
+            keyEquivalent: ""))
+        appMenu.addItem(.separator())
+        appMenu.addItem(NSMenuItem(
+            title: "Hide \(appName)",
+            action: #selector(NSApplication.hide(_:)),
+            keyEquivalent: "h"))
+        let hideOthers = NSMenuItem(
+            title: "Hide Others",
+            action: #selector(NSApplication.hideOtherApplications(_:)),
+            keyEquivalent: "h")
+        hideOthers.keyEquivalentModifierMask = [.command, .option]
+        appMenu.addItem(hideOthers)
+        appMenu.addItem(NSMenuItem(
+            title: "Show All",
+            action: #selector(NSApplication.unhideAllApplications(_:)),
+            keyEquivalent: ""))
+        appMenu.addItem(.separator())
+        appMenu.addItem(NSMenuItem(
+            title: "Quit \(appName)",
+            action: #selector(NSApplication.terminate(_:)),
+            keyEquivalent: "q"))
+        appMenuItem.submenu = appMenu
+
+        let windowMenuItem = NSMenuItem()
+        mainMenu.addItem(windowMenuItem)
+        let windowMenu = NSMenu(title: "Window")
+        windowMenu.addItem(NSMenuItem(
+            title: "Close",
+            action: #selector(NSWindow.performClose(_:)),
+            keyEquivalent: "w"))
+        windowMenu.addItem(NSMenuItem(
+            title: "Minimize",
+            action: #selector(NSWindow.performMiniaturize(_:)),
+            keyEquivalent: "m"))
+        windowMenu.addItem(NSMenuItem(
+            title: "Zoom",
+            action: #selector(NSWindow.performZoom(_:)),
+            keyEquivalent: ""))
+        windowMenuItem.submenu = windowMenu
+        NSApp.windowsMenu = windowMenu
+
+        NSApp.mainMenu = mainMenu
     }
 
     /// Force NSLog/print/stderr to ~/Library/Logs/KAltSwitch.log, regardless of how

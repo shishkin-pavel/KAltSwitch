@@ -207,6 +207,71 @@ class SwitcherControllerTest {
     }
 
     @Test
+    fun pointAt_movesCursor_andCommitsOnClick() = runTest {
+        val store = seededStore()
+        val commits = mutableListOf<Pair<Int, Long?>>()
+        val ctl = SwitcherController(store, scope = backgroundScope, showDelayMs = 20)
+            .also { it.onCommitActivation = { pid, wid -> commits += pid to wid } }
+
+        ctl.onShortcut(SwitcherEntry.App)  // default cursor: app=1 (IDE), win=0 (IDE A id 21)
+        advanceTimeBy(30)
+
+        // Hover over Safari (appIndex=0). No windowIndex hint → resets to 0
+        // (most-recent Safari window = id 11).
+        ctl.onPointAt(appIndex = 0)
+        assertEquals(0, ctl.ui.value?.state?.cursor?.appIndex)
+        assertEquals(0, ctl.ui.value?.state?.cursor?.windowIndex)
+
+        // Hover over Safari's second window (Safari B id 12).
+        ctl.onPointAt(appIndex = 0, windowIndex = 1)
+        assertEquals(1, ctl.ui.value?.state?.cursor?.windowIndex)
+
+        // Click commits without waiting for cmd-release.
+        ctl.onCommit()
+        advanceUntilIdle()
+        assertNull(ctl.ui.value)
+        assertEquals(listOf<Pair<Int, Long?>>(1 to 12L), commits)
+    }
+
+    @Test
+    fun pointAt_sameApp_preservesWindowIndexWhenWindowIndexNull() = runTest {
+        val store = seededStore()
+        val ctl = SwitcherController(store, scope = backgroundScope, showDelayMs = 20)
+
+        ctl.onShortcut(SwitcherEntry.App)  // app=1 (IDE), win=0
+        advanceTimeBy(30)
+        ctl.onPointAt(appIndex = 1, windowIndex = 1)  // IDE B id 22
+        assertEquals(1, ctl.ui.value?.state?.cursor?.windowIndex)
+
+        // Re-hover the same app cell as a whole — must NOT clobber win=1 back to 0.
+        ctl.onPointAt(appIndex = 1, windowIndex = null)
+        assertEquals(1, ctl.ui.value?.state?.cursor?.windowIndex)
+    }
+
+    @Test
+    fun pointAt_outOfRange_isIgnored() = runTest {
+        val store = seededStore()
+        val ctl = SwitcherController(store, scope = backgroundScope, showDelayMs = 20)
+
+        ctl.onShortcut(SwitcherEntry.App)
+        val before = ctl.ui.value?.state?.cursor
+        ctl.onPointAt(appIndex = 99)
+        assertEquals(before, ctl.ui.value?.state?.cursor)
+        ctl.onPointAt(appIndex = 0, windowIndex = 99)
+        // App moves but windowIndex clamps to last available.
+        assertEquals(0, ctl.ui.value?.state?.cursor?.appIndex)
+        assertEquals(1, ctl.ui.value?.state?.cursor?.windowIndex)
+    }
+
+    @Test
+    fun pointAt_beforeOpen_isIgnored() = runTest {
+        val store = seededStore()
+        val ctl = SwitcherController(store, scope = backgroundScope, showDelayMs = 20)
+        ctl.onPointAt(appIndex = 0)
+        assertNull(ctl.ui.value)
+    }
+
+    @Test
     fun store_recordActivation_isDroppedWhileSwitcherActive() = runTest {
         val store = seededStore()
         val ctl = SwitcherController(store, scope = backgroundScope, showDelayMs = 20)
