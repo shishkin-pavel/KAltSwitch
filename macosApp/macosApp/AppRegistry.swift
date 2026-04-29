@@ -3,15 +3,6 @@ import AppKit
 import ApplicationServices
 import ComposeAppMac
 
-private extension Comparable {
-    /// Clamp `self` to the inclusive bounds of `range`. Used to keep
-    /// converted RGB components inside 0...255 when sRGB rounding pushes
-    /// a component slightly past the byte range.
-    func clamped(to range: ClosedRange<Self>) -> Self {
-        return min(max(self, range.lowerBound), range.upperBound)
-    }
-}
-
 /// Tracks every running macOS application and owns one `AxAppWatcher` per pid.
 /// Subscribes to `NSWorkspace` launch/terminate/activate notifications to create
 /// and tear down watchers as apps come and go.
@@ -26,6 +17,9 @@ final class AppRegistry {
     private let store: WorldStore
     private var watchers: [pid_t: AxAppWatcher] = [:]
     private var nsObservers: [NSObjectProtocol] = []
+    /// Observer token returned from the Kotlin `observeSystemAccent(store:)`
+    /// helper. Held here so we can detach it on `stop()`.
+    private var systemAccentObserver: NSObjectProtocol?
     private var trustTimer: Timer?
     private var lastTrusted = false
     /// Fires whenever AX trust flips. The hotkey controller's CGEventTap
@@ -86,16 +80,7 @@ final class AppRegistry {
             object: nil, queue: .main
         ) { [weak self] _ in self?.handleSpaceChanged() }
 
-        // System accent colour. NSSystemColorsDidChangeNotification fires
-        // when the user picks a different highlight in System Settings →
-        // Appearance, so we can mirror the change live without polling.
-        // Lives on the default NotificationCenter (not the workspace one).
-        let accentObs = NotificationCenter.default.addObserver(
-            forName: NSNotification.Name("NSSystemColorsDidChangeNotification"),
-            object: nil, queue: .main
-        ) { [weak self] _ in self?.refreshSystemAccent() }
-
-        nsObservers = [launchObs, terminateObs, activateObs, hideObs, unhideObs, spaceObs, accentObs]
+        nsObservers = [launchObs, terminateObs, activateObs, hideObs, unhideObs, spaceObs]
 
         for nsApp in workspace.runningApplications {
             spawn(for: nsApp)
@@ -104,27 +89,15 @@ final class AppRegistry {
         // Seed the visible-space set so the filter works even before the
         // first space switch. Cheap call — no harm in doing it eagerly.
         refreshVisibleSpaces()
-        refreshSystemAccent()
+
+        // System accent colour: read + observe lives on the Kotlin side
+        // (`SystemAccentKt.observeSystemAccent`) so the NSColor → 0xRRGGBB
+        // packing has one home.
+        systemAccentObserver = SystemAccentKt.observeSystemAccent(store: store)
 
         // seedActivationLog ends in syncActiveStateFromSystem itself, so no
         // redundant call here.
         seedActivationLog()
-    }
-
-    /// Read NSColor.controlAccentColor, convert to sRGB, pack into 0xRRGGBB
-    /// and push to the Kotlin store. Used both at startup and whenever the
-    /// system accent setting changes.
-    private func refreshSystemAccent() {
-        let raw = NSColor.controlAccentColor
-        guard let srgb = raw.usingColorSpace(.sRGB) else {
-            log("[reg] system accent: failed to convert to sRGB")
-            return
-        }
-        let r = Int((srgb.redComponent * 255).rounded()).clamped(to: 0...255)
-        let g = Int((srgb.greenComponent * 255).rounded()).clamped(to: 0...255)
-        let b = Int((srgb.blueComponent * 255).rounded()).clamped(to: 0...255)
-        let rgb = Int64((r << 16) | (g << 8) | b)
-        store.setSystemAccentRgb(rgb: rgb)
     }
 
     private func handleSpaceChanged() {
@@ -174,6 +147,12 @@ final class AppRegistry {
         let center = NSWorkspace.shared.notificationCenter
         for obs in nsObservers { center.removeObserver(obs) }
         nsObservers.removeAll()
+        if let accent = systemAccentObserver {
+            // System accent observer lives on the *default* NotificationCenter,
+            // not the workspace one — see SystemAccent.kt.
+            NotificationCenter.default.removeObserver(accent)
+            systemAccentObserver = nil
+        }
         for (_, w) in watchers { w.stop() }
         watchers.removeAll()
     }
