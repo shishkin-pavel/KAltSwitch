@@ -34,7 +34,10 @@ targets:
         # stability (changing target name churns derived-data paths and the
         # configuration cache key).
         PRODUCT_NAME: KAltSwitch
-        PRODUCT_BUNDLE_IDENTIFIER: com.shish.kaltswitch.macosApp
+        # Drop the `.macosApp` target-name suffix from the bundle ID — it was
+        # leaking into TCC (Accessibility permissions DB), where the System
+        # Settings entry was named "macosApp.app" forever.
+        PRODUCT_BUNDLE_IDENTIFIER: com.shish.kaltswitch
         CODE_SIGN_STYLE: Automatic
         CODE_SIGN_IDENTITY: "-"
         ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
