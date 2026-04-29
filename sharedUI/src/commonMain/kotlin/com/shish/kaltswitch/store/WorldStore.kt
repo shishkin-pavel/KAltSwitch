@@ -143,10 +143,10 @@ class WorldStore(initial: World = World(ActivationLog(), emptyMap(), emptyMap())
      * windows" — that becomes an app-level event in the log, with the active
      * window pointer cleared until a more specific event arrives.
      */
-    fun recordActivation(pid: Int, windowId: WindowId?, timestampMs: Long) {
+    fun recordActivation(pid: Int, windowId: WindowId?) {
         if (_switcherActive.value) return
         _state.update {
-            it.copy(log = it.log.record(ActivationEvent(timestampMs, pid, windowId)))
+            it.copy(log = it.log.record(ActivationEvent(pid, windowId)))
         }
         setActive(pid = pid, windowId = windowId)
     }

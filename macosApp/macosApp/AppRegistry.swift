@@ -77,30 +77,26 @@ final class AppRegistry {
     /// log would be empty and the default cursor would have nowhere to land.
     private func seedActivationLog() {
         let workspace = NSWorkspace.shared
-        let now = nowMillis()
         let frontPid = workspace.frontmostApplication?.processIdentifier
 
-        // Background apps first, descending into the past, in the order
-        // NSWorkspace reports them (system order is roughly launch order).
+        // Background apps in NSWorkspace's reported order (roughly launch
+        // order). recordActivation prepends, so the *last* one looped over
+        // ends up second-from-top in appOrder() — i.e. it'll be the default
+        // cmd+tab cursor target. The exact ordering isn't critical: the very
+        // first real activation event after launch will reorder things.
         let backgroundApps = workspace.runningApplications.filter {
             $0.activationPolicy != .prohibited
                 && $0.processIdentifier > 0
                 && $0.processIdentifier != frontPid
         }
-        for (i, nsApp) in backgroundApps.enumerated() {
-            let offsetMs = Int64(backgroundApps.count - i + 1) * 1000
-            store.recordActivation(
-                pid: Int32(nsApp.processIdentifier),
-                windowId: nil,
-                timestampMs: now - offsetMs
-            )
+        for nsApp in backgroundApps {
+            store.recordActivation(pid: Int32(nsApp.processIdentifier), windowId: nil)
         }
 
-        // Frontmost gets the latest timestamp via the same unified path that
-        // every later activation goes through (`syncActiveStateFromSystem`),
-        // so the seed is indistinguishable from a real activation event. If
-        // there is no frontmost (login screen, all apps quit), this clears
-        // the active pointers — also the right thing to do.
+        // Frontmost goes last (= ends up newest = top of the log) via the
+        // same unified path that every later activation uses. If no app is
+        // frontmost (login screen, all apps quit), this clears the active
+        // pointers — also the right thing to do.
         syncActiveStateFromSystem(store: store)
     }
 
@@ -122,36 +118,37 @@ final class AppRegistry {
 
     /// Final activation on cmd-release.
     ///
-    /// Order:
-    ///  1. AX-side: kAXMain + kAXRaise on the chosen window. Sets its app's
-    ///     "main window" so the system focuses it once the app is frontmost.
-    ///  2. CGS-side: `_SLPSSetFrontProcessWithOptions` (SkyLight private API)
-    ///     to actually flip the frontmost-app pointer in WindowServer. This
-    ///     is what `NSRunningApplication.activate(options:)` *would* do in
-    ///     theory but silently skips on macOS 14+ when the caller (us) isn't
-    ///     already the active app. Our nonactivating overlay panel is exactly
-    ///     that case, so we go around the public API. See
-    ///     `docs/window-state-attributes.md` §8 ("AeroSpace-style agent app")
-    ///     for the public-API alternative we deliberately deferred.
-    ///  3. As a safety net we also call `nsApp.activate(...)` — it's free
-    ///     when it works, no-ops otherwise. If a future macOS breaks the
-    ///     SkyLight call, this keeps us limping along on the public path.
+    /// Order matters and matches alt-tab-macos's `Window.focus()` exactly:
+    ///  1. CGS `_SLPSSetFrontProcessWithOptions` (with the window's CGWindowID)
+    ///     to flip the frontmost-app pointer in WindowServer **and** put the
+    ///     specific window on top inside that process. NSRunningApplication.
+    ///     activate would no-op here because we're a non-activating panel
+    ///     host, so we call SkyLight directly.
+    ///  2. The byte-record key-window trick is part of `bringAppToFront`.
+    ///  3. AX `kAXMain` + `kAXRaise` on the chosen window. Done **after**
+    ///     CGS so the target process is already frontmost when its main thread
+    ///     processes the AX message — otherwise some apps (Safari, FF) ignore
+    ///     a kAXMain change to a backgrounded window and re-raise their
+    ///     previous frontmost window instead.
+    ///  4. `nsApp.activate(...)` as a free fallback. If a future macOS breaks
+    ///     the SkyLight call, this keeps focus moving on the public path.
     func commit(pid: pid_t, windowId: Int64?) {
         let watcher = watchers[pid]
-        var cgWid: CGWindowID? = nil
-        if let wid = windowId, let watcher = watcher {
-            let raised = watcher.makeWindowMain(windowId: wid)
-            cgWid = watcher.cgWindowId(forAxWindowId: wid)
-            NSLog("KAltSwitch: commit pid=%d ax=%lld cg=%u raise=%@",
-                  pid, wid, cgWid ?? 0, raised ? "ok" : "fail")
-        } else {
-            NSLog("KAltSwitch: commit pid=%d (app-only, no window)", pid)
-        }
+        let cgWid: CGWindowID? = (windowId != nil)
+            ? watcher?.cgWindowId(forAxWindowId: windowId!)
+            : nil
         let cgsOk = bringAppToFront(pid: pid, cgWindowId: cgWid)
+        var axOk = false
+        if let wid = windowId {
+            axOk = watcher?.makeWindowMain(windowId: wid) ?? false
+        }
         let nsAppOk = NSRunningApplication(processIdentifier: pid)?
             .activate(options: [.activateIgnoringOtherApps]) ?? false
-        NSLog("KAltSwitch: commit cgs=%@ nsapp=%@",
-              cgsOk ? "ok" : "fail", nsAppOk ? "ok" : "fail")
+        NSLog("KAltSwitch: commit pid=%d ax=%lld cg=%u cgs=%@ axRaise=%@ nsapp=%@",
+              pid, windowId ?? 0, cgWid ?? 0,
+              cgsOk ? "ok" : "fail",
+              axOk ? "ok" : "fail",
+              nsAppOk ? "ok" : "fail")
     }
 
     private func checkTrust() {
@@ -278,10 +275,6 @@ final class AppRegistry {
     }
 }
 
-func nowMillis() -> Int64 {
-    return Int64(Date().timeIntervalSince1970 * 1000)
-}
-
 /// Pulls authoritative "who is active" state from the system: NSWorkspace's
 /// frontmost app, then that app's kAXFocusedWindow. Used after every event that
 /// could move focus, including window destruction (e.g. closing Finder's last
@@ -311,5 +304,5 @@ func syncActiveStateFromSystem(store: WorldStore) {
     } else {
         windowId = nil
     }
-    store.recordActivation(pid: Int32(pid), windowId: windowId, timestampMs: nowMillis())
+    store.recordActivation(pid: Int32(pid), windowId: windowId)
 }

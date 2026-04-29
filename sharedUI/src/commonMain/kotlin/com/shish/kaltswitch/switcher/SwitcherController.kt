@@ -55,12 +55,6 @@ class SwitcherController(
      *  docs/window-state-attributes.md §8. The full code path stays compiled
      *  and tested so we can re-enable post-MVP without resurrecting it. */
     private val previewEnabled: Boolean = false,
-    /** Wall-clock "now in millis" provider. Production wires this to NSDate;
-     *  tests pass a fixed value or leave the default. The activation log
-     *  doesn't depend on the value for ordering (insertion order is
-     *  authoritative), but stamping events lets future features tell
-     *  "long ago" from "just now". */
-    private val clock: () -> Long = { 0L },
 ) {
     var onRaiseWindow: ((pid: Int, windowId: WindowId) -> Unit)? = null
     var onCommitActivation: ((pid: Int, windowId: WindowId?) -> Unit)? = null
@@ -170,7 +164,7 @@ class SwitcherController(
             // inspector's row order moves on every commit; later AX echoes
             // (when they do arrive) dedupe naturally — `appOrder()` walks
             // newest-first and emits each pid once.
-            store.recordActivation(app.pid, window?.id, clock())
+            store.recordActivation(app.pid, window?.id)
             onCommitActivation?.invoke(app.pid, window?.id)
         }
     }

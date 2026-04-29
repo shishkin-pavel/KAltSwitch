@@ -31,10 +31,10 @@ class WorldSnapshotTest {
     @Test
     fun snapshot_ordersAppsByActivationRecency_windowlessAtEnd() {
         val log = ActivationLog()
-            .record(ActivationEvent(1, finder.pid, finderWin.id))
-            .record(ActivationEvent(2, ide.pid, ideMisc.id))
-            .record(ActivationEvent(3, safari.pid, safariA.id))
-            .record(ActivationEvent(4, ide.pid, ideMain.id))     // ide bumps ahead of safari
+            .record(ActivationEvent(finder.pid, finderWin.id))
+            .record(ActivationEvent(ide.pid, ideMisc.id))
+            .record(ActivationEvent(safari.pid, safariA.id))
+            .record(ActivationEvent(ide.pid, ideMain.id))     // ide bumps ahead of safari
         val snap = world(log).snapshot()
         assertEquals(listOf("IntelliJ IDEA", "Safari", "Finder"), snap.withWindows.map { it.app.name })
         assertEquals(listOf("Launchpad"), snap.windowless.map { it.app.name })
@@ -43,8 +43,8 @@ class WorldSnapshotTest {
     @Test
     fun snapshot_ordersWindowsWithinApp_byRecencyThenInputOrder() {
         val log = ActivationLog()
-            .record(ActivationEvent(1, safari.pid, safariB.id))   // B first
-            .record(ActivationEvent(2, safari.pid, safariA.id))   // A bumps ahead
+            .record(ActivationEvent(safari.pid, safariB.id))   // B first
+            .record(ActivationEvent(safari.pid, safariA.id))   // A bumps ahead
         val snap = world(log).snapshot()
         val safariEntry = snap.withWindows.first { it.app.name == "Safari" }
         assertEquals(listOf(safariA, safariB), safariEntry.windows)
@@ -53,7 +53,7 @@ class WorldSnapshotTest {
     @Test
     fun snapshot_appendsNeverActivatedWindowsAtEnd() {
         val log = ActivationLog()
-            .record(ActivationEvent(1, safari.pid, safariA.id))   // only A activated, B never
+            .record(ActivationEvent(safari.pid, safariA.id))   // only A activated, B never
         val safariEntry = world(log).snapshot().withWindows.first { it.app.name == "Safari" }
         assertEquals(listOf(safariA, safariB), safariEntry.windows)
     }
@@ -74,8 +74,8 @@ class WorldSnapshotTest {
     @Test
     fun snapshot_dropsAppsThatDiedSinceTheirLastActivation() {
         val log = ActivationLog()
-            .record(ActivationEvent(1, pid = 999, windowId = 9999))  // unknown pid
-            .record(ActivationEvent(2, safari.pid, safariA.id))
+            .record(ActivationEvent(pid = 999, windowId = 9999))  // unknown pid
+            .record(ActivationEvent(safari.pid, safariA.id))
         val snap = world(log).snapshot()
         val pids = snap.all.map { it.app.pid }.toSet()
         assertTrue(999 !in pids)

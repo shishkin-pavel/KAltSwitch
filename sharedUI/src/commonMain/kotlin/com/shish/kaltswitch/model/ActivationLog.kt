@@ -1,9 +1,12 @@
 package com.shish.kaltswitch.model
 
 /** A single user-driven activation. `windowId == null` means an app-level activation
- * (we know an app got focus, but not which of its windows). */
+ * (we know an app got focus, but not which of its windows).
+ *
+ * No timestamp: ordering comes from insertion order (`record` prepends), and we
+ * have no feature that asks "how long ago was X activated". If/when we do, add
+ * a clock then. */
 data class ActivationEvent(
-    val timestampMs: Long,
     val pid: Int,
     val windowId: WindowId?,
 )

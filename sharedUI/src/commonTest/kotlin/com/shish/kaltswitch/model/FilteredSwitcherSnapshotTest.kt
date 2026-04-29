@@ -20,9 +20,9 @@ class FilteredSwitcherSnapshotTest {
 
     private fun world(): World {
         val log = ActivationLog()
-            .record(ActivationEvent(1, accessory.pid, winAcc.id))
-            .record(ActivationEvent(2, regularB.pid, winB.id))
-            .record(ActivationEvent(3, regularA.pid, winA.id))   // most recent
+            .record(ActivationEvent(accessory.pid, winAcc.id))
+            .record(ActivationEvent(regularB.pid, winB.id))
+            .record(ActivationEvent(regularA.pid, winA.id))   // most recent
         return World(
             log = log,
             runningApps = listOf(regularA, regularB, windowless, accessory).associateBy { it.pid },

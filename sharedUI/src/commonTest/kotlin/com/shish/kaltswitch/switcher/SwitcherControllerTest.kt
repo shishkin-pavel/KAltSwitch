@@ -29,10 +29,10 @@ class SwitcherControllerTest {
         val w2a = Window(id = 21, pid = 2, title = "IDE A")
         val w2b = Window(id = 22, pid = 2, title = "IDE B")
         val log = ActivationLog()
-            .record(ActivationEvent(1, pid = 2, windowId = 22))
-            .record(ActivationEvent(2, pid = 2, windowId = 21))
-            .record(ActivationEvent(3, pid = 1, windowId = 12))
-            .record(ActivationEvent(4, pid = 1, windowId = 11))  // Safari/11 most recent
+            .record(ActivationEvent(pid = 2, windowId = 22))
+            .record(ActivationEvent(pid = 2, windowId = 21))
+            .record(ActivationEvent(pid = 1, windowId = 12))
+            .record(ActivationEvent(pid = 1, windowId = 11))  // Safari/11 most recent
         return WorldStore(
             World(
                 log = log,
@@ -213,7 +213,7 @@ class SwitcherControllerTest {
         ctl.onShortcut(SwitcherEntry.App)
 
         val before = store.state.value.log.events.size
-        store.recordActivation(pid = 1, windowId = 11, timestampMs = 999)
+        store.recordActivation(pid = 1, windowId = 11)
         assertEquals(before, store.state.value.log.events.size)
     }
 
@@ -221,7 +221,7 @@ class SwitcherControllerTest {
     fun store_recordActivation_updatesBothLogAndActivePointer() = runTest {
         val store = seededStore()
         // No active session — call is allowed.
-        store.recordActivation(pid = 2, windowId = 22, timestampMs = 5000)
+        store.recordActivation(pid = 2, windowId = 22)
         assertEquals(2, store.activeAppPid.value)
         assertEquals(22L, store.activeWindowId.value)
         // App with pid=2 should be at the head of the order now.
