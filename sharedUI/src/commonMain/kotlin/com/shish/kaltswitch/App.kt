@@ -387,19 +387,32 @@ private fun FiltersPanel(
                 style = MaterialTheme.typography.labelLarge,
                 modifier = Modifier.weight(1f),
             )
-            // Toggle the right-side inspector pane. Chevron flips direction
-            // depending on which way the toggle would move the divider.
-            Box(
+            // Toggle the right-side inspector pane. The window grows/shrinks
+            // horizontally on toggle (origin stays put, width changes) — see
+            // applyInspectorVisibility on the Swift side.
+            Row(
                 Modifier
-                    .clip(RoundedCornerShape(4.dp))
-                    .background(Color(0x22FFFFFF))
+                    .clip(RoundedCornerShape(6.dp))
+                    .background(Color(0x33FFFFFF))
                     .clickable(onClick = onToggleInspector)
-                    .padding(horizontal = 8.dp, vertical = 2.dp),
+                    .padding(horizontal = 10.dp, vertical = 6.dp),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(6.dp),
             ) {
                 Text(
-                    if (inspectorVisible) "›" else "‹",
+                    "Inspector",
                     color = Color(0xFFE0E0E0),
+                    fontWeight = FontWeight.Medium,
                     style = MaterialTheme.typography.labelMedium,
+                )
+                // Chevron points the direction the toggle will move the
+                // divider: right `›` means "open the right pane" (currently
+                // hidden), left `‹` means "close it" (currently visible).
+                Text(
+                    if (inspectorVisible) "‹" else "›",
+                    color = Color(0xFFFFC107),
+                    fontWeight = FontWeight.Bold,
+                    style = MaterialTheme.typography.titleSmall,
                 )
             }
         }

@@ -48,7 +48,12 @@ data class SwitcherSettings(
 data class AppConfig(
     val schemaVersion: Int = 1,
     val filters: Filters = Filters(),
+    /** Window frame to restore when the inspector pane is visible —
+     *  the wider, "with-inspector" layout. */
     val inspectorFrame: WindowFrame? = null,
+    /** Window frame to restore when the inspector pane is hidden —
+     *  the narrower, "settings-only" layout. */
+    val settingsFrame: WindowFrame? = null,
     val switcher: SwitcherSettings = SwitcherSettings(),
     /** Whether the right-side inspector panel is visible. When false the
      *  sidebar (Settings + Filters) takes the full window width and the

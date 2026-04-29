@@ -18,6 +18,16 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     private var frameObservers: [NSObjectProtocol] = []
     private var statusItem: NSStatusItem? = nil
     private var signalSources: [DispatchSourceSignal] = []
+    /// Latest applied inspector-visibility state. `nil` until the first
+    /// observeInspectorVisible callback fires; afterwards used by
+    /// persistFrame() to route saves to the right slot, and by the toggle
+    /// observer to detect state transitions vs the initial seed emission.
+    private var inspectorVisibleApplied: Bool? = nil
+    /// Default widths used the first time the user toggles to a state we
+    /// have no saved frame for. Origin/height are kept from the current
+    /// window so only the width changes.
+    private let defaultWithInspectorWidth: CGFloat = 800
+    private let defaultSettingsOnlyWidth: CGFloat = 320
 
     func applicationDidFinishLaunching(_ aNotification: Notification) {
         window = NSWindow(
@@ -38,9 +48,14 @@ class AppDelegate: NSObject, NSApplicationDelegate {
 
         composeDelegate = ComposeViewKt.AttachMainComposeView(window: window)
 
-        // Restore the inspector window's last position/size, if any. K/N's StateFlow
-        // exposes `value` as `Any?`, so cast to the concrete frame type.
-        if let saved = ComposeViewKt.store.inspectorFrame.value as? WindowFrame {
+        // Restore the appropriate window frame for whichever pane layout
+        // (settings-only vs settings+inspector) was last in use. K/N's
+        // StateFlow exposes `value` as `Any?`, so cast to the concrete type.
+        let initialInspectorVisible = (ComposeViewKt.store.inspectorVisible.value as? KotlinBoolean)?.boolValue ?? true
+        let initialFrame: WindowFrame? = initialInspectorVisible
+            ? ComposeViewKt.store.inspectorFrame.value as? WindowFrame
+            : ComposeViewKt.store.settingsFrame.value as? WindowFrame
+        if let saved = initialFrame {
             let restored = NSRect(x: saved.x, y: saved.y, width: saved.width, height: saved.height)
             if NSScreen.screens.contains(where: { $0.visibleFrame.intersects(restored) }) {
                 window.setFrame(restored, display: false)
@@ -137,12 +152,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
             self?.overlayWindow?.alphaValue = visible.boolValue ? 1 : 0
         }
         ComposeViewKt.observeInspectorVisible { [weak self] visible in
-            // Reflect inspector visibility in the window title — the user's
-            // ask was that the title flip between "Settings" and
-            // "Settings/Inspector" depending on which panes are showing.
-            self?.window?.title = visible.boolValue
-                ? "KAltSwitch — Settings/Inspector"
-                : "KAltSwitch — Settings"
+            self?.applyInspectorVisibility(visible.boolValue)
         }
 
         installStatusItem()
@@ -219,12 +229,72 @@ class AppDelegate: NSObject, NSApplicationDelegate {
 
     private func persistFrame() {
         let f = window.frame
-        ComposeViewKt.store.saveInspectorFrame(
-            x: Double(f.origin.x),
-            y: Double(f.origin.y),
-            width: Double(f.size.width),
-            height: Double(f.size.height)
-        )
+        // Route the save to whichever slot matches the *currently displayed*
+        // pane layout. Until the first observeInspectorVisible callback
+        // settles inspectorVisibleApplied, default to the with-inspector
+        // slot — that's the launch-time layout if we have any saved frame
+        // at all.
+        let toInspectorSlot = inspectorVisibleApplied ?? true
+        if toInspectorSlot {
+            ComposeViewKt.store.saveInspectorFrame(
+                x: Double(f.origin.x),
+                y: Double(f.origin.y),
+                width: Double(f.size.width),
+                height: Double(f.size.height)
+            )
+        } else {
+            ComposeViewKt.store.saveSettingsFrame(
+                x: Double(f.origin.x),
+                y: Double(f.origin.y),
+                width: Double(f.size.width),
+                height: Double(f.size.height)
+            )
+        }
+    }
+
+    /// Inspector visibility transitioned (or just received its initial seed
+    /// from the StateFlow). On first call, only update the title and record
+    /// the state. On subsequent calls that change state, save the current
+    /// frame to the *outgoing* slot, then resize the window to the
+    /// *incoming* slot's frame (or a sensible default if none saved yet).
+    private func applyInspectorVisibility(_ visible: Bool) {
+        guard let window = window else { return }
+        window.title = visible
+            ? "KAltSwitch — Settings/Inspector"
+            : "KAltSwitch — Settings"
+
+        let prev = inspectorVisibleApplied
+        inspectorVisibleApplied = visible
+        if prev == nil || prev == visible { return }
+
+        // Save current frame to the OUTGOING slot before switching.
+        let f = window.frame
+        if prev == true {
+            ComposeViewKt.store.saveInspectorFrame(
+                x: Double(f.origin.x), y: Double(f.origin.y),
+                width: Double(f.size.width), height: Double(f.size.height))
+        } else {
+            ComposeViewKt.store.saveSettingsFrame(
+                x: Double(f.origin.x), y: Double(f.origin.y),
+                width: Double(f.size.width), height: Double(f.size.height))
+        }
+
+        // Load the INCOMING slot's frame, or fall back to a width-only
+        // default. Keep origin.x stable so the window grows/shrinks toward
+        // the right edge — origin.y unchanged so vertical position holds.
+        let incoming: WindowFrame? = visible
+            ? ComposeViewKt.store.inspectorFrame.value as? WindowFrame
+            : ComposeViewKt.store.settingsFrame.value as? WindowFrame
+        let target: NSRect
+        if let saved = incoming,
+           NSScreen.screens.contains(where: { $0.visibleFrame.intersects(NSRect(x: saved.x, y: saved.y, width: saved.width, height: saved.height)) }) {
+            target = NSRect(x: saved.x, y: saved.y, width: saved.width, height: saved.height)
+        } else {
+            var r = window.frame
+            r.size.width = visible ? defaultWithInspectorWidth : defaultSettingsOnlyWidth
+            target = r
+        }
+        window.setFrame(target, display: true, animate: true)
     }
 
     func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool {
