@@ -191,6 +191,30 @@ windowless) makes the windowless apps visually less intrusive, and we can add
 
 ## 8. Deferred / known limits (post-MVP)
 
+- **Preview-raise on selection (high-priority post-MVP)**: the controller has
+  the `previewDelay` timer and an `onRaiseWindow` callback wired all the way
+  through to `AxAppWatcher.raiseWindow` (`kAXRaiseAction`), but
+  `previewEnabled = false` in `SwitcherController` keeps the path dormant for
+  MVP. Reasons for deferring:
+  - The `kAXRaiseAction` raise visibly reorders other windows behind our
+    overlay, which conflicts with the spec intent of "preview behind the
+    panel" — we'd need a window-level z-order trick (e.g. ensure the panel
+    stays above the raised window without touching app activation) before
+    the UX feels right.
+  - The `switcherActive` flag drops the *next* AX/Workspace activation
+    event, but ChatGPT-style apps that delay their AX echo by hundreds of
+    milliseconds can leak a stray `recordEvent` after `setSwitcherActive
+    (false)` runs — needs a slightly longer debounce that we want to tune
+    against real usage rather than guess.
+  - Real users may prefer the simpler "no preview, just commit" model;
+    let's gather feedback on the no-preview MVP before committing to UX
+    polish here.
+
+  Re-enable: pass `previewEnabled = true` to the `SwitcherController`
+  constructor in `sharedUI/.../macosMain/.../ComposeView.kt`. Two unit tests
+  in `SwitcherControllerTest` already opt-in via the same flag, so the timer
+  / cursor-reset / visibility behaviour stays covered.
+
 - **Parent-child window relinking**: implemented for two cases — (a) typed
   attributes `AXSheets`/`AXDrawers`/`AXChildWindows`, (b) top-level windows
   whose `kAXParent` points at another top-level window in the same app.

@@ -117,7 +117,7 @@ class SwitcherControllerTest {
         val raises = mutableListOf<Pair<Int, Long>>()
         val ctl = SwitcherController(
             store, scope = backgroundScope,
-            showDelayMs = 20, previewDelayMs = 100,
+            showDelayMs = 20, previewDelayMs = 100, previewEnabled = true,
         ).also { it.onRaiseWindow = { pid, wid -> raises += pid to wid } }
 
         ctl.onShortcut(SwitcherEntry.App)
@@ -134,7 +134,7 @@ class SwitcherControllerTest {
         val raises = mutableListOf<Pair<Int, Long>>()
         val ctl = SwitcherController(
             store, scope = backgroundScope,
-            showDelayMs = 20, previewDelayMs = 100,
+            showDelayMs = 20, previewDelayMs = 100, previewEnabled = true,
         ).also { it.onRaiseWindow = { pid, wid -> raises += pid to wid } }
 
         ctl.onShortcut(SwitcherEntry.App)

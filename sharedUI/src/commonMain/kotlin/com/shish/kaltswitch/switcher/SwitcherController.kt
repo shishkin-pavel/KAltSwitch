@@ -52,6 +52,10 @@ class SwitcherController(
     private val showDelayMs: Long = 20L,
     private val previewDelayMs: Long = 250L,
     private val activeFlagDebounceMs: Long = 200L,
+    /** Off for MVP — see "Preview-raise on selection" in
+     *  docs/window-state-attributes.md §8. The full code path stays compiled
+     *  and tested so we can re-enable post-MVP without resurrecting it. */
+    private val previewEnabled: Boolean = false,
 ) {
     var onRaiseWindow: ((pid: Int, windowId: WindowId) -> Unit)? = null
     var onCommitActivation: ((pid: Int, windowId: WindowId?) -> Unit)? = null
@@ -136,6 +140,8 @@ class SwitcherController(
 
     private fun schedulePreview() {
         previewJob?.cancel()
+        previewJob = null
+        if (!previewEnabled) return
         previewJob = scope.launch {
             delay(previewDelayMs)
             val cur = _ui.value ?: return@launch
