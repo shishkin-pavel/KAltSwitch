@@ -35,6 +35,13 @@ final class HotkeyController {
     private static let idCmdShiftTab: UInt32 = 2
     private static let idCmdGrave: UInt32 = 3
     private static let idCmdShiftGrave: UInt32 = 4
+    /// cmd+Esc cancels an active switcher session. Plain Esc isn't usable —
+    /// our `.nonactivatingPanel` doesn't receive regular key events when the
+    /// app isn't frontmost (only flagsChanged and Carbon hotkey events
+    /// reliably reach us). Since cmd is always held during a session, the
+    /// cmd+Esc combo is equivalent to "user pressed Esc while the switcher
+    /// is open".
+    private static let idCmdEsc: UInt32 = 5
 
     init(controller: SwitcherController) {
         self.controller = controller
@@ -107,6 +114,7 @@ final class HotkeyController {
         register(keyCode: UInt32(kVK_Tab), mods: UInt32(cmdKey | shiftKey), id: HotkeyController.idCmdShiftTab)
         register(keyCode: UInt32(kVK_ANSI_Grave), mods: UInt32(cmdKey), id: HotkeyController.idCmdGrave)
         register(keyCode: UInt32(kVK_ANSI_Grave), mods: UInt32(cmdKey | shiftKey), id: HotkeyController.idCmdShiftGrave)
+        register(keyCode: UInt32(kVK_Escape), mods: UInt32(cmdKey), id: HotkeyController.idCmdEsc)
     }
 
     private func register(keyCode: UInt32, mods: UInt32, id: UInt32) {
@@ -129,6 +137,12 @@ final class HotkeyController {
     }
 
     fileprivate func handleHotkey(id: UInt32) {
+        if id == HotkeyController.idCmdEsc {
+            DispatchQueue.main.async { [weak self] in
+                self?.controller.onEsc()
+            }
+            return
+        }
         let entry: SwitcherEntry
         let reverse: Bool
         switch id {
