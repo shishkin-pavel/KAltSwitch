@@ -19,6 +19,12 @@ final class AppRegistry {
     private let store: WorldStore
     private var watchers: [pid_t: AxAppWatcher] = [:]
     private var nsObservers: [NSObjectProtocol] = []
+    /// KVO tokens for per-app properties that can mutate at runtime —
+    /// most importantly `activationPolicy`, which apps like Bitwarden flip
+    /// from `.accessory` to `.regular` when their main window opens.
+    /// Without this we'd cache the policy at spawn time and never refresh,
+    /// classifying the same app inconsistently across sessions.
+    private var policyObservers: [pid_t: NSKeyValueObservation] = [:]
     private var trustTimer: Timer?
     private var lastTrusted = false
     /// Fires whenever AX trust flips. The hotkey controller's CGEventTap
@@ -169,6 +175,8 @@ final class AppRegistry {
         nsObservers.removeAll()
         for (_, w) in watchers { w.stop() }
         watchers.removeAll()
+        for (_, token) in policyObservers { token.invalidate() }
+        policyObservers.removeAll()
     }
 
     // MARK: - Switcher actions (raise / commit)
@@ -226,6 +234,8 @@ final class AppRegistry {
     private func respawnAllWatchers() {
         for (_, w) in watchers { w.stop() }
         watchers.removeAll()
+        for (_, token) in policyObservers { token.invalidate() }
+        policyObservers.removeAll()
         for nsApp in NSWorkspace.shared.runningApplications {
             spawn(for: nsApp)
         }
@@ -243,6 +253,11 @@ final class AppRegistry {
         let pid = nsApp.processIdentifier
         watchers[pid]?.stop()
         watchers.removeValue(forKey: pid)
+        // KVO tokens auto-invalidate when the observer or observed object
+        // deallocates, but be explicit so the registry doesn't leak the
+        // closure capture for long-running sessions.
+        policyObservers[pid]?.invalidate()
+        policyObservers.removeValue(forKey: pid)
         store.removeApp(pid: pid)
     }
 
@@ -272,9 +287,29 @@ final class AppRegistry {
         if watchers[pid] != nil { return }
 
         pushAppRecord(nsApp)
+        observePolicyChanges(nsApp)
         let watcher = AxAppWatcher(pid: pid, store: store)
         watchers[pid] = watcher
         watcher.start()
+    }
+
+    /// KVO-observe `activationPolicy` and re-push the app record whenever
+    /// it changes. Apps that promote themselves from `.accessory` to
+    /// `.regular` on first window-open (Bitwarden, Spotlight-style menubar
+    /// utilities, ...) would otherwise keep a stale snapshot and end up
+    /// classified inconsistently. KVO callbacks fire on the queue that
+    /// produced the change — hop to main to keep registry mutations
+    /// serialised with everything else.
+    private func observePolicyChanges(_ nsApp: NSRunningApplication) {
+        let pid = nsApp.processIdentifier
+        let token = nsApp.observe(\.activationPolicy, options: [.new]) { [weak self] app, _ in
+            DispatchQueue.main.async {
+                guard let self = self else { return }
+                log("[reg] activationPolicy changed pid=\(app.processIdentifier) -> \(app.activationPolicy.rawValue)")
+                self.pushAppRecord(app)
+            }
+        }
+        policyObservers[pid] = token
     }
 
     private func pushAppRecord(_ nsApp: NSRunningApplication) {
