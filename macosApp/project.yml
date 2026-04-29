@@ -32,10 +32,18 @@ targets:
         PRODUCT_BUNDLE_IDENTIFIER: com.shish.kaltswitch.macosApp
         CODE_SIGN_STYLE: Automatic
         CODE_SIGN_IDENTITY: "-"
-        OTHER_LDFLAGS: ["-framework", "ComposeAppMac"]
+        # SkyLight is a private framework; we use it for symbolic-hot-key
+        # disable + cross-process focus (see SkyLight.swift). alt-tab-macos
+        # and similar tools link the same way.
+        OTHER_LDFLAGS:
+          - "-framework"
+          - "ComposeAppMac"
+          - "-framework"
+          - "SkyLight"
         FRAMEWORK_SEARCH_PATHS:
           - "$(inherited)"
           - "$(BUILT_PRODUCTS_DIR)"
+          - "/System/Library/PrivateFrameworks"
         ENABLE_USER_SCRIPT_SANDBOXING: NO
     preBuildScripts:
       - name: "Build Compose framework via Gradle"

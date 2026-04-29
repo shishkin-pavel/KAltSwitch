@@ -297,14 +297,29 @@ final class AxAppWatcher {
     }
 
     /// Make this window the app's main window. Pair this with
-    /// `NSRunningApplication.activate` and a `kAXRaiseAction` to bring the app
-    /// + this specific window forward. Used on switcher-commit.
+    /// [bringAppToFront] (SkyLight CGS path) to bring the app + this specific
+    /// window forward. Used on switcher-commit.
     @discardableResult
     func makeWindowMain(windowId: Int64) -> Bool {
         guard let el = windowsByHash[Int(windowId)] else { return false }
         let setMain = AXUIElementSetAttributeValue(el, kAXMainAttribute as CFString, kCFBooleanTrue)
         let raise = AXUIElementPerformAction(el, kAXRaiseAction as CFString)
         return setMain == .success || raise == .success
+    }
+
+    /// Resolve the window's CGWindowID via the private `_AXUIElementGetWindow`
+    /// API. The CGS focus call (`_SLPSSetFrontProcessWithOptions`) operates on
+    /// CGWindowIDs, not AXUIElements, so we need this conversion.
+    func cgWindowId(forAxWindowId windowId: Int64) -> CGWindowID? {
+        guard let el = windowsByHash[Int(windowId)] else { return nil }
+        var cgWid: CGWindowID = 0
+        let err = _AXUIElementGetWindow(el, &cgWid)
+        guard err == .success else {
+            NSLog("KAltSwitch: _AXUIElementGetWindow(pid=%d, ax=%lld) failed: %d",
+                  pid, windowId, err.rawValue)
+            return nil
+        }
+        return cgWid
     }
 
     private func readAttribute(_ element: AXUIElement, _ attribute: String) -> Any? {

@@ -128,27 +128,38 @@ final class AppRegistry {
         watchers[pid]?.raiseWindow(windowId: windowId)
     }
 
-    /// Final activation on cmd-release. Order matters:
-    ///  1. Mark target window as main + raise it inside its app, BEFORE
-    ///     activating the app — otherwise some apps (Safari, iTerm, IDEs)
-    ///     bring forward whatever was their last-frontmost window when they
-    ///     first activate, ignoring our subsequent kAXMain change.
-    ///     This is the same order AeroSpace uses in `MacApp.nativeFocus`.
-    ///  2. Activate the app to bring it to the foreground.
+    /// Final activation on cmd-release.
+    ///
+    /// Order:
+    ///  1. AX-side: kAXMain + kAXRaise on the chosen window. Sets its app's
+    ///     "main window" so the system focuses it once the app is frontmost.
+    ///  2. CGS-side: `_SLPSSetFrontProcessWithOptions` (SkyLight private API)
+    ///     to actually flip the frontmost-app pointer in WindowServer. This
+    ///     is what `NSRunningApplication.activate(options:)` *would* do in
+    ///     theory but silently skips on macOS 14+ when the caller (us) isn't
+    ///     already the active app. Our nonactivating overlay panel is exactly
+    ///     that case, so we go around the public API. See
+    ///     `docs/window-state-attributes.md` §8 ("AeroSpace-style agent app")
+    ///     for the public-API alternative we deliberately deferred.
+    ///  3. As a safety net we also call `nsApp.activate(...)` — it's free
+    ///     when it works, no-ops otherwise. If a future macOS breaks the
+    ///     SkyLight call, this keeps us limping along on the public path.
     func commit(pid: pid_t, windowId: Int64?) {
-        guard let nsApp = NSRunningApplication(processIdentifier: pid) else {
-            NSLog("KAltSwitch: commit(pid=%d) — no NSRunningApplication", pid)
-            return
-        }
-        if let wid = windowId {
-            let raised = watchers[pid]?.makeWindowMain(windowId: wid) ?? false
-            NSLog("KAltSwitch: commit pid=%d wid=%lld raise=%@", pid, wid,
-                  raised ? "ok" : "fail")
+        let watcher = watchers[pid]
+        var cgWid: CGWindowID? = nil
+        if let wid = windowId, let watcher = watcher {
+            let raised = watcher.makeWindowMain(windowId: wid)
+            cgWid = watcher.cgWindowId(forAxWindowId: wid)
+            NSLog("KAltSwitch: commit pid=%d ax=%lld cg=%u raise=%@",
+                  pid, wid, cgWid ?? 0, raised ? "ok" : "fail")
         } else {
             NSLog("KAltSwitch: commit pid=%d (app-only, no window)", pid)
         }
-        let activated = nsApp.activate(options: [.activateIgnoringOtherApps])
-        NSLog("KAltSwitch: commit activate=%@", activated ? "ok" : "fail")
+        let cgsOk = bringAppToFront(pid: pid, cgWindowId: cgWid)
+        let nsAppOk = NSRunningApplication(processIdentifier: pid)?
+            .activate(options: [.activateIgnoringOtherApps]) ?? false
+        NSLog("KAltSwitch: commit cgs=%@ nsapp=%@",
+              cgsOk ? "ok" : "fail", nsAppOk ? "ok" : "fail")
     }
 
     private func checkTrust() {

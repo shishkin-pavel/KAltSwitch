@@ -191,6 +191,52 @@ windowless) makes the windowless apps visually less intrusive, and we can add
 
 ## 8. Deferred / known limits (post-MVP)
 
+- **AeroSpace-style "agent app" focus path (alternative to SkyLight)**: as of
+  this write-up the switcher uses SkyLight private APIs
+  (`_SLPSSetFrontProcessWithOptions` + `SLPSPostEventRecordTo` +
+  `_AXUIElementGetWindow`) to switch frontmost without our process being
+  active. The reason: macOS 14+ silently no-ops
+  `NSRunningApplication.activate(options:)` when the caller isn't the active
+  app, and our overlay panel is `.nonactivatingPanel` so we never become
+  active.
+
+  AeroSpace and alt-tab-macos avoid the SkyLight dependency by **shipping as
+  agent apps** (`LSUIElement = YES` in Info.plist) and *making their overlay
+  active*. Once the calling process is active, plain `nsApp.activate(options:)`
+  works without private APIs. Concrete delta if we wanted to move there:
+
+  - Set `INFOPLIST_KEY_LSUIElement: YES` in `macosApp/project.yml`. This
+    drops our Dock icon, removes us from the system cmd+Tab, and gives the
+    user no way to launch the inspector window other than via NSStatusItem,
+    `applicationShouldHandleReopen`, or a global shortcut.
+  - Drop `.nonactivatingPanel` from `SwitcherOverlayWindow.styleMask` so
+    `makeKey()` activates our process.
+  - Gate `syncActiveStateFromSystem` on `switcherActive == false` (already
+    done for `recordEvent`); otherwise the inspector will show KAltSwitch as
+    the active app for the duration of the overlay.
+  - Possibly install an empty `NSApp.mainMenu = NSMenu()` to suppress the
+    default app menu that would otherwise appear in the system menu bar
+    while the overlay is up.
+
+  Trade-offs vs. the SkyLight path:
+  - Pro: no private APIs.
+  - Con: visual flicker — original frontmost app loses focus to us at
+    overlay-open, gets it back (or the new target gets it) at commit. With
+    a fast `showDelay` it's barely perceptible, but it's not zero.
+  - Con: original app receives `applicationDidResignActive`. Some
+    apps (video players, games) react to that (pause, throttle render).
+  - Con: while overlay is open, original app stops receiving keyboard
+    input entirely (we steal it). With nonactivating panel, all non-modifier
+    keystrokes still flow to the original app.
+  - Con: needs NSStatusItem + reopen-handler before this can ship — without
+    them the inspector becomes unreachable after first close.
+
+  Bottom line: AeroSpace path is "ship as agent + accept brief activation
+  flicker"; SkyLight path is "stay in background + use private APIs to
+  bypass activation gating". We chose SkyLight for MVP because it preserves
+  the calmer UX during selection. If/when SkyLight stops working on a future
+  macOS, this is the documented backup plan.
+
 - **Preview-raise on selection (high-priority post-MVP)**: the controller has
   the `previewDelay` timer and an `onRaiseWindow` callback wired all the way
   through to `AxAppWatcher.raiseWindow` (`kAXRaiseAction`), but
