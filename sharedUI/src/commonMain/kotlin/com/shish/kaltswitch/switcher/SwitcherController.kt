@@ -109,7 +109,10 @@ class SwitcherController(
      */
     fun onShortcut(entry: SwitcherEntry, reverse: Boolean = false) {
         val combo = entry to reverse
-        if (heldShortcut == combo) return  // OS auto-repeat — pressJob drives navigation.
+        if (heldShortcut == combo) {
+            println("[ctl] shortcut entry=$entry reverse=$reverse SKIPPED (auto-repeat)")
+            return  // OS auto-repeat — pressJob drives navigation.
+        }
         heldShortcut = combo
 
         val current = _ui.value
@@ -122,6 +125,8 @@ class SwitcherController(
             val event = if (reverse) reverseEventFor(entry) else forwardEventFor(entry)
             navigate(event)
         }
+        val cursor = _ui.value?.state?.cursor
+        println("[ctl] shortcut entry=$entry reverse=$reverse cursor=$cursor")
         startPressJob(entry, reverse)
     }
 
@@ -132,8 +137,10 @@ class SwitcherController(
      * before committing on cmd-release.
      */
     fun onShortcutKeyReleased() {
+        val wasRunning = pressJob != null
         heldShortcut = null
         pressJob?.cancel(); pressJob = null
+        println("[ctl] shortcut-key released wasRunning=$wasRunning cursor=${_ui.value?.state?.cursor}")
     }
 
     private fun startPressJob(entry: SwitcherEntry, reverse: Boolean) {
@@ -147,6 +154,7 @@ class SwitcherController(
             delay(initialDelay)
             while (true) {
                 navigate(event)
+                println("[ctl] press-tick event=$event cursor=${_ui.value?.state?.cursor}")
                 delay(interval)
             }
         }
@@ -215,6 +223,8 @@ class SwitcherController(
         val filters = store.filters.value
         val snapshot = world.filteredSwitcherSnapshot(filters)
         val state = openSwitcher(snapshot, entry)
+        val appOrder = snapshot.all.map { it.app.pid to it.app.name }
+        println("[ctl] openSession entry=$entry defaultCursor=${state.cursor} apps=$appOrder")
         _ui.value = SwitcherUiState(state, visible = false, previewedWindowId = null)
         store.setSwitcherActive(true)
 
@@ -251,9 +261,10 @@ class SwitcherController(
     }
 
     private fun commit(cur: SwitcherUiState) {
-        closeSession()
         val app = cur.state.selectedAppEntry?.app
         val window = cur.state.selectedWindow
+        println("[ctl] commit cursor=${cur.state.cursor} app=${app?.pid}/${app?.name} window=${window?.id}/${window?.title}")
+        closeSession()
         if (app != null) {
             // Record the user's intent into the activation log *synchronously*
             // instead of waiting for the AX/NSWorkspace echo. macOS doesn't

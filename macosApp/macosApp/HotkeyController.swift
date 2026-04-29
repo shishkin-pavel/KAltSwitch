@@ -138,6 +138,7 @@ final class HotkeyController {
 
     fileprivate func handleHotkey(id: UInt32) {
         if id == HotkeyController.idCmdEsc {
+            NSLog("KAltSwitch: [hk] press esc")
             DispatchQueue.main.async { [weak self] in
                 self?.controller.onEsc()
             }
@@ -152,6 +153,7 @@ final class HotkeyController {
         case HotkeyController.idCmdShiftGrave: entry = .window; reverse = true
         default: return
         }
+        NSLog("KAltSwitch: [hk] press id=%d reverse=%@", id, reverse ? "true" : "false")
         DispatchQueue.main.async { [weak self] in
             self?.controller.onShortcut(entry: entry, reverse: reverse)
         }
@@ -162,6 +164,7 @@ final class HotkeyController {
     /// the controller just needs to know "user is no longer holding the alt
     /// key, stop auto-advancing".
     fileprivate func handleHotkeyReleased(id: UInt32) {
+        NSLog("KAltSwitch: [hk] release id=%d", id)
         DispatchQueue.main.async { [weak self] in
             self?.controller.onShortcutKeyReleased()
         }

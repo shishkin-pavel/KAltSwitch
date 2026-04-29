@@ -1,4 +1,6 @@
 import SwiftUI
+import AppKit
+import Carbon.HIToolbox
 import ComposeAppMac
 
 @main
@@ -26,6 +28,12 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     private var inspectorVisibleApplied: Bool? = nil
     /// Used the first time the user resizes before any windowFrame is saved.
     private let defaultSettingsOnlyWidth: Double = 320
+    /// Global keyboard monitor — third path for detecting tab/grave keyUp
+    /// (after Carbon Released and panel sendEvent). Needs AX permission to
+    /// receive global events. The first two paths can silently miss events
+    /// in some macOS configurations; this monitor sees them at the system
+    /// level.
+    private var globalKeyMonitor: Any? = nil
 
     func applicationDidFinishLaunching(_ aNotification: Notification) {
         window = NSWindow(
@@ -153,6 +161,27 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         }
 
         installStatusItem()
+        installGlobalKeyMonitor()
+    }
+
+    /// Watch tab/grave keyUp at the system level. Belt-and-braces with the
+    /// Carbon kEventHotKeyReleased path and SwitcherOverlayWindow.sendEvent —
+    /// either of those can silently miss events when the app isn't frontmost
+    /// or when macOS doesn't deliver a hot-key Released for the combo. This
+    /// global monitor reliably fires for any keyUp anywhere in the system,
+    /// since AX permission is granted.
+    private func installGlobalKeyMonitor() {
+        globalKeyMonitor = NSEvent.addGlobalMonitorForEvents(matching: [.keyUp]) { [weak self] event in
+            let kc = Int(event.keyCode)
+            guard kc == kVK_Tab || kc == kVK_ANSI_Grave else { return }
+            NSLog("KAltSwitch: [global] keyup keyCode=%d", kc)
+            DispatchQueue.main.async {
+                ComposeViewKt.switcherController.onShortcutKeyReleased()
+            }
+        }
+        if globalKeyMonitor == nil {
+            NSLog("KAltSwitch: [global] keyUp monitor failed (AX permission?)")
+        }
     }
 
     /// Add a menubar icon so the user can reopen the inspector after closing
@@ -440,6 +469,10 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         let center = NotificationCenter.default
         for obs in frameObservers { center.removeObserver(obs) }
         frameObservers.removeAll()
+        if let m = globalKeyMonitor {
+            NSEvent.removeMonitor(m)
+            globalKeyMonitor = nil
+        }
         hotkeyController?.stop()
         appRegistry?.stop()
         overlayComposeDelegate?.stop()
