@@ -191,6 +191,19 @@ windowless) makes the windowless apps visually less intrusive, and we can add
 
 ## 8. Deferred / known limits (post-MVP)
 
+- **Stable codesigning identity to keep TCC trust across rebuilds**: today
+  `macosApp/project.yml` uses `CODE_SIGN_IDENTITY: "-"` (adhoc), so every
+  rebuild produces a new `cdhash` and TCC drops the Accessibility grant —
+  the user has to toggle the AX permission off+on after each iteration. A
+  one-time setup of a self-signed code-signing cert (in Keychain Access:
+  Certificate Assistant → Create Certificate, type "Code Signing", trust
+  it for code signing) lets TCC key the trust on the cert instead of the
+  cdhash, and the grant survives rebuilds. To automate: a
+  `scripts/setup-codesign.sh` that uses `openssl` + `security import` +
+  `security add-trusted-cert` to install the cert once. Sub-tasks:
+  pick a stable cert CN (e.g. `KAltSwitchDev`), update project.yml to
+  reference it, add the script + a one-paragraph README section.
+
 - **AeroSpace-style "agent app" focus path (alternative to SkyLight)**: as of
   this write-up the switcher uses SkyLight private APIs
   (`_SLPSSetFrontProcessWithOptions` + `SLPSPostEventRecordTo` +

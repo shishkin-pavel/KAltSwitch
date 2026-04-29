@@ -28,16 +28,31 @@ data class World(
 data class AppEntry(
     val app: App,
     val windows: List<Window>,
+    /** Number of leading entries in [windows] that are filter-mode `Show`. The
+     *  rest are `Demote` (those wrap into the same list because the inspector
+     *  renders them dimmed but adjacent). The hot-key navigation (cmd+`)
+     *  cycles only within `[0, shownWindowCount-1]`; the arrow keys traverse
+     *  the full list. Defaults to `windows.size` so callers that don't
+     *  classify windows treat everything as Show. */
+    val shownWindowCount: Int = windows.size,
 ) {
     val hasWindows: Boolean get() = windows.isNotEmpty()
 }
 
 /** Frozen view of the world at switcher-open time. */
 data class SwitcherSnapshot(
+    /** Apps that the inspector classifies as `Show`. */
     val withWindows: List<AppEntry>,
+    /** Apps that the inspector classifies as `Demote` — rendered after the
+     *  vertical separator. The hot-key path skips these; arrows visit them. */
     val windowless: List<AppEntry>,
 ) {
     val all: List<AppEntry> = withWindows + windowless
+
+    /** Index just past the last [withWindows] entry inside [all] —
+     *  i.e. `[0, shownAppCount-1]` is the Show range, `[shownAppCount, size)`
+     *  is the Demote range. */
+    val shownAppCount: Int get() = withWindows.size
 
     companion object {
         val Empty = SwitcherSnapshot(emptyList(), emptyList())

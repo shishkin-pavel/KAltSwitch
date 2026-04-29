@@ -4,10 +4,15 @@ import com.shish.kaltswitch.config.SwitcherSettings
 import com.shish.kaltswitch.model.ActivationEvent
 import com.shish.kaltswitch.model.ActivationLog
 import com.shish.kaltswitch.model.App
+import com.shish.kaltswitch.model.AppEntry
+import com.shish.kaltswitch.model.NavScope
 import com.shish.kaltswitch.model.SwitcherEntry
 import com.shish.kaltswitch.model.SwitcherEvent
+import com.shish.kaltswitch.model.SwitcherSnapshot
+import com.shish.kaltswitch.model.SwitcherState
 import com.shish.kaltswitch.model.Window
 import com.shish.kaltswitch.model.World
+import com.shish.kaltswitch.model.apply
 import com.shish.kaltswitch.store.WorldStore
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.test.advanceTimeBy
@@ -441,5 +446,104 @@ class SwitcherControllerTest {
         assertEquals(22L, store.activeWindowId.value)
         // App with pid=2 should be at the head of the order now.
         assertEquals(2, store.state.value.log.appOrder().first())
+    }
+
+    // ---- NavScope: Shown vs All ------------------------------------------
+
+    /** Snapshot with two Show apps and one Demote app, single window each. */
+    private fun snapshot2Show1Demote(): SwitcherSnapshot {
+        val a = App(pid = 1, bundleId = "a", name = "A")
+        val b = App(pid = 2, bundleId = "b", name = "B")
+        val c = App(pid = 3, bundleId = "c", name = "C-demoted")
+        val wa = Window(id = 11, pid = 1, title = "wa")
+        val wb = Window(id = 22, pid = 2, title = "wb")
+        val wc = Window(id = 33, pid = 3, title = "wc")
+        return SwitcherSnapshot(
+            withWindows = listOf(AppEntry(a, listOf(wa)), AppEntry(b, listOf(wb))),
+            windowless = listOf(AppEntry(c, listOf(wc))),
+        )
+    }
+
+    @Test
+    fun apply_nextApp_shownScope_skipsDemote() {
+        val s = snapshot2Show1Demote()  // Show: [A, B], Demote: [C]; size=3, shownAppCount=2
+        var state = SwitcherState(s, SwitcherEntry.App, com.shish.kaltswitch.model.SwitcherCursor(0, 0))
+        // NextApp Shown from index 0 → 1 (still in Show).
+        state = state.apply(SwitcherEvent.NextApp, NavScope.Shown)
+        assertEquals(1, state.cursor.appIndex)
+        // From the last Show (1), Shown wraps back to 0 — does NOT step into C (index 2).
+        state = state.apply(SwitcherEvent.NextApp, NavScope.Shown)
+        assertEquals(0, state.cursor.appIndex)
+    }
+
+    @Test
+    fun apply_nextApp_allScope_traversesDemote() {
+        val s = snapshot2Show1Demote()
+        var state = SwitcherState(s, SwitcherEntry.App, com.shish.kaltswitch.model.SwitcherCursor(0, 0))
+        // All scope wraps over [0, 2].
+        state = state.apply(SwitcherEvent.NextApp, NavScope.All)
+        assertEquals(1, state.cursor.appIndex)
+        state = state.apply(SwitcherEvent.NextApp, NavScope.All)
+        assertEquals(2, state.cursor.appIndex)  // demoted C
+        state = state.apply(SwitcherEvent.NextApp, NavScope.All)
+        assertEquals(0, state.cursor.appIndex)
+    }
+
+    @Test
+    fun apply_shownScope_fromOutsideRange_snapsBack() {
+        val s = snapshot2Show1Demote()
+        // Cursor is parked on the demoted app (index 2). User just came in via
+        // arrow keys; now they hit cmd+tab → Shown scope.
+        var state = SwitcherState(s, SwitcherEntry.App, com.shish.kaltswitch.model.SwitcherCursor(2, 0))
+        state = state.apply(SwitcherEvent.NextApp, NavScope.Shown)
+        // Snap to the start of the Show range.
+        assertEquals(0, state.cursor.appIndex)
+    }
+
+    @Test
+    fun apply_window_shownScope_skipsDemoteWindows() {
+        // Single app with 2 Show windows + 1 Demote window in a fixed order.
+        val app = App(pid = 1, bundleId = "a", name = "A")
+        val w1 = Window(id = 1, pid = 1, title = "show 1")
+        val w2 = Window(id = 2, pid = 1, title = "show 2")
+        val w3 = Window(id = 3, pid = 1, title = "demote 3")
+        val entry = AppEntry(app, windows = listOf(w1, w2, w3), shownWindowCount = 2)
+        val snapshot = SwitcherSnapshot(withWindows = listOf(entry), windowless = emptyList())
+        var state = SwitcherState(snapshot, SwitcherEntry.Window, com.shish.kaltswitch.model.SwitcherCursor(0, 0))
+        // NextWindow Shown wraps within [0, 1].
+        state = state.apply(SwitcherEvent.NextWindow, NavScope.Shown)
+        assertEquals(1, state.cursor.windowIndex)
+        state = state.apply(SwitcherEvent.NextWindow, NavScope.Shown)
+        assertEquals(0, state.cursor.windowIndex)
+        // NextWindow All reaches index 2.
+        state = state.apply(SwitcherEvent.NextWindow, NavScope.All)
+        state = state.apply(SwitcherEvent.NextWindow, NavScope.All)
+        assertEquals(2, state.cursor.windowIndex)
+    }
+
+    @Test
+    fun reverseShortcut_fromClosed_landsOnLastShownNotDemoted() = runTest {
+        // 3 apps total but only 2 are Show — the third is Demote. cmd+shift+tab
+        // from closed must land on app[1] (last Show), not app[2] (Demote).
+        val a1 = App(pid = 1, bundleId = "a1", name = "A1")
+        val a2 = App(pid = 2, bundleId = "a2", name = "A2")
+        val a3 = App(pid = 3, bundleId = "a3", name = "A3")
+        val w1 = Window(id = 11, pid = 1, title = "A1 win")
+        val w2 = Window(id = 21, pid = 2, title = "A2 win")
+        // a3 has no windows → goes to the Demote bucket via the windowless filter.
+        val log = ActivationLog()
+            .record(ActivationEvent(pid = 3, windowId = null))
+            .record(ActivationEvent(pid = 2, windowId = 21))
+            .record(ActivationEvent(pid = 1, windowId = 11))
+        val store = WorldStore(World(
+            log = log,
+            runningApps = mapOf(1 to a1, 2 to a2, 3 to a3),
+            windowsByPid = mapOf(1 to listOf(w1), 2 to listOf(w2), 3 to emptyList()),
+        ))
+        val ctl = SwitcherController(store, scope = backgroundScope)
+
+        ctl.onShortcut(SwitcherEntry.App, reverse = true)
+        // Should be 1 (last Show), not 2 (the demoted A3).
+        assertEquals(1, ctl.ui.value?.state?.cursor?.appIndex)
     }
 }

@@ -1,6 +1,7 @@
 package com.shish.kaltswitch.switcher
 
 import com.shish.kaltswitch.log.log
+import com.shish.kaltswitch.model.NavScope
 import com.shish.kaltswitch.model.SwitcherCursor
 import com.shish.kaltswitch.model.SwitcherEntry
 import com.shish.kaltswitch.model.SwitcherEvent
@@ -127,7 +128,10 @@ class SwitcherController(
             }
         } else {
             val event = if (reverse) reverseEventFor(entry) else forwardEventFor(entry)
-            navigate(event)
+            // Hot-key path → Shown scope: cmd+tab cycles only through the
+            // inspector's `Show` apps, the demoted ones are skipped. Arrow
+            // keys (onNavigate) use the All scope by default.
+            navigate(event, NavScope.Shown)
         }
         val cursor = _ui.value?.state?.cursor
         log("[ctl] shortcut entry=$entry reverse=$reverse cursor=$cursor")
@@ -142,18 +146,21 @@ class SwitcherController(
      */
     private fun placeOnLastInRecency(entry: SwitcherEntry) {
         val cur = _ui.value ?: return
-        val items = cur.state.snapshot.all
-        if (items.isEmpty()) return
+        val snapshot = cur.state.snapshot
+        if (snapshot.all.isEmpty()) return
+        // Last index inside the *Show* range — the hot-key path's scope.
+        // cmd+shift+tab from closed should land on the oldest *Show* app, not
+        // wander into the Demote bucket.
         val lastCursor = when (entry) {
             SwitcherEntry.App -> SwitcherCursor(
-                appIndex = items.lastIndex,
+                appIndex = (snapshot.shownAppCount - 1).coerceAtLeast(0),
                 windowIndex = 0,
             )
             SwitcherEntry.Window -> {
-                val windows = items[0].windows
+                val first = snapshot.all[0]
                 SwitcherCursor(
                     appIndex = 0,
-                    windowIndex = (windows.size - 1).coerceAtLeast(0),
+                    windowIndex = (first.shownWindowCount - 1).coerceAtLeast(0),
                 )
             }
         }
@@ -184,7 +191,9 @@ class SwitcherController(
             try {
                 delay(initialDelay)
                 while (true) {
-                    navigate(event)
+                    // Auto-advance is the hot-key path → Shown scope, like
+                    // the explicit cmd+tab presses that armed this job.
+                    navigate(event, NavScope.Shown)
                     log("[ctl] press-tick event=$event cursor=${_ui.value?.state?.cursor}")
                     delay(interval)
                 }
@@ -204,10 +213,15 @@ class SwitcherController(
         SwitcherEntry.Window -> SwitcherEvent.PrevWindow
     }
 
-    fun onNavigate(event: SwitcherEvent) {
+    /**
+     * Called from the Compose overlay's keyboard handler (arrow keys).
+     * Defaults to [NavScope.All] so power users can step into demoted
+     * apps/windows that the hot-key path skips.
+     */
+    fun onNavigate(event: SwitcherEvent, scope: NavScope = NavScope.All) {
         if (_ui.value == null) return
-        log("[ctl] onNavigate event=$event cursor=${_ui.value?.state?.cursor}")
-        navigate(event)
+        log("[ctl] onNavigate event=$event scope=$scope cursor=${_ui.value?.state?.cursor}")
+        navigate(event, scope)
     }
 
     /**
@@ -276,9 +290,9 @@ class SwitcherController(
         }
     }
 
-    private fun navigate(event: SwitcherEvent) {
+    private fun navigate(event: SwitcherEvent, scope: NavScope) {
         val cur = _ui.value ?: return
-        val nextState = cur.state.apply(event)
+        val nextState = cur.state.apply(event, scope)
         if (nextState == cur.state) return
         // Cursor moved → previous preview-raise is no longer relevant.
         _ui.value = cur.copy(state = nextState, previewedWindowId = null)

@@ -133,12 +133,18 @@ private fun modeOrder(v: WindowView): Int = modeOrder(v.mode)
  */
 fun World.filteredSwitcherSnapshot(filters: Filters): SwitcherSnapshot {
     val fs = filteredSnapshot(filters)
-    fun toEntry(av: AppView): AppEntry = AppEntry(
-        app = av.app,
-        windows = av.windows
-            .filter { it.mode != TriFilter.Hide }
-            .map { it.window },
-    )
+    fun toEntry(av: AppView): AppEntry {
+        // av.windows is already pre-sorted Show → Demote → Hide by
+        // filteredSnapshot. Drop Hide; remember how many leading entries are
+        // Show so the hot-key path can cycle within them.
+        val visible = av.windows.filter { it.mode != TriFilter.Hide }
+        val shownWindowCount = visible.count { it.mode == TriFilter.Show }
+        return AppEntry(
+            app = av.app,
+            windows = visible.map { it.window },
+            shownWindowCount = shownWindowCount,
+        )
+    }
     return SwitcherSnapshot(
         withWindows = fs.show.map(::toEntry),
         windowless = fs.demote.map(::toEntry),
