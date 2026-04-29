@@ -287,6 +287,17 @@ final class AppRegistry {
 
         pushAppRecord(nsApp)
         let watcher = AxAppWatcher(pid: pid, store: store)
+        // Window-set mutation may flip activationPolicy back the other way
+        // (apps that drop to `.accessory` after their last window closes).
+        // No workspace notification fires for that transition; this hook is
+        // the only signal we get on the AppKit side.
+        watcher.onWindowsChanged = { [weak self] pid in
+            DispatchQueue.main.async { [weak self] in
+                guard let self = self else { return }
+                guard let live = NSRunningApplication(processIdentifier: pid) else { return }
+                self.pushAppRecord(live)
+            }
+        }
         watchers[pid] = watcher
         watcher.start()
     }

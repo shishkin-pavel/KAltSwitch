@@ -24,6 +24,13 @@ final class AxAppWatcher {
     /// store). Looked up on raise / commit to find the element to act on.
     private var windowsByHash: [Int: AXUIElement] = [:]
 
+    /// Fired on every snapshot-style window-list refresh and on
+    /// per-window destroyed events. AppRegistry uses this to re-poll the
+    /// NSRunningApplication's `activationPolicy` — apps like Bitwarden
+    /// flip back from `.regular` to `.accessory` when their last window
+    /// closes, and that mutation has no workspace-level signal.
+    var onWindowsChanged: ((pid_t) -> Void)?
+
     init(pid: pid_t, store: WorldStore) {
         self.pid = pid
         self.store = store
@@ -162,6 +169,10 @@ final class AxAppWatcher {
             }
         }
         store.setWindows(pid: pid, windows: out)
+        // Notify the registry: the windowed/windowless transition may have
+        // shifted activationPolicy (Bitwarden et al. flip back to .accessory
+        // when their last window closes — no workspace event for that).
+        onWindowsChanged?(pid)
     }
 
     /// Build a Window with its children = (typed-attribute children) + (top-level
