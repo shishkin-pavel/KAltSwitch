@@ -61,15 +61,20 @@ final class AppRegistry {
             object: nil, queue: .main
         ) { [weak self] note in self?.handleActivated(note) }
 
+        // didHide / didUnhide both end in the same place: re-read the app's
+        // record so the inspector and rule pipeline see the new
+        // `isHidden` value. The hidden flag was previously passed in and
+        // ignored — `upsertAppRecord` re-reads it from the live
+        // NSRunningApplication.
         let hideObs = center.addObserver(
             forName: NSWorkspace.didHideApplicationNotification,
             object: nil, queue: .main
-        ) { [weak self] note in self?.handleHiddenChange(note, hidden: true) }
+        ) { [weak self] note in self?.handleHiddenChange(note) }
 
         let unhideObs = center.addObserver(
             forName: NSWorkspace.didUnhideApplicationNotification,
             object: nil, queue: .main
-        ) { [weak self] note in self?.handleHiddenChange(note, hidden: false) }
+        ) { [weak self] note in self?.handleHiddenChange(note) }
 
         // `activeSpaceDidChangeNotification` lives on the per-instance
         // workspace center (NOT default NotificationCenter). Fires when the
@@ -252,7 +257,7 @@ final class AppRegistry {
         watchers[nsApp.processIdentifier]?.requestRefresh()
     }
 
-    private func handleHiddenChange(_ note: Notification, hidden: Bool) {
+    private func handleHiddenChange(_ note: Notification) {
         guard let nsApp = note.userInfo?[NSWorkspace.applicationUserInfoKey] as? NSRunningApplication else { return }
         AppRecordKt.upsertAppRecord(pid: nsApp.processIdentifier, store: store)
     }
