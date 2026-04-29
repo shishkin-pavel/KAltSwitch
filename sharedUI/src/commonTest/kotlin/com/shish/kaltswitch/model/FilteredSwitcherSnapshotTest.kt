@@ -322,6 +322,92 @@ class FilteredSwitcherSnapshotTest {
     }
 
     @Test
+    fun currentSpaceOnly_hidesWindowsNotOnVisibleSpace() {
+        // Two-window app on different spaces; only window on space 100 is
+        // currently visible. The other should be masked to Hide.
+        val onCurrent = winA.copy(spaceIds = listOf(100L))
+        val offCurrent = Window(id = 101, pid = 10, title = "A2", spaceIds = listOf(200L))
+        val world = world().copy(
+            windowsByPid = world().windowsByPid + (regularA.pid to listOf(onCurrent, offCurrent)),
+        )
+        val snap = world.filteredSnapshot(
+            filters = FilteringRules(rules = emptyList()),
+            currentSpaceOnly = true,
+            visibleSpaceIds = listOf(100L),
+        )
+        val a = snap.show.first { it.app.pid == regularA.pid }
+        val byMode = a.windows.associate { it.window.id to it.mode }
+        assertEquals(TriFilter.Show, byMode[100L])
+        assertEquals(TriFilter.Hide, byMode[101L])
+    }
+
+    @Test
+    fun currentSpaceOnly_offIsNoOp() {
+        // With the toggle off, off-space windows stay visible regardless of
+        // visibleSpaceIds.
+        val offCurrent = winA.copy(spaceIds = listOf(200L))
+        val world = world().copy(
+            windowsByPid = world().windowsByPid + (regularA.pid to listOf(offCurrent)),
+        )
+        val snap = world.filteredSnapshot(
+            filters = FilteringRules(rules = emptyList()),
+            currentSpaceOnly = false,
+            visibleSpaceIds = listOf(100L),
+        )
+        assertTrue(snap.show.any { it.app.pid == regularA.pid })
+    }
+
+    @Test
+    fun currentSpaceOnly_emptyVisibleSetSkipsTheFilter() {
+        // The Swift side hasn't seeded visibleSpaceIds yet (e.g. the private
+        // CGS API failed). Treat that as "feature unavailable" so the
+        // switcher doesn't silently lose every window.
+        val offCurrent = winA.copy(spaceIds = listOf(200L))
+        val world = world().copy(
+            windowsByPid = world().windowsByPid + (regularA.pid to listOf(offCurrent)),
+        )
+        val snap = world.filteredSnapshot(
+            filters = FilteringRules(rules = emptyList()),
+            currentSpaceOnly = true,
+            visibleSpaceIds = emptyList(),
+        )
+        assertTrue(snap.show.any { it.app.pid == regularA.pid })
+    }
+
+    @Test
+    fun currentSpaceOnly_windowWithoutSpaceDataIsKept() {
+        // Window's own spaceIds are empty (AX/CGS conversion failed for
+        // this one). We can't know whether it's on the current space, so
+        // we keep it rather than silently dropping.
+        val noSpaceData = winA.copy(spaceIds = emptyList())
+        val world = world().copy(
+            windowsByPid = world().windowsByPid + (regularA.pid to listOf(noSpaceData)),
+        )
+        val snap = world.filteredSnapshot(
+            filters = FilteringRules(rules = emptyList()),
+            currentSpaceOnly = true,
+            visibleSpaceIds = listOf(100L),
+        )
+        assertTrue(snap.show.any { it.app.pid == regularA.pid })
+    }
+
+    @Test
+    fun currentSpaceOnly_appWithAllOffSpaceWindowsFallsToPhantom() {
+        // All windows masked to Hide → app falls through to phantom
+        // evaluation. With empty rules → phantom default Hide.
+        val off = winA.copy(spaceIds = listOf(200L))
+        val world = world().copy(
+            windowsByPid = world().windowsByPid + (regularA.pid to listOf(off)),
+        )
+        val snap = world.filteredSnapshot(
+            filters = FilteringRules(rules = emptyList()),
+            currentSpaceOnly = true,
+            visibleSpaceIds = listOf(100L),
+        )
+        assertTrue(snap.hide.any { it.app.pid == regularA.pid })
+    }
+
+    @Test
     fun noVisibleWindows_canShowWindowlessAppExplicitly() {
         // Opt-in to showing windowless apps via the new predicate.
         val rules = FilteringRules(

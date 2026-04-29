@@ -29,6 +29,7 @@ val store = WorldStore().also { initStore ->
         initStore.setInspectorVisible(cfg.inspectorVisible)
         initStore.setShowMenubarIcon(cfg.showMenubarIcon)
         initStore.setLaunchAtLogin(cfg.launchAtLogin)
+        initStore.setCurrentSpaceOnly(cfg.currentSpaceOnly)
     }
 }
 
@@ -60,8 +61,13 @@ private val configScope = CoroutineScope(Dispatchers.Main).also { scope ->
         coreCfg,
         store.showMenubarIcon,
         store.launchAtLogin,
-    ) { base, menubar, launchAtLogin ->
-        base.copy(showMenubarIcon = menubar, launchAtLogin = launchAtLogin)
+        store.currentSpaceOnly,
+    ) { base, menubar, launchAtLogin, currentSpaceOnly ->
+        base.copy(
+            showMenubarIcon = menubar,
+            launchAtLogin = launchAtLogin,
+            currentSpaceOnly = currentSpaceOnly,
+        )
     }
         .drop(1)
         .onEach { ConfigStore.save(it) }
@@ -132,6 +138,13 @@ fun observeLaunchAtLogin(onChange: (Boolean) -> Unit) {
         .launchIn(bridgeScope)
 }
 
+/** Switcher / inspector hide off-current-space windows when this is on. */
+fun observeCurrentSpaceOnly(onChange: (Boolean) -> Unit) {
+    store.currentSpaceOnly
+        .onEach(onChange)
+        .launchIn(bridgeScope)
+}
+
 fun AttachMainComposeView(
     window: NSWindow,
 ): ComposeNSViewDelegate = ComposeNSViewDelegate(
@@ -146,6 +159,8 @@ fun AttachMainComposeView(
         val inspectorVisible by store.inspectorVisible.collectAsState()
         val showMenubarIcon by store.showMenubarIcon.collectAsState()
         val launchAtLogin by store.launchAtLogin.collectAsState()
+        val currentSpaceOnly by store.currentSpaceOnly.collectAsState()
+        val visibleSpaceIds by store.visibleSpaceIds.collectAsState()
         val windowFrame by store.windowFrame.collectAsState()
         // Sidebar width is stored alongside the rest of the window frame —
         // when the inspector is hidden it's the whole window's width, when
@@ -169,6 +184,9 @@ fun AttachMainComposeView(
             sidebarWidth = sidebarWidth,
             onSidebarWidthChange = { store.saveSidebarWidth(it) },
             onInspectorWidthChange = { store.saveInspectorWidth(it) },
+            currentSpaceOnly = currentSpaceOnly,
+            onCurrentSpaceOnlyChange = { store.setCurrentSpaceOnly(it) },
+            visibleSpaceIds = visibleSpaceIds,
             onGrantAxClick = {
                 val granted = requestAxPermission()
                 store.setAxTrusted(granted)

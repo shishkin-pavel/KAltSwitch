@@ -69,6 +69,27 @@ class WorldStore(initial: World = World(ActivationLog(), emptyMap(), emptyMap())
         _launchAtLogin.value = enabled
     }
 
+    /** When true, the classifier hides windows that aren't on any of
+     *  [visibleSpaceIds]. Default false = show windows from every space. */
+    private val _currentSpaceOnly = MutableStateFlow(false)
+    val currentSpaceOnly: StateFlow<Boolean> = _currentSpaceOnly.asStateFlow()
+
+    fun setCurrentSpaceOnly(enabled: Boolean) {
+        _currentSpaceOnly.value = enabled
+    }
+
+    /** Mission Control "current" space IDs across every connected display.
+     *  Updated by the Swift side on `NSWorkspace.activeSpaceDidChangeNotification`.
+     *  Empty list means we don't have the data — the classifier treats that
+     *  as "feature unavailable" and skips the space filter regardless of
+     *  [currentSpaceOnly]. */
+    private val _visibleSpaceIds = MutableStateFlow<List<Long>>(emptyList())
+    val visibleSpaceIds: StateFlow<List<Long>> = _visibleSpaceIds.asStateFlow()
+
+    fun setVisibleSpaceIds(ids: List<Long>) {
+        _visibleSpaceIds.value = ids
+    }
+
     /** True while a switcher session is open or just closed. AX/Workspace activation
      *  events arriving in this window are dropped — they describe our own preview-raise
      *  / commit echo, not user-driven activity, and would otherwise corrupt the log. */
@@ -257,6 +278,7 @@ class WorldStore(initial: World = World(ActivationLog(), emptyMap(), emptyMap())
         y: Double,
         width: Double,
         height: Double,
+        spaceIds: List<Long> = emptyList(),
     ) {
         upsertWindow(
             Window(
@@ -273,6 +295,7 @@ class WorldStore(initial: World = World(ActivationLog(), emptyMap(), emptyMap())
                 y = y.takeIf { !it.isNaN() },
                 width = width.takeIf { !it.isNaN() },
                 height = height.takeIf { !it.isNaN() },
+                spaceIds = spaceIds,
             )
         )
     }

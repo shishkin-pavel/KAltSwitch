@@ -185,7 +185,8 @@ final class AxAppWatcher {
             y: base.y,
             width: base.width,
             height: base.height,
-            children: base.children + extras
+            children: base.children + extras,
+            spaceIds: base.spaceIds
         )
     }
 
@@ -265,6 +266,18 @@ final class AxAppWatcher {
 
         let id = Int64(CFHash(axWin))
         let children = makeChildren(of: axWin)
+        // Resolve CGWindowID then ask CGS which Mission Control space(s) the
+        // window currently belongs to. Empty list on failure — the
+        // classifier treats that as "no space data available, skip the
+        // current-space filter for this window" so a transient AX failure
+        // doesn't make a window vanish from the switcher.
+        var cgWid: CGWindowID = 0
+        let spaceIds: [Int64]
+        if _AXUIElementGetWindow(axWin, &cgWid) == .success, cgWid != 0 {
+            spaceIds = spaceIdsFor(cgWindowId: cgWid)
+        } else {
+            spaceIds = []
+        }
         return Window(
             id: id,
             pid: pid,
@@ -279,8 +292,18 @@ final class AxAppWatcher {
             y: y,
             width: w,
             height: h,
-            children: children
+            children: children,
+            spaceIds: spaceIds.map { KotlinLong(value: $0) }
         )
+    }
+
+    /// Force a re-poll of every window's `spaceIds` without reconstructing
+    /// the AX subscription tree. Called when the user changes Mission
+    /// Control space — windows can get dragged between spaces and our
+    /// snapshot is otherwise only refreshed on AX events from the app
+    /// itself (which a space switch may or may not trigger).
+    func refreshAllWindowsSpaces() {
+        refreshAllWindows()
     }
 
     // MARK: - Raise / commit (called from main, from the SwitcherController bridge)

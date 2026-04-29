@@ -111,6 +111,67 @@ func bringAppToFront(pid: pid_t, cgWindowId: CGWindowID?) -> Bool {
     return true
 }
 
+// MARK: - Spaces (Mission Control virtual desktops)
+//
+// Public API gives us nothing: `NSWindow.collectionBehavior` only describes
+// the host app's own windows, and there's no published call to ask "which
+// spaces does CGWindowID X belong to?" alt-tab-macos relies on the same
+// private CGS calls we forward-declare here.
+//
+// Note re. macOS versions: `CGSCopySpacesForWindows` and
+// `CGSCopyManagedDisplaySpaces` have been stable since 10.10. Apple has
+// made noises about hardening private APIs in future macOS releases; if
+// these stop returning data, we drop back to "all spaces" silently and
+// surface a one-shot warning in logs.
+
+typealias CGSConnectionID = UInt32
+typealias CGSSpaceID = UInt64
+
+@_silgen_name("CGSMainConnectionID")
+func CGSMainConnectionID() -> CGSConnectionID
+
+/// `mask` chooses which space relationships to return. `7 = all` matches
+/// alt-tab's usage; `5 = current-only` and `6 = other-only` exist too.
+@_silgen_name("CGSCopySpacesForWindows")
+func CGSCopySpacesForWindows(
+    _ cid: CGSConnectionID,
+    _ mask: Int,
+    _ wids: CFArray
+) -> CFArray
+
+/// Returns an array of dicts, one per display, each describing its space
+/// list and current space — used to find every "currently visible" space
+/// across all attached displays.
+@_silgen_name("CGSCopyManagedDisplaySpaces")
+func CGSCopyManagedDisplaySpaces(_ cid: CGSConnectionID) -> CFArray
+
+private let cgsConnection: CGSConnectionID = CGSMainConnectionID()
+
+/// Spaces this window currently belongs to. Empty array on failure or if
+/// the window has been destroyed between the AX observation and now.
+func spaceIdsFor(cgWindowId: CGWindowID) -> [Int64] {
+    let result = CGSCopySpacesForWindows(cgsConnection, 7, [cgWindowId] as CFArray)
+    guard let arr = result as? [NSNumber] else { return [] }
+    return arr.map { Int64($0.uint64Value) }
+}
+
+/// Union of "Current Space.id64" across every connected display. A window
+/// counts as on-current-space iff at least one of its [spaceIdsFor] entries
+/// is in this set. Falls back to empty on failure (callers treat empty as
+/// "feature unavailable" and skip the filter).
+func currentVisibleSpaceIds() -> [Int64] {
+    let raw = CGSCopyManagedDisplaySpaces(cgsConnection)
+    guard let displays = raw as? [NSDictionary] else { return [] }
+    var out: [Int64] = []
+    for display in displays {
+        if let current = display["Current Space"] as? NSDictionary,
+           let id = (current["id64"] as? NSNumber)?.uint64Value {
+            out.append(Int64(id))
+        }
+    }
+    return out
+}
+
 /// Two byte-record events (`SLPSPostEventRecordTo`) that tell the WindowServer
 /// "this window is now key in its process". Without this the app is frontmost
 /// but key-window status sometimes lingers on the previously-focused window

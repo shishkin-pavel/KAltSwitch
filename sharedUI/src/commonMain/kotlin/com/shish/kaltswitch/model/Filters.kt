@@ -149,19 +149,29 @@ data class FilteredSnapshot(
  * Algorithm:
  * 1. Each real window walks the rule list (first-match-wins, default Show);
  *    `noVisibleWindows` evaluates `false` on real windows.
- * 2. The app's section is derived from those window modes — any Show → Show,
+ * 2. If [currentSpaceOnly] is on and we have [visibleSpaceIds], any window
+ *    that doesn't share a space with the current visible set is forced to
+ *    Hide regardless of the rule outcome. The space filter is intentionally
+ *    *outside* the rule chain — it's a global "what should I see right
+ *    now" toggle, not a property the user reasons about per-rule.
+ * 3. The app's section is derived from those window modes — any Show → Show,
  *    else any Demote → Demote.
- * 3. Otherwise (no surviving windows: zero real windows, or all hidden by
- *    rules) the classifier synthesises a **phantom** window with default
- *    field values and walks the rule list against it; `noVisibleWindows`
- *    evaluates `true`. The phantom's outcome becomes the app's section. If
- *    no rule matches the phantom the app defaults to Hide — windowless
- *    apps stay out of the way unless the user opts them in via a rule.
+ * 4. Otherwise (no surviving windows: zero real windows, or all hidden by
+ *    rules / the space filter) the classifier synthesises a **phantom**
+ *    window with default field values and walks the rule list against it;
+ *    `noVisibleWindows` evaluates `true`. The phantom's outcome becomes the
+ *    app's section. If no rule matches the phantom the app defaults to Hide
+ *    — windowless apps stay out of the way unless the user opts them in
+ *    via a rule.
  *
  * The phantom is invisible to the rest of the UI; only the resulting app
  * section escapes the classifier.
  */
-fun World.filteredSnapshot(filters: FilteringRules): FilteredSnapshot {
+fun World.filteredSnapshot(
+    filters: FilteringRules,
+    currentSpaceOnly: Boolean = false,
+    visibleSpaceIds: List<Long> = emptyList(),
+): FilteredSnapshot {
     val raw = snapshot()
     val all = raw.withWindows + raw.windowless
 
@@ -169,9 +179,13 @@ fun World.filteredSnapshot(filters: FilteringRules): FilteredSnapshot {
     val demote = mutableListOf<AppView>()
     val hide = mutableListOf<AppView>()
 
+    val spaceFilterActive = currentSpaceOnly && visibleSpaceIds.isNotEmpty()
+    val visibleSet = visibleSpaceIds.toHashSet()
+
     for (entry in all) {
         val winViews = entry.windows
             .map { classifyWindow(entry.app, it, filters, isPhantom = false) }
+            .map { if (spaceFilterActive) maskOffSpace(it, visibleSet) else it }
             .sortedBy(::modeOrder)
         val mode = appSection(entry.app, winViews, filters)
         val view = AppView(entry.app, winViews, mode)
@@ -183,6 +197,19 @@ fun World.filteredSnapshot(filters: FilteringRules): FilteredSnapshot {
     }
 
     return FilteredSnapshot(show, demote, hide)
+}
+
+/** Force [view] (and its children) to Hide if their `spaceIds` share no
+ *  members with the currently visible set. Windows we don't have space
+ *  data for (empty `spaceIds`) keep their classification — staleness
+ *  during the brief window between observation and the next refresh
+ *  shouldn't make them disappear from the switcher. */
+private fun maskOffSpace(view: WindowView, visible: Set<Long>): WindowView {
+    val onCurrent = view.window.spaceIds.isEmpty() || view.window.spaceIds.any { it in visible }
+    val newMode = if (onCurrent) view.mode else TriFilter.Hide
+    val newChildren = view.children.map { maskOffSpace(it, visible) }
+    return if (newMode == view.mode && newChildren === view.children) view
+    else view.copy(mode = newMode, children = newChildren)
 }
 
 /**
@@ -239,8 +266,12 @@ private fun modeOrder(v: WindowView): Int = modeOrder(v.mode)
  * Child windows (sheets/drawers) are flattened out — they're not navigation
  * targets in the switcher.
  */
-fun World.filteredSwitcherSnapshot(filters: FilteringRules): SwitcherSnapshot {
-    val fs = filteredSnapshot(filters)
+fun World.filteredSwitcherSnapshot(
+    filters: FilteringRules,
+    currentSpaceOnly: Boolean = false,
+    visibleSpaceIds: List<Long> = emptyList(),
+): SwitcherSnapshot {
+    val fs = filteredSnapshot(filters, currentSpaceOnly, visibleSpaceIds)
     fun toEntry(av: AppView): AppEntry {
         val visible = av.windows.filter { it.mode != TriFilter.Hide }
         val shownWindowCount = visible.count { it.mode == TriFilter.Show }

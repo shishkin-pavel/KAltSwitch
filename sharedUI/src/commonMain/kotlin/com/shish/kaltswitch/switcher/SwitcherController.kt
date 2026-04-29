@@ -274,7 +274,11 @@ class SwitcherController(
     private fun openSession(entry: SwitcherEntry) {
         val world = store.state.value
         val filters = store.filters.value
-        val snapshot = world.filteredSwitcherSnapshot(filters)
+        val snapshot = world.filteredSwitcherSnapshot(
+            filters = filters,
+            currentSpaceOnly = store.currentSpaceOnly.value,
+            visibleSpaceIds = store.visibleSpaceIds.value,
+        )
         val state = openSwitcher(snapshot, entry)
         val appOrder = snapshot.all.map { it.app.pid to it.app.name }
         log("[ctl] openSession entry=$entry defaultCursor=${state.cursor} apps=$appOrder")

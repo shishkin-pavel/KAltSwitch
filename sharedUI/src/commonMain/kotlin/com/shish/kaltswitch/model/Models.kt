@@ -39,6 +39,11 @@ data class Window(
     val height: Double? = null,
     /** Child windows (sheets, drawers, popovers) attached to this one via kAXChildWindowsAttribute. */
     val children: List<Window> = emptyList(),
+    /** Mission Control space IDs this window belongs to. Populated by the
+     *  Swift side via `CGSCopySpacesForWindows`. Empty when the data isn't
+     *  available (e.g. the private API was unhappy, or we haven't refreshed
+     *  yet) — the classifier treats empty as "skip the space filter". */
+    val spaceIds: List<Long> = emptyList(),
 )
 
 sealed interface Group {

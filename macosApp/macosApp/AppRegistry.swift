@@ -60,15 +60,42 @@ final class AppRegistry {
             object: nil, queue: .main
         ) { [weak self] note in self?.handleHiddenChange(note, hidden: false) }
 
-        nsObservers = [launchObs, terminateObs, activateObs, hideObs, unhideObs]
+        // `activeSpaceDidChangeNotification` lives on the per-instance
+        // workspace center (NOT default NotificationCenter). Fires when the
+        // user switches Mission Control space — we re-poll the visible
+        // space set and ask each watcher to refresh its windows so any
+        // window that got dragged between spaces gets a fresh `spaceIds`.
+        let spaceObs = center.addObserver(
+            forName: NSWorkspace.activeSpaceDidChangeNotification,
+            object: nil, queue: .main
+        ) { [weak self] _ in self?.handleSpaceChanged() }
+
+        nsObservers = [launchObs, terminateObs, activateObs, hideObs, unhideObs, spaceObs]
 
         for nsApp in workspace.runningApplications {
             spawn(for: nsApp)
         }
 
+        // Seed the visible-space set so the filter works even before the
+        // first space switch. Cheap call — no harm in doing it eagerly.
+        refreshVisibleSpaces()
+
         // seedActivationLog ends in syncActiveStateFromSystem itself, so no
         // redundant call here.
         seedActivationLog()
+    }
+
+    private func handleSpaceChanged() {
+        log("[reg] activeSpaceDidChange — re-poll visible spaces & windows")
+        refreshVisibleSpaces()
+        for watcher in watchers.values {
+            watcher.refreshAllWindowsSpaces()
+        }
+    }
+
+    private func refreshVisibleSpaces() {
+        let ids = currentVisibleSpaceIds()
+        store.setVisibleSpaceIds(ids: ids.map { KotlinLong(value: $0) })
     }
 
     /// Pre-fill the activation log with one event per running app, descending

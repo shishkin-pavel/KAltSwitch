@@ -67,6 +67,10 @@ data class AppConfig(
     val showMenubarIcon: Boolean = true,
     /** Whether macOS auto-launches the app at user login (via SMAppService). */
     val launchAtLogin: Boolean = false,
+    /** When true, the inspector and switcher hide windows that aren't on the
+     *  current Mission Control space. Default false → show windows from
+     *  every space (the alt-tab-macos default). */
+    val currentSpaceOnly: Boolean = false,
 )
 
 /**

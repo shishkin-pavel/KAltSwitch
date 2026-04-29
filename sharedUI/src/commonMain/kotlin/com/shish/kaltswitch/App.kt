@@ -71,9 +71,14 @@ fun App(
     sidebarWidth: Double = DefaultSidebarWidth,
     onSidebarWidthChange: (Double) -> Unit = {},
     onInspectorWidthChange: (Double) -> Unit = {},
+    currentSpaceOnly: Boolean = false,
+    onCurrentSpaceOnlyChange: (Boolean) -> Unit = {},
+    visibleSpaceIds: List<Long> = emptyList(),
     onGrantAxClick: () -> Unit = {},
 ) {
-    val snapshot = remember(world, filters) { world.filteredSnapshot(filters) }
+    val snapshot = remember(world, filters, currentSpaceOnly, visibleSpaceIds) {
+        world.filteredSnapshot(filters, currentSpaceOnly, visibleSpaceIds)
+    }
     val density = LocalDensity.current
     BoxWithConstraints(Modifier.fillMaxSize().background(Color(0xFF1E1E1E))) {
         val totalWidthPx = with(density) { maxWidth.toPx() }
@@ -112,6 +117,8 @@ fun App(
                     onShowMenubarIconChange = onShowMenubarIconChange,
                     launchAtLogin = launchAtLogin,
                     onLaunchAtLoginChange = onLaunchAtLoginChange,
+                    currentSpaceOnly = currentSpaceOnly,
+                    onCurrentSpaceOnlyChange = onCurrentSpaceOnlyChange,
                 )
                 Spacer(Modifier.height(2.dp))
                 FilteringRulesPanel(
@@ -348,6 +355,8 @@ private fun SettingsPanel(
     onShowMenubarIconChange: (Boolean) -> Unit,
     launchAtLogin: Boolean,
     onLaunchAtLoginChange: (Boolean) -> Unit,
+    currentSpaceOnly: Boolean,
+    onCurrentSpaceOnlyChange: (Boolean) -> Unit,
 ) {
     Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
         Text(
@@ -395,6 +404,11 @@ private fun SettingsPanel(
             label = "Launch at login",
             checked = launchAtLogin,
             onCheckedChange = onLaunchAtLoginChange,
+        )
+        ToggleRow(
+            label = "Current space only",
+            checked = currentSpaceOnly,
+            onCheckedChange = onCurrentSpaceOnlyChange,
         )
     }
 }
