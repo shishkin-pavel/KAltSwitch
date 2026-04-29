@@ -47,15 +47,17 @@ class FilteredSwitcherSnapshotTest {
     }
 
     @Test
-    fun emptyRules_windowlessAppsLandInDemote() {
-        // No rules → real windows default Show → apps with windows in Show.
-        // Windowless apps fall through to phantom → phantom default Demote.
-        // Bypass the seeded ruleset by passing an explicit empty list.
+    fun emptyRules_everythingShows_includingWindowlessApps() {
+        // No rules → real windows default Show, phantom default Show too.
+        // Nothing gets demoted or hidden without explicit user rules.
         val snap = world().filteredSwitcherSnapshot(FilteringRules(rules = emptyList()))
         val primary = snap.withWindows.map { it.app.name }
         val secondary = snap.windowless.map { it.app.name }
-        assertEquals(listOf("Regular A", "Regular B", "Accessory"), primary)
-        assertEquals(listOf("Windowless"), secondary)
+        // All four apps in primary; windowless one is alphabetically last
+        // because raw snapshot lists windowed apps by recency, then puts
+        // known-windowless apps at the end.
+        assertEquals(setOf("Regular A", "Regular B", "Accessory", "Windowless"), primary.toSet())
+        assertTrue(secondary.isEmpty())
     }
 
     @Test
@@ -174,10 +176,10 @@ class FilteredSwitcherSnapshotTest {
     @Test
     fun rulePredicatesAreANDed_bothMustMatch() {
         // bundleId == "a" AND title == "A1" → Hide. Window B1 (different
-        // bundleId) must not be hidden. App A's only window is hidden →
-        // app falls through to phantom evaluation → no rule matches the
-        // phantom (bundleId == "a" still matches but title doesn't on
-        // phantom) → phantom default Demote.
+        // bundleId) must not be hidden. App A's only real window is hidden,
+        // but the phantom doesn't match the rule (phantom title is "" not
+        // "A1") → phantom default Show → app A still in Show, just with
+        // no visible windows.
         val rules = FilteringRules(
             rules = listOf(
                 Rule(
@@ -193,8 +195,7 @@ class FilteredSwitcherSnapshotTest {
         val snap = world().filteredSnapshot(rules)
         val a = snap.show.firstOrNull { it.app.pid == regularA.pid }
         val b = snap.show.firstOrNull { it.app.pid == regularB.pid }
-        assertTrue(a == null, "App A's only window was hidden; phantom default Demote → app in Demote")
-        assertTrue(snap.demote.any { it.app.pid == regularA.pid })
+        assertTrue(a != null, "App A's window was hidden but phantom default Show keeps the app visible")
         assertTrue(b != null, "App B doesn't match; should still be in Show")
     }
 
@@ -262,10 +263,9 @@ class FilteredSwitcherSnapshotTest {
             ),
         )
         val snap = world().filteredSnapshot(rules)
-        // Disabled rule doesn't fire → phantom default Demote kicks in for
-        // windowless. Apps with windows stay in Show.
-        assertEquals(3, snap.show.size, "regularA + regularB + accessory in Show")
-        assertEquals(1, snap.demote.size, "Windowless app falls through to phantom default Demote")
+        // Disabled rule doesn't fire → phantom default Show. Everything in Show.
+        assertEquals(4, snap.show.size)
+        assertTrue(snap.demote.isEmpty())
         assertTrue(snap.hide.isEmpty())
     }
 
@@ -278,31 +278,28 @@ class FilteredSwitcherSnapshotTest {
             ),
         )
         val snap = world().filteredSnapshot(rules)
-        // Real windows default Show → apps with windows in Show. Windowless
-        // → phantom default Demote.
-        assertEquals(3, snap.show.size)
-        assertEquals(1, snap.demote.size)
+        // Inert rule → phantom default Show kicks in. Everything visible.
+        assertEquals(4, snap.show.size)
+        assertTrue(snap.demote.isEmpty())
+        assertTrue(snap.hide.isEmpty())
     }
 
     @Test
     fun phantomDoesNotMatchWindowSpecificPredicates() {
-        // A windowless app with rule "title == 'A1' → Show" — the phantom's
-        // title is "" so the rule doesn't match it → phantom default Demote.
+        // Rule "title == 'A1' → Hide" matches winA but the phantom's title
+        // is "" so the rule doesn't match it → phantom default Show.
         val rules = FilteringRules(
             rules = listOf(
                 Rule(
-                    id = "title-show",
+                    id = "title-hide",
                     predicates = listOf(TitlePredicate(value = "A1")),
-                    outcome = TriFilter.Show,
+                    outcome = TriFilter.Hide,
                 ),
             ),
         )
         val snap = world().filteredSnapshot(rules)
-        // Windowless app's phantom doesn't match → falls to default Demote.
-        assertTrue(
-            snap.demote.any { it.app.pid == windowless.pid },
-            "Windowless app's phantom shouldn't match a title rule",
-        )
+        // Windowless app's phantom doesn't match the title rule → default Show.
+        assertTrue(snap.show.any { it.app.pid == windowless.pid })
     }
 
     @Test
@@ -396,7 +393,8 @@ class FilteredSwitcherSnapshotTest {
     @Test
     fun currentSpaceOnly_appWithAllOffSpaceWindowsFallsToPhantom() {
         // All windows masked to Hide → app falls through to phantom
-        // evaluation. With empty rules → phantom default Demote.
+        // evaluation. With empty rules → phantom default Show, so the app
+        // is still visible (just with no windows the user can navigate to).
         val off = winA.copy(spaceIds = listOf(200L))
         val world = world().copy(
             windowsByPid = world().windowsByPid + (regularA.pid to listOf(off)),
@@ -406,7 +404,7 @@ class FilteredSwitcherSnapshotTest {
             currentSpaceOnly = true,
             visibleSpaceIds = listOf(100L),
         )
-        assertTrue(snap.demote.any { it.app.pid == regularA.pid })
+        assertTrue(snap.show.any { it.app.pid == regularA.pid })
     }
 
     @Test

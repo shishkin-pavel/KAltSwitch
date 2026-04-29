@@ -218,17 +218,17 @@ private fun maskOffSpace(view: WindowView, visible: Set<Long>): WindowView {
  * phantom window so the user can express "no visible windows → ..." (and
  * any other app-level rule such as "accessory → Hide") declaratively.
  *
- * Phantom default = `Demote`. Without any rules a windowless app lands in
- * the demoted bucket, matching the old `windowlessApps = Demote` fallback
- * — the user keeps it in the inspector but it stays out of the way for
- * the cmd+tab cycle. Stricter "→ Hide" can always be authored as a rule.
+ * Phantom default = `Show`. The whole pipeline is opt-in: nothing is
+ * demoted or hidden without an explicit rule. Users who want windowless
+ * apps demoted or accessory utilities hidden author a rule for it
+ * (e.g. `noVisibleWindows → Demote`, `activationPolicy == Accessory → Hide`).
  */
 private fun appSection(app: App, windows: List<WindowView>, f: FilteringRules): TriFilter {
     if (windows.any { it.mode == TriFilter.Show }) return TriFilter.Show
     if (windows.any { it.mode == TriFilter.Demote }) return TriFilter.Demote
     val phantom = phantomWindow(app)
     return f.rules.firstOrNull { it.matches(app, phantom, isPhantom = true) }?.outcome
-        ?: TriFilter.Demote
+        ?: TriFilter.Show
 }
 
 /** Synthetic stand-in window used to evaluate app-level rules for apps

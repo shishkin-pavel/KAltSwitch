@@ -5,11 +5,15 @@ import com.shish.kaltswitch.model.ActivationEvent
 import com.shish.kaltswitch.model.ActivationLog
 import com.shish.kaltswitch.model.App
 import com.shish.kaltswitch.model.AppEntry
+import com.shish.kaltswitch.model.FilteringRules
 import com.shish.kaltswitch.model.NavScope
+import com.shish.kaltswitch.model.NoVisibleWindowsPredicate
+import com.shish.kaltswitch.model.Rule
 import com.shish.kaltswitch.model.SwitcherEntry
 import com.shish.kaltswitch.model.SwitcherEvent
 import com.shish.kaltswitch.model.SwitcherSnapshot
 import com.shish.kaltswitch.model.SwitcherState
+import com.shish.kaltswitch.model.TriFilter
 import com.shish.kaltswitch.model.Window
 import com.shish.kaltswitch.model.World
 import com.shish.kaltswitch.model.apply
@@ -569,14 +573,14 @@ class SwitcherControllerTest {
 
     @Test
     fun reverseShortcut_fromClosed_landsOnLastShownNotDemoted() = runTest {
-        // 3 apps total but only 2 are Show — the third is Demote. cmd+shift+tab
-        // from closed must land on app[1] (last Show), not app[2] (Demote).
+        // 3 apps; an explicit rule demotes a3's phantom (it's windowless).
+        // cmd+shift+tab from closed must land on app[1] (last Show), not
+        // app[2] (Demote).
         val a1 = App(pid = 1, bundleId = "a1", name = "A1")
         val a2 = App(pid = 2, bundleId = "a2", name = "A2")
         val a3 = App(pid = 3, bundleId = "a3", name = "A3")
         val w1 = Window(id = 11, pid = 1, title = "A1 win")
         val w2 = Window(id = 21, pid = 2, title = "A2 win")
-        // a3 has no windows → goes to the Demote bucket via the windowless filter.
         val log = ActivationLog()
             .record(ActivationEvent(pid = 3, windowId = null))
             .record(ActivationEvent(pid = 2, windowId = 21))
@@ -586,6 +590,15 @@ class SwitcherControllerTest {
             runningApps = mapOf(1 to a1, 2 to a2, 3 to a3),
             windowsByPid = mapOf(1 to listOf(w1), 2 to listOf(w2), 3 to emptyList()),
         ))
+        // Explicit rule recreates the old "windowless apps go to Demote"
+        // fallback so the test scenario stays meaningful.
+        store.setFilters(FilteringRules(rules = listOf(
+            Rule(
+                id = "windowless-demote",
+                predicates = listOf(NoVisibleWindowsPredicate()),
+                outcome = TriFilter.Demote,
+            ),
+        )))
         val ctl = SwitcherController(store, scope = backgroundScope)
 
         ctl.onShortcut(SwitcherEntry.App, reverse = true)

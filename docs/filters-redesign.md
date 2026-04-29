@@ -42,8 +42,8 @@ app's section like this:
    out `Hide`), synthesise a **phantom** window with default field values
    and walk the rules against it. `noVisibleWindows` evaluates `true`
    here. The phantom's outcome becomes the app's section. If no rule
-   matches, the default is `Hide` — windowless apps stay out of the way
-   unless the user opts them in.
+   matches, the default is `Show` — the whole pipeline is opt-in,
+   nothing is demoted or hidden without an explicit user rule.
 
 This collapses the old two-subsystem (rules + fallback toggles) design
 into one. Anything the fallbacks did is expressible as a normal rule:
@@ -110,9 +110,9 @@ no bundle ID at all. This keeps every predicate total — there's no third
 ## 3. Evaluation semantics
 
 **First-match-wins, per window.** A rule with no enabled predicates matches
-nothing (it's an inert draft, not a wildcard). A real window with no
-matching rule defaults to `Show`; a phantom window with no matching rule
-defaults to `Hide`.
+nothing (it's an inert draft, not a wildcard). Both real and phantom
+windows default to `Show` when no rule matches — the entire system is
+opt-in, nothing is demoted or hidden without an explicit user rule.
 
 Rationale: first-match-wins matches the firewall / mail-rules mental model
 ("rules are processed in order") and is order-explainable. Combined with
@@ -260,8 +260,8 @@ The whole `filteredSnapshot` recomputes on `world` or `filters` change
 9. **Schema name** — picked `FilteringRules` for the container.
 10. **Validation** — inline error; invalid predicate evaluates to `false`
     (never blocks save).
-11. **Phantom-window default** — `Hide` (revision 2). When a windowless or
-    fully-hidden app has no rule that matches its phantom, it goes to
-    `Hide`. Users opt windowless apps in via `noVisibleWindows → Show`
-    or `→ Demote`. More aggressive than the old `windowlessApps = Demote`
-    default but consistent with the "rules-only" model.
+11. **Phantom-window default** — `Show` (revision 3). The entire
+    classification pipeline is opt-in: a fresh install with no rules
+    classifies every app as `Show`. Users author explicit rules to
+    demote (`noVisibleWindows → Demote`) or hide (`activationPolicy ==
+    Accessory → Hide`) anything they don't want in the switcher.
