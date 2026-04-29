@@ -5,6 +5,17 @@ import kotlin.test.assertEquals
 import kotlin.test.assertFalse
 import kotlin.test.assertTrue
 
+/**
+ * Tests of the unified rule pipeline (`FilteringRules`). The classifier:
+ * - walks rules per real window (first-match-wins, default Show);
+ * - then derives the app's section from those modes — any Show → Show,
+ *   any Demote → Demote;
+ * - otherwise synthesises a phantom window and walks the rules again with
+ *   `isPhantom = true` (so the `NoVisibleWindows` predicate becomes
+ *   meaningful), defaulting to Hide if no rule matches.
+ *
+ * There are no separate fallback toggles; everything goes through rules.
+ */
 class FilteredSwitcherSnapshotTest {
 
     private val regularA = App(pid = 10, bundleId = "a", name = "Regular A")
@@ -22,7 +33,7 @@ class FilteredSwitcherSnapshotTest {
         val log = ActivationLog()
             .record(ActivationEvent(accessory.pid, winAcc.id))
             .record(ActivationEvent(regularB.pid, winB.id))
-            .record(ActivationEvent(regularA.pid, winA.id))   // most recent
+            .record(ActivationEvent(regularA.pid, winA.id))
         return World(
             log = log,
             runningApps = listOf(regularA, regularB, windowless, accessory).associateBy { it.pid },
@@ -36,53 +47,274 @@ class FilteredSwitcherSnapshotTest {
     }
 
     @Test
-    fun defaultFilters_windowlessAppsGoBehindSeparator() {
-        val snap = world().filteredSwitcherSnapshot(Filters())
-        // Defaults: windowlessApps = Demote → secondary; everything else = Show.
+    fun emptyRules_appsWithWindowsAreShown_windowlessAreHidden() {
+        // No rules → real windows default Show → apps with windows in Show.
+        // Windowless apps fall through to phantom → no rule matches → Hide.
+        val snap = world().filteredSwitcherSnapshot(FilteringRules())
         val primary = snap.withWindows.map { it.app.name }
         val secondary = snap.windowless.map { it.app.name }
         assertEquals(listOf("Regular A", "Regular B", "Accessory"), primary)
-        assertEquals(listOf("Windowless"), secondary)
+        assertTrue(secondary.isEmpty())
     }
 
     @Test
-    fun hiddenApps_areDroppedFromSwitcher() {
-        val filters = Filters(accessoryApps = TriFilter.Hide)
-        val snap = world().filteredSwitcherSnapshot(filters)
+    fun noVisibleWindowsRule_demotesWindowlessApps() {
+        // Replicates the old `windowlessApps = Demote` fallback as a rule.
+        val rules = FilteringRules(
+            rules = listOf(
+                Rule(
+                    id = "windowless",
+                    predicates = listOf(NoVisibleWindowsPredicate()),
+                    outcome = TriFilter.Demote,
+                ),
+            ),
+        )
+        val snap = world().filteredSwitcherSnapshot(rules)
+        // Regular A, Regular B, Accessory keep windows; only Windowless demotes.
+        assertEquals(listOf("Regular A", "Regular B", "Accessory"), snap.withWindows.map { it.app.name })
+        assertEquals(listOf("Windowless"), snap.windowless.map { it.app.name })
+    }
+
+    @Test
+    fun accessoryHideRule_appliesToBothRealWindowsAndPhantom() {
+        // "accessory → Hide" hides both an accessory app's real window
+        // (sending the app to phantom evaluation) AND the phantom (matching
+        // again), so the app lands in Hide.
+        val rules = FilteringRules(
+            rules = listOf(
+                Rule(
+                    id = "no-accessory",
+                    predicates = listOf(ActivationPolicyPredicate(value = PolicyValue.Accessory)),
+                    outcome = TriFilter.Hide,
+                ),
+            ),
+        )
+        val snap = world().filteredSwitcherSnapshot(rules)
         val all = snap.all.map { it.app.name }
-        assertFalse("Accessory" in all, "Hide-filtered apps must not appear")
+        assertFalse("Accessory" in all, "Accessory app must be hidden")
     }
 
     @Test
-    fun demotedApps_landBehindSeparator() {
-        val filters = Filters(accessoryApps = TriFilter.Demote)
-        val snap = world().filteredSwitcherSnapshot(filters)
-        // Accessory now joins Windowless in the secondary group.
-        assertEquals(listOf("Regular A", "Regular B"), snap.withWindows.map { it.app.name })
-        assertTrue("Accessory" in snap.windowless.map { it.app.name })
-        assertTrue("Windowless" in snap.windowless.map { it.app.name })
-    }
-
-    @Test
-    fun appOrder_matchesInspectorOrderFromTheSameFilters() {
-        val filters = Filters()
-        val inspector = world().filteredSnapshot(filters)
-        val switcher = world().filteredSwitcherSnapshot(filters)
-        assertEquals(
-            inspector.show.map { it.app.pid } + inspector.demote.map { it.app.pid },
-            switcher.all.map { it.app.pid }
+    fun explicitShowBeatsLaterAccessoryHide() {
+        // The user's classic example: a more specific rule earlier wins
+        // over a broader catch-all later, even if both target the same app.
+        val rules = FilteringRules(
+            rules = listOf(
+                Rule(
+                    id = "specific-show",
+                    predicates = listOf(
+                        ActivationPolicyPredicate(value = PolicyValue.Accessory),
+                        RolePredicate(op = StringOp.IsEmpty, inverted = true),
+                    ),
+                    outcome = TriFilter.Show,
+                ),
+                Rule(
+                    id = "broad-hide",
+                    predicates = listOf(ActivationPolicyPredicate(value = PolicyValue.Accessory)),
+                    outcome = TriFilter.Hide,
+                ),
+            ),
+        )
+        // Give the accessory window a real role so the inverted-IsEmpty
+        // predicate matches.
+        val world = world()
+        val withRole = world.copy(
+            windowsByPid = world.windowsByPid + (accessory.pid to listOf(winAcc.copy(role = "AXWindow"))),
+        )
+        val snap = withRole.filteredSwitcherSnapshot(rules)
+        assertTrue(
+            "Accessory" in snap.withWindows.map { it.app.name },
+            "Specific Show rule must win over later broad Hide rule",
         )
     }
 
     @Test
-    fun hiddenWindows_areDroppedFromAppCell() {
+    fun perWindowRule_hidesUntitledWindowsViaIsEmptyTitle() {
+        val rules = FilteringRules(
+            rules = listOf(
+                Rule(
+                    id = "untitled",
+                    predicates = listOf(TitlePredicate(op = StringOp.IsEmpty)),
+                    outcome = TriFilter.Hide,
+                ),
+            ),
+        )
         val world = world()
-        val filters = Filters(untitledWindows = TriFilter.Hide)
         val withUntitled = world.copy(
             windowsByPid = world.windowsByPid + (regularA.pid to listOf(winA, Window(id = 999, pid = 10, title = ""))),
         )
-        val snap = withUntitled.filteredSwitcherSnapshot(filters)
+        val snap = withUntitled.filteredSwitcherSnapshot(rules)
         val a = snap.withWindows.first { it.app.pid == regularA.pid }
         assertEquals(listOf(100L), a.windows.map { it.id })
+    }
+
+    @Test
+    fun firstMatchWins_secondRuleDoesNotOverride() {
+        val rules = FilteringRules(
+            rules = listOf(
+                Rule(
+                    id = "demote-a1",
+                    predicates = listOf(TitlePredicate(op = StringOp.Eq, value = "A1")),
+                    outcome = TriFilter.Demote,
+                ),
+                Rule(
+                    id = "hide-a1",
+                    predicates = listOf(TitlePredicate(op = StringOp.Eq, value = "A1")),
+                    outcome = TriFilter.Hide,
+                ),
+            ),
+        )
+        val snap = world().filteredSnapshot(rules)
+        val a = snap.demote.first { it.app.pid == regularA.pid }
+        val winView = a.windows.first { it.window.id == 100L }
+        assertEquals(TriFilter.Demote, winView.mode)
+    }
+
+    @Test
+    fun rulePredicatesAreANDed_bothMustMatch() {
+        // bundleId == "a" AND title == "A1" → Hide. Window B1 (different
+        // bundleId) must not be hidden. App A's only window is hidden →
+        // app falls through to phantom evaluation → no rule matches the
+        // phantom (bundleId == "a" still matches but title doesn't on
+        // phantom) → default Hide.
+        val rules = FilteringRules(
+            rules = listOf(
+                Rule(
+                    id = "rule",
+                    predicates = listOf(
+                        BundleIdPredicate(value = "a"),
+                        TitlePredicate(value = "A1"),
+                    ),
+                    outcome = TriFilter.Hide,
+                ),
+            ),
+        )
+        val snap = world().filteredSnapshot(rules)
+        val a = snap.show.firstOrNull { it.app.pid == regularA.pid }
+        val b = snap.show.firstOrNull { it.app.pid == regularB.pid }
+        assertTrue(a == null, "App A's only window was hidden; phantom default Hide → app in Hide")
+        assertTrue(b != null, "App B doesn't match; should still be in Show")
+    }
+
+    @Test
+    fun nullStringFieldsAreNormalisedToEmpty() {
+        // bundleId == "" should match an app whose bundleId is null.
+        val noBundle = App(pid = 50, bundleId = null, name = "NoBundle")
+        val noBundleWin = Window(id = 500, pid = 50, title = "X")
+        val rules = FilteringRules(
+            rules = listOf(
+                Rule(
+                    id = "null-bundle",
+                    predicates = listOf(BundleIdPredicate(op = StringOp.IsEmpty)),
+                    outcome = TriFilter.Hide,
+                ),
+            ),
+        )
+        val log = ActivationLog().record(ActivationEvent(noBundle.pid, noBundleWin.id))
+        val world = World(
+            log = log,
+            runningApps = mapOf(noBundle.pid to noBundle),
+            windowsByPid = mapOf(noBundle.pid to listOf(noBundleWin)),
+        )
+        val snap = world.filteredSnapshot(rules)
+        // Window classified Hide → phantom evaluated → bundleId IsEmpty
+        // also matches phantom → phantom Hide → app Hide.
+        assertEquals(0, snap.show.size)
+        assertEquals(0, snap.demote.size)
+        assertEquals(1, snap.hide.size)
+    }
+
+    @Test
+    fun invertedPredicate_negatesResult() {
+        // "title is non-empty → Hide" should hide titled windows but keep
+        // untitled ones.
+        val rules = FilteringRules(
+            rules = listOf(
+                Rule(
+                    id = "hide-titled",
+                    predicates = listOf(TitlePredicate(op = StringOp.IsEmpty, inverted = true)),
+                    outcome = TriFilter.Hide,
+                ),
+            ),
+        )
+        val world = world()
+        val untitled = Window(id = 999, pid = 10, title = "")
+        val withUntitled = world.copy(
+            windowsByPid = world.windowsByPid + (regularA.pid to listOf(winA, untitled)),
+        )
+        val snap = withUntitled.filteredSnapshot(rules)
+        val a = snap.show.first { it.app.pid == regularA.pid }
+        assertEquals(listOf(999L), a.windows.filter { it.mode != TriFilter.Hide }.map { it.window.id })
+    }
+
+    @Test
+    fun disabledRule_isSkipped() {
+        val rules = FilteringRules(
+            rules = listOf(
+                Rule(
+                    id = "off",
+                    enabled = false,
+                    predicates = listOf(NoVisibleWindowsPredicate()),
+                    outcome = TriFilter.Hide,
+                ),
+            ),
+        )
+        val snap = world().filteredSnapshot(rules)
+        // Disabled rule doesn't fire → phantom default Hide kicks in for
+        // windowless. Apps with windows stay in Show.
+        assertEquals(3, snap.show.size, "regularA + regularB + accessory in Show")
+        assertEquals(1, snap.hide.size, "Windowless app falls through to phantom default Hide")
+    }
+
+    @Test
+    fun emptyRule_isInert() {
+        // A rule with no enabled predicates must not match anything.
+        val rules = FilteringRules(
+            rules = listOf(
+                Rule(id = "empty", predicates = emptyList(), outcome = TriFilter.Hide),
+            ),
+        )
+        val snap = world().filteredSnapshot(rules)
+        // Real windows default Show → apps with windows in Show. Windowless
+        // → phantom default Hide.
+        assertEquals(3, snap.show.size)
+        assertEquals(1, snap.hide.size)
+    }
+
+    @Test
+    fun phantomDoesNotMatchWindowSpecificPredicates() {
+        // A windowless app with rule "title == 'A1' → Show" — the phantom's
+        // title is "" so the rule doesn't match it → phantom default Hide.
+        val rules = FilteringRules(
+            rules = listOf(
+                Rule(
+                    id = "title-show",
+                    predicates = listOf(TitlePredicate(value = "A1")),
+                    outcome = TriFilter.Show,
+                ),
+            ),
+        )
+        val snap = world().filteredSnapshot(rules)
+        // Windowless app's phantom doesn't match → falls to default Hide.
+        assertTrue(
+            snap.hide.any { it.app.pid == windowless.pid },
+            "Windowless app's phantom shouldn't match a title rule",
+        )
+    }
+
+    @Test
+    fun noVisibleWindows_canShowWindowlessAppExplicitly() {
+        // Opt-in to showing windowless apps via the new predicate.
+        val rules = FilteringRules(
+            rules = listOf(
+                Rule(
+                    id = "show-windowless",
+                    predicates = listOf(NoVisibleWindowsPredicate()),
+                    outcome = TriFilter.Show,
+                ),
+            ),
+        )
+        val snap = world().filteredSnapshot(rules)
+        assertTrue(snap.show.any { it.app.pid == windowless.pid })
     }
 }

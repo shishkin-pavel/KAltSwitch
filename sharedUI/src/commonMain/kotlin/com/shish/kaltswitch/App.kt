@@ -2,8 +2,12 @@ package com.shish.kaltswitch
 
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.gestures.Orientation
+import androidx.compose.foundation.gestures.draggable
+import androidx.compose.foundation.gestures.rememberDraggableState
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
@@ -19,6 +23,7 @@ import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
+import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.MaterialTheme
@@ -40,7 +45,7 @@ import com.shish.kaltswitch.config.SwitcherSettings
 import com.shish.kaltswitch.model.AppActivationPolicy
 import com.shish.kaltswitch.model.AppView
 import com.shish.kaltswitch.model.FilteredSnapshot
-import com.shish.kaltswitch.model.Filters
+import com.shish.kaltswitch.model.FilteringRules
 import com.shish.kaltswitch.model.TriFilter
 import com.shish.kaltswitch.model.WindowId
 import com.shish.kaltswitch.model.WindowView
@@ -53,8 +58,8 @@ fun App(
     axTrusted: Boolean = true,
     activeAppPid: Int? = null,
     activeWindowId: WindowId? = null,
-    filters: Filters = Filters(),
-    onFiltersChange: (Filters) -> Unit = {},
+    filters: FilteringRules = FilteringRules(),
+    onFiltersChange: (FilteringRules) -> Unit = {},
     switcherSettings: SwitcherSettings = SwitcherSettings(),
     onSwitcherSettingsChange: (SwitcherSettings) -> Unit = {},
     inspectorVisible: Boolean = true,
@@ -63,55 +68,111 @@ fun App(
     onShowMenubarIconChange: (Boolean) -> Unit = {},
     launchAtLogin: Boolean = false,
     onLaunchAtLoginChange: (Boolean) -> Unit = {},
+    sidebarWidth: Double = DefaultSidebarWidth,
+    onSidebarWidthChange: (Double) -> Unit = {},
+    onInspectorWidthChange: (Double) -> Unit = {},
     onGrantAxClick: () -> Unit = {},
 ) {
     val snapshot = remember(world, filters) { world.filteredSnapshot(filters) }
-    Row(Modifier.fillMaxSize().background(Color(0xFF1E1E1E))) {
-        // Sidebar: fixed-width when inspector is visible, full-width when
-        // hidden so the user has room to read the settings comfortably
-        // without an empty right pane.
-        val sidebarModifier = if (inspectorVisible) {
-            Modifier.width(260.dp)
+    val density = LocalDensity.current
+    BoxWithConstraints(Modifier.fillMaxSize().background(Color(0xFF1E1E1E))) {
+        val totalWidthPx = with(density) { maxWidth.toPx() }
+        val handleWidthPx = with(density) { SeparatorWidth.toPx() }
+        val minSidebarPx = with(density) { MinSidebarWidth.toPx() }
+        val minInspectorPx = with(density) { MinInspectorWidth.toPx() }
+
+        // Clamp sidebar to a sensible range relative to the current window
+        // width — needed so launches at unusual sizes (or stale persisted
+        // widths from a wider window) don't blow out the inspector.
+        val effectiveSidebarPx = if (inspectorVisible) {
+            val sidebarPx = with(density) { sidebarWidth.dp.toPx() }
+            sidebarPx.coerceIn(
+                minimumValue = minSidebarPx,
+                maximumValue = (totalWidthPx - handleWidthPx - minInspectorPx).coerceAtLeast(minSidebarPx),
+            )
         } else {
-            Modifier.fillMaxWidth()
+            totalWidthPx
         }
-        Column(
-            sidebarModifier
-                .fillMaxHeight()
-                .background(Color(0xFF181818))
-                .padding(12.dp)
-                .verticalScroll(rememberScrollState()),
-            verticalArrangement = Arrangement.spacedBy(14.dp),
-        ) {
-            SettingsPanel(
-                settings = switcherSettings,
-                onChange = onSwitcherSettingsChange,
-                showMenubarIcon = showMenubarIcon,
-                onShowMenubarIconChange = onShowMenubarIconChange,
-                launchAtLogin = launchAtLogin,
-                onLaunchAtLoginChange = onLaunchAtLoginChange,
-            )
-            Spacer(Modifier.height(2.dp))
-            FiltersPanel(
-                filters = filters,
-                onFiltersChange = onFiltersChange,
-                inspectorVisible = inspectorVisible,
-                onToggleInspector = { onInspectorVisibleChange(!inspectorVisible) },
-            )
-        }
-        if (inspectorVisible) {
-            InspectorPanel(
-                snapshot = snapshot,
-                axTrusted = axTrusted,
-                activeAppPid = activeAppPid,
-                activeWindowId = activeWindowId,
-                onGrantAxClick = onGrantAxClick,
-                modifier = Modifier
+        val effectiveSidebarDp = with(density) { effectiveSidebarPx.toDp() }
+
+        Row(Modifier.fillMaxSize()) {
+            Column(
+                Modifier
+                    .width(effectiveSidebarDp)
                     .fillMaxHeight()
-                    .padding(16.dp),
-            )
+                    .background(Color(0xFF181818))
+                    .padding(12.dp)
+                    .verticalScroll(rememberScrollState()),
+                verticalArrangement = Arrangement.spacedBy(14.dp),
+            ) {
+                SettingsPanel(
+                    settings = switcherSettings,
+                    onChange = onSwitcherSettingsChange,
+                    showMenubarIcon = showMenubarIcon,
+                    onShowMenubarIconChange = onShowMenubarIconChange,
+                    launchAtLogin = launchAtLogin,
+                    onLaunchAtLoginChange = onLaunchAtLoginChange,
+                )
+                Spacer(Modifier.height(2.dp))
+                FilteringRulesPanel(
+                    filters = filters,
+                    onChange = onFiltersChange,
+                    inspectorVisible = inspectorVisible,
+                    onToggleInspector = { onInspectorVisibleChange(!inspectorVisible) },
+                )
+            }
+            if (inspectorVisible) {
+                // Drag separator: shifts the sidebar/inspector boundary inside
+                // the same Compose canvas — the host window's overall width
+                // doesn't change. We persist both widths so toggling the
+                // inspector (which Swift uses to grow/shrink the window by
+                // exactly `inspectorWidth`) stays in sync.
+                DragHandle(
+                    onDrag = { dx ->
+                        val newSidebarPx = (effectiveSidebarPx + dx).coerceIn(
+                            minimumValue = minSidebarPx,
+                            maximumValue = totalWidthPx - handleWidthPx - minInspectorPx,
+                        )
+                        val newInspectorPx = totalWidthPx - newSidebarPx - handleWidthPx
+                        with(density) {
+                            onSidebarWidthChange(newSidebarPx.toDp().value.toDouble())
+                            onInspectorWidthChange(newInspectorPx.toDp().value.toDouble())
+                        }
+                    },
+                )
+                InspectorPanel(
+                    snapshot = snapshot,
+                    axTrusted = axTrusted,
+                    activeAppPid = activeAppPid,
+                    activeWindowId = activeWindowId,
+                    onGrantAxClick = onGrantAxClick,
+                    modifier = Modifier
+                        .fillMaxHeight()
+                        .padding(16.dp),
+                )
+            }
         }
     }
+}
+
+private val DefaultSidebarWidth = 320.0
+private val SeparatorWidth = 4.dp
+private val MinSidebarWidth = 240.dp
+private val MinInspectorWidth = 240.dp
+
+@Composable
+private fun DragHandle(onDrag: (Float) -> Unit) {
+    val state = rememberDraggableState { delta -> onDrag(delta) }
+    Box(
+        Modifier
+            .width(SeparatorWidth)
+            .fillMaxHeight()
+            .background(Color(0xFF101010))
+            .draggable(
+                orientation = Orientation.Horizontal,
+                state = state,
+            ),
+    )
 }
 
 // ─────────── Inspector (right) ───────────
@@ -277,7 +338,7 @@ private fun Color.dimmedFor(mode: TriFilter): Color = when (mode) {
     TriFilter.Hide -> this.copy(alpha = 0.35f)
 }
 
-// ─────────── Filters panel (left) ───────────
+// ─────────── Settings panel (left) ───────────
 
 @Composable
 private fun SettingsPanel(
@@ -402,109 +463,3 @@ private fun DelaySlider(
     }
 }
 
-@Composable
-private fun FiltersPanel(
-    filters: Filters,
-    onFiltersChange: (Filters) -> Unit,
-    inspectorVisible: Boolean = true,
-    onToggleInspector: () -> Unit = {},
-    modifier: Modifier = Modifier,
-) {
-    Column(modifier, verticalArrangement = Arrangement.spacedBy(10.dp)) {
-        Row(
-            Modifier.fillMaxWidth(),
-            verticalAlignment = Alignment.CenterVertically,
-        ) {
-            Text(
-                "Filters",
-                color = Color.White,
-                fontWeight = FontWeight.SemiBold,
-                style = MaterialTheme.typography.labelLarge,
-                modifier = Modifier.weight(1f),
-            )
-            // Toggle the right-side inspector pane. The window grows/shrinks
-            // horizontally on toggle (origin stays put, width changes) — see
-            // applyInspectorVisibility on the Swift side.
-            Row(
-                Modifier
-                    .clip(RoundedCornerShape(6.dp))
-                    .background(Color(0x33FFFFFF))
-                    .clickable(onClick = onToggleInspector)
-                    .padding(horizontal = 10.dp, vertical = 6.dp),
-                verticalAlignment = Alignment.CenterVertically,
-                horizontalArrangement = Arrangement.spacedBy(6.dp),
-            ) {
-                Text(
-                    "Inspector",
-                    color = Color(0xFFE0E0E0),
-                    fontWeight = FontWeight.Medium,
-                    style = MaterialTheme.typography.labelMedium,
-                )
-                // Chevron points the direction the toggle will move the
-                // divider: right `›` means "open the right pane" (currently
-                // hidden), left `‹` means "close it" (currently visible).
-                Text(
-                    if (inspectorVisible) "‹" else "›",
-                    color = Color(0xFFFFC107),
-                    fontWeight = FontWeight.Bold,
-                    style = MaterialTheme.typography.titleSmall,
-                )
-            }
-        }
-        FilterGroup("Apps")
-        TriRow("Windowless apps", filters.windowlessApps) { onFiltersChange(filters.copy(windowlessApps = it)) }
-        TriRow("Accessory apps", filters.accessoryApps) { onFiltersChange(filters.copy(accessoryApps = it)) }
-        TriRow("Hidden apps (cmd+H)", filters.hiddenApps) { onFiltersChange(filters.copy(hiddenApps = it)) }
-        TriRow("Launching apps", filters.launchingApps) { onFiltersChange(filters.copy(launchingApps = it)) }
-
-        Spacer(Modifier.height(6.dp))
-        FilterGroup("Windows")
-        TriRow("Minimized", filters.minimizedWindows) { onFiltersChange(filters.copy(minimizedWindows = it)) }
-        TriRow("Fullscreen", filters.fullscreenWindows) { onFiltersChange(filters.copy(fullscreenWindows = it)) }
-        TriRow("Non-standard subrole", filters.nonStandardSubroleWindows) {
-            onFiltersChange(filters.copy(nonStandardSubroleWindows = it))
-        }
-        TriRow("Untitled", filters.untitledWindows) { onFiltersChange(filters.copy(untitledWindows = it)) }
-    }
-}
-
-@Composable
-private fun FilterGroup(title: String) {
-    Text(
-        title,
-        color = Color(0xFFB0BEC5),
-        fontWeight = FontWeight.SemiBold,
-        style = MaterialTheme.typography.labelLarge,
-    )
-}
-
-@Composable
-private fun TriRow(label: String, value: TriFilter, onChange: (TriFilter) -> Unit) {
-    Column {
-        Text(label, color = Color(0xFFE0E0E0), style = MaterialTheme.typography.bodySmall)
-        Row(Modifier.padding(top = 2.dp), horizontalArrangement = Arrangement.spacedBy(4.dp)) {
-            for (option in TriFilter.entries) {
-                SegmentChip(
-                    text = option.name,
-                    selected = option == value,
-                    onClick = { onChange(option) },
-                )
-            }
-        }
-    }
-}
-
-@Composable
-private fun SegmentChip(text: String, selected: Boolean, onClick: () -> Unit) {
-    val bg = if (selected) Color(0xFFFFC107) else Color(0xFF2A2A2A)
-    val fg = if (selected) Color.Black else Color(0xFFCCCCCC)
-    Box(
-        Modifier
-            .clip(RoundedCornerShape(4.dp))
-            .background(bg)
-            .clickable(onClick = onClick)
-            .padding(horizontal = 8.dp, vertical = 4.dp),
-    ) {
-        Text(text, color = fg, fontSize = 11.sp)
-    }
-}

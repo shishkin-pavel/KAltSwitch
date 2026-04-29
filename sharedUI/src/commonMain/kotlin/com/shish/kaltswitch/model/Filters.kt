@@ -2,29 +2,48 @@ package com.shish.kaltswitch.model
 
 import kotlinx.serialization.Serializable
 
-/** Three-way filter: include normally, push to the demoted bucket, or push to the hidden bucket. */
+/** Three-way filter outcome: include normally, push to the demoted bucket, or hide. */
 @Serializable
 enum class TriFilter { Show, Demote, Hide }
 
 /**
- * User-configurable filters for the inspector window. Live in `WorldStore`,
- * applied by [filteredSnapshot] before the UI renders.
+ * One classification rule. AND of [predicates], evaluated per window. The
+ * first matching rule (in list order) decides the window's [outcome]; later
+ * rules don't get a turn.
  *
- * Defaults: everything is `Show` except `windowlessApps`, which `Demote`s by
- * default — apps with no current windows are visually less important.
+ * - [enabled]: rule-level kill switch. A disabled rule is skipped entirely
+ *   so the user can A/B-test by toggling instead of deleting.
+ * - [name]: human-readable label; the UI falls back to a generated summary
+ *   when this is blank.
+ * - A rule with no enabled predicates is inert (matches nothing). This is
+ *   the default state of a freshly-created rule, so adding one is safe even
+ *   before the user wires up its predicates.
  */
 @Serializable
-data class Filters(
-    // Apps
-    val windowlessApps: TriFilter = TriFilter.Demote,
-    val accessoryApps: TriFilter = TriFilter.Show,
-    val hiddenApps: TriFilter = TriFilter.Show,
-    val launchingApps: TriFilter = TriFilter.Show,
-    // Windows
-    val minimizedWindows: TriFilter = TriFilter.Show,
-    val fullscreenWindows: TriFilter = TriFilter.Show,
-    val nonStandardSubroleWindows: TriFilter = TriFilter.Show,
-    val untitledWindows: TriFilter = TriFilter.Show,
+data class Rule(
+    val id: String,
+    val name: String = "",
+    val enabled: Boolean = true,
+    val predicates: List<Predicate> = emptyList(),
+    val outcome: TriFilter = TriFilter.Hide,
+)
+
+/** True iff every enabled predicate matches the (app, window, isPhantom) tuple. */
+fun Rule.matches(app: App, window: Window, isPhantom: Boolean): Boolean {
+    if (!enabled) return false
+    val active = predicates.filter { it.enabled }
+    if (active.isEmpty()) return false
+    return active.all { it.matches(app, window, isPhantom) }
+}
+
+/**
+ * User's classification configuration. A single ordered list of rules —
+ * no separate fallback toggles, since the rule chain plus the
+ * `noVisibleWindows` predicate cover everything the old fallbacks did.
+ */
+@Serializable
+data class FilteringRules(
+    val rules: List<Rule> = emptyList(),
 )
 
 /** A window decorated with the filter mode classification. */
@@ -55,12 +74,24 @@ data class FilteredSnapshot(
 }
 
 /**
- * Apply filters to the world's raw snapshot. Each app and each window get a
- * `TriFilter` mode (the strictest matching rule wins: `Hide > Demote > Show`),
- * then apps are partitioned into three buckets and windows within each app are
- * sorted by mode.
+ * Apply rules to the world's raw snapshot.
+ *
+ * Algorithm:
+ * 1. Each real window walks the rule list (first-match-wins, default Show);
+ *    `noVisibleWindows` evaluates `false` on real windows.
+ * 2. The app's section is derived from those window modes — any Show → Show,
+ *    else any Demote → Demote.
+ * 3. Otherwise (no surviving windows: zero real windows, or all hidden by
+ *    rules) the classifier synthesises a **phantom** window with default
+ *    field values and walks the rule list against it; `noVisibleWindows`
+ *    evaluates `true`. The phantom's outcome becomes the app's section. If
+ *    no rule matches the phantom the app defaults to Hide — windowless
+ *    apps stay out of the way unless the user opts them in via a rule.
+ *
+ * The phantom is invisible to the rest of the UI; only the resulting app
+ * section escapes the classifier.
  */
-fun World.filteredSnapshot(filters: Filters): FilteredSnapshot {
+fun World.filteredSnapshot(filters: FilteringRules): FilteredSnapshot {
     val raw = snapshot()
     val all = raw.withWindows + raw.windowless
 
@@ -70,9 +101,9 @@ fun World.filteredSnapshot(filters: Filters): FilteredSnapshot {
 
     for (entry in all) {
         val winViews = entry.windows
-            .map { classifyWindow(it, filters) }
+            .map { classifyWindow(entry.app, it, filters, isPhantom = false) }
             .sortedBy(::modeOrder)
-        val mode = classifyApp(entry, filters)
+        val mode = appSection(entry.app, winViews, filters)
         val view = AppView(entry.app, winViews, mode)
         when (mode) {
             TriFilter.Show -> show.add(view)
@@ -84,33 +115,40 @@ fun World.filteredSnapshot(filters: Filters): FilteredSnapshot {
     return FilteredSnapshot(show, demote, hide)
 }
 
-private fun classifyApp(entry: AppEntry, f: Filters): TriFilter {
-    val a = entry.app
-    var mode = TriFilter.Show
-    if (entry.windows.isEmpty()) mode = strictest(mode, f.windowlessApps)
-    if (a.activationPolicy == AppActivationPolicy.Accessory) mode = strictest(mode, f.accessoryApps)
-    if (a.isHidden) mode = strictest(mode, f.hiddenApps)
-    if (!a.isFinishedLaunching) mode = strictest(mode, f.launchingApps)
-    return mode
+/**
+ * Decide an app's section. Windows-first: any decided-Show window → Show,
+ * any decided-Demote → Demote. Otherwise the rule chain runs against a
+ * phantom window so the user can express "no visible windows → ..." (and
+ * any other app-level rule such as "accessory → Hide") declaratively.
+ */
+private fun appSection(app: App, windows: List<WindowView>, f: FilteringRules): TriFilter {
+    if (windows.any { it.mode == TriFilter.Show }) return TriFilter.Show
+    if (windows.any { it.mode == TriFilter.Demote }) return TriFilter.Demote
+    val phantom = phantomWindow(app)
+    return f.rules.firstOrNull { it.matches(app, phantom, isPhantom = true) }?.outcome
+        ?: TriFilter.Hide
 }
 
-private fun classifyWindow(w: Window, f: Filters): WindowView {
-    var mode = TriFilter.Show
-    if (w.isMinimized) mode = strictest(mode, f.minimizedWindows)
-    if (w.isFullscreen) mode = strictest(mode, f.fullscreenWindows)
-    if (w.title.isBlank()) mode = strictest(mode, f.untitledWindows)
-    val isStandard = w.subrole == "AXStandardWindow"
-    if (!isStandard) mode = strictest(mode, f.nonStandardSubroleWindows)
+/** Synthetic stand-in window used to evaluate app-level rules for apps
+ *  with no visible real windows. All fields default; matching window-side
+ *  predicates against it is well-defined. */
+private fun phantomWindow(app: App): Window = Window(
+    id = -1L,
+    pid = app.pid,
+    title = "",
+)
 
+/**
+ * Classify one window (and its children, recursively) by walking the rule
+ * list. First-match-wins; default if no rule matches is `Show`.
+ */
+private fun classifyWindow(app: App, w: Window, f: FilteringRules, isPhantom: Boolean): WindowView {
+    val mode = f.rules.firstOrNull { it.matches(app, w, isPhantom) }?.outcome ?: TriFilter.Show
     val childViews = w.children
-        .map { classifyWindow(it, f) }
+        .map { classifyWindow(app, it, f, isPhantom = false) }
         .sortedBy(::modeOrder)
     return WindowView(w, mode, childViews)
 }
-
-/** [TriFilter.Hide] is strictest, [TriFilter.Show] is loosest. */
-private fun strictest(a: TriFilter, b: TriFilter): TriFilter =
-    if (modeOrder(a) >= modeOrder(b)) a else b
 
 private fun modeOrder(v: TriFilter): Int = when (v) {
     TriFilter.Show -> 0
@@ -123,20 +161,17 @@ private fun modeOrder(v: WindowView): Int = modeOrder(v.mode)
 /**
  * Build the switcher's snapshot from the same filter pipeline the inspector
  * uses. `Show` apps land in the primary group (`withWindows`), `Demote` apps
- * land in the secondary group (`windowless` — same field, repurposed name) and
- * sit behind the vertical separator, `Hide` apps are dropped entirely.
+ * land in the secondary group and sit behind the vertical separator,
+ * `Hide` apps are dropped entirely.
  *
  * Within each app, hidden windows are dropped; the rest keep their inspector
  * order (Show first, then Demote — already pre-sorted by [filteredSnapshot]).
  * Child windows (sheets/drawers) are flattened out — they're not navigation
  * targets in the switcher.
  */
-fun World.filteredSwitcherSnapshot(filters: Filters): SwitcherSnapshot {
+fun World.filteredSwitcherSnapshot(filters: FilteringRules): SwitcherSnapshot {
     val fs = filteredSnapshot(filters)
     fun toEntry(av: AppView): AppEntry {
-        // av.windows is already pre-sorted Show → Demote → Hide by
-        // filteredSnapshot. Drop Hide; remember how many leading entries are
-        // Show so the hot-key path can cycle within them.
         val visible = av.windows.filter { it.mode != TriFilter.Hide }
         val shownWindowCount = visible.count { it.mode == TriFilter.Show }
         return AppEntry(

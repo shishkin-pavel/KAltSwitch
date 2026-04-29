@@ -146,6 +146,11 @@ fun AttachMainComposeView(
         val inspectorVisible by store.inspectorVisible.collectAsState()
         val showMenubarIcon by store.showMenubarIcon.collectAsState()
         val launchAtLogin by store.launchAtLogin.collectAsState()
+        val windowFrame by store.windowFrame.collectAsState()
+        // Sidebar width is stored alongside the rest of the window frame —
+        // when the inspector is hidden it's the whole window's width, when
+        // visible it's the left pane up to the draggable separator.
+        val sidebarWidth = windowFrame?.width ?: 320.0
         App(
             world = world,
             axTrusted = axTrusted,
@@ -161,6 +166,9 @@ fun AttachMainComposeView(
             onShowMenubarIconChange = { store.setShowMenubarIcon(it) },
             launchAtLogin = launchAtLogin,
             onLaunchAtLoginChange = { store.setLaunchAtLogin(it) },
+            sidebarWidth = sidebarWidth,
+            onSidebarWidthChange = { store.saveSidebarWidth(it) },
+            onInspectorWidthChange = { store.saveInspectorWidth(it) },
             onGrantAxClick = {
                 val granted = requestAxPermission()
                 store.setAxTrusted(granted)

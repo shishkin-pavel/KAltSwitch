@@ -1,6 +1,6 @@
 package com.shish.kaltswitch.config
 
-import com.shish.kaltswitch.model.Filters
+import com.shish.kaltswitch.model.FilteringRules
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.json.Json
 
@@ -46,8 +46,8 @@ data class SwitcherSettings(
  */
 @Serializable
 data class AppConfig(
-    val schemaVersion: Int = 1,
-    val filters: Filters = Filters(),
+    val schemaVersion: Int = 3,
+    val filters: FilteringRules = FilteringRules(),
     /** Window position + height + the *settings-only* width — the width
      *  the window collapses to when the inspector is hidden. Resizing
      *  while the inspector is visible changes [inspectorWidth] instead. */
@@ -69,9 +69,16 @@ data class AppConfig(
     val launchAtLogin: Boolean = false,
 )
 
-/** Single shared JSON instance — pretty-printed so the file is hand-editable. */
+/**
+ * Single shared JSON instance — pretty-printed so the file is hand-editable.
+ *
+ * `classDiscriminator = "kind"` keys polymorphic predicate variants by their
+ * `@SerialName` (e.g. `"kind": "bundleId"`). Default `"type"` was avoided so
+ * we don't collide with future fields a user might want to call `type`.
+ */
 val configJson: Json = Json {
     prettyPrint = true
     ignoreUnknownKeys = true
     encodeDefaults = true
+    classDiscriminator = "kind"
 }

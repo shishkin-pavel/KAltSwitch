@@ -5,7 +5,7 @@ import com.shish.kaltswitch.model.ActivationEvent
 import com.shish.kaltswitch.model.ActivationLog
 import com.shish.kaltswitch.model.App
 import com.shish.kaltswitch.model.AppActivationPolicy
-import com.shish.kaltswitch.model.Filters
+import com.shish.kaltswitch.model.FilteringRules
 import com.shish.kaltswitch.model.Window
 import com.shish.kaltswitch.model.WindowId
 import com.shish.kaltswitch.model.World
@@ -34,10 +34,10 @@ class WorldStore(initial: World = World(ActivationLog(), emptyMap(), emptyMap())
     private val _activeWindowId = MutableStateFlow<WindowId?>(null)
     val activeWindowId: StateFlow<WindowId?> = _activeWindowId.asStateFlow()
 
-    private val _filters = MutableStateFlow(Filters())
-    val filters: StateFlow<Filters> = _filters.asStateFlow()
+    private val _filters = MutableStateFlow(FilteringRules())
+    val filters: StateFlow<FilteringRules> = _filters.asStateFlow()
 
-    fun setFilters(f: Filters) {
+    fun setFilters(f: FilteringRules) {
         _filters.value = f
     }
 
@@ -103,6 +103,14 @@ class WorldStore(initial: World = World(ActivationLog(), emptyMap(), emptyMap())
     /** Swift-friendly variant taking primitives. */
     fun saveWindowFrame(x: Double, y: Double, width: Double, height: Double) {
         _windowFrame.value = com.shish.kaltswitch.config.WindowFrame(x, y, width, height)
+    }
+
+    /** Update only the window's width (sidebar / settings-pane width).
+     *  Leaves origin and height untouched so the dragger inside Compose
+     *  doesn't have to know about the rest of the frame. No-op if the frame
+     *  hasn't been seeded yet — Swift will save it on next NSWindow event. */
+    fun saveSidebarWidth(width: Double) {
+        _windowFrame.update { it?.copy(width = width) }
     }
 
     private val _inspectorWidth = MutableStateFlow(480.0)
