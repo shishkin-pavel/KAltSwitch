@@ -1,6 +1,7 @@
 import SwiftUI
 import AppKit
 import Carbon.HIToolbox
+import ServiceManagement
 import ComposeAppMac
 
 @main
@@ -34,6 +35,15 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     /// in some macOS configurations; this monitor sees them at the system
     /// level.
     private var globalKeyMonitor: Any? = nil
+    /// Latest applied state — observers fire eagerly with the seed value
+    /// AFTER the initial install, so we record state to detect "change vs
+    /// seed" and keep menu items / SMAppService in sync without thrashing.
+    private var showMenubarIconApplied: Bool? = nil
+    private var launchAtLoginApplied: Bool? = nil
+    /// Mutable refs to the toggle menu items so we can flip the checkmark
+    /// when the state changes via the settings panel.
+    private var menubarIconMenuItem: NSMenuItem? = nil
+    private var launchAtLoginMenuItem: NSMenuItem? = nil
 
     func applicationDidFinishLaunching(_ aNotification: Notification) {
         window = NSWindow(
@@ -67,8 +77,10 @@ class AppDelegate: NSObject, NSApplicationDelegate {
             }
         }
 
-        window.makeKeyAndOrderFront(nil)
-        NSApp.activate(ignoringOtherApps: true)
+        // Don't auto-show the inspector at startup. The user opens it
+        // explicitly via the menubar icon (when shown), Dock-icon click /
+        // Spotlight relaunch (`applicationShouldHandleReopen`), or a fresh
+        // `open -a KAltSwitch`. Launching at login should be silent.
 
         // Persist user-driven moves and resizes back to config.json.
         let center = NotificationCenter.default
@@ -158,8 +170,13 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         ComposeViewKt.observeInspectorVisible { [weak self] visible in
             self?.applyInspectorVisibility(visible.boolValue)
         }
+        ComposeViewKt.observeShowMenubarIcon { [weak self] show in
+            self?.applyShowMenubarIcon(show.boolValue)
+        }
+        ComposeViewKt.observeLaunchAtLogin { [weak self] enabled in
+            self?.applyLaunchAtLogin(enabled.boolValue)
+        }
 
-        installStatusItem()
         installGlobalKeyMonitor()
     }
 
@@ -184,42 +201,122 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         }
     }
 
-    /// Add a menubar icon so the user can reopen the inspector after closing
-    /// it (the app stays alive without any visible windows since
-    /// `applicationShouldTerminateAfterLastWindowClosed` returns false).
-    private func installStatusItem() {
-        let item = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
-        if let button = item.button {
-            // Bundled MenubarIcon imageset (white-on-transparent, marked
-            // template-rendering-intent in Contents.json) — macOS auto-tints
-            // for light/dark menubar.
-            if let img = NSImage(named: "MenubarIcon") {
-                img.isTemplate = true
-                button.image = img
-            } else {
-                button.title = "K⌥"
+    /// Install the menubar icon on demand (also tears it down). Called from
+    /// the showMenubarIcon flow observer.
+    private func applyShowMenubarIcon(_ show: Bool) {
+        let prev = showMenubarIconApplied
+        showMenubarIconApplied = show
+        if prev == show { return }
+        if show {
+            let item = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
+            if let button = item.button {
+                if let img = NSImage(named: "MenubarIcon") {
+                    img.isTemplate = true
+                    button.image = img
+                } else {
+                    button.title = "K⌥"
+                }
+                button.toolTip = "KAltSwitch"
             }
-            button.toolTip = "KAltSwitch"
+            item.menu = buildStatusItemMenu()
+            statusItem = item
+            log("[swift] menubar icon installed")
+        } else {
+            if let s = statusItem {
+                NSStatusBar.system.removeStatusItem(s)
+                statusItem = nil
+                log("[swift] menubar icon removed")
+            }
+            menubarIconMenuItem = nil
+            launchAtLoginMenuItem = nil
         }
+    }
+
+    /// Build the menubar item's menu. Stores refs to the toggle items so
+    /// settings-side flips can update the checkmark via NSMenuItem.state.
+    private func buildStatusItemMenu() -> NSMenu {
         let menu = NSMenu()
+
         let openItem = NSMenuItem(
-            title: "Open Inspector",
+            title: "Open Settings/Inspector",
             action: #selector(openInspectorFromMenu),
             keyEquivalent: "")
         openItem.target = self
         menu.addItem(openItem)
+
+        menu.addItem(.separator())
+
+        let menubarToggle = NSMenuItem(
+            title: "Show Menubar Icon",
+            action: #selector(toggleMenubarIcon),
+            keyEquivalent: "")
+        menubarToggle.target = self
+        menubarToggle.state = (showMenubarIconApplied ?? true) ? .on : .off
+        menu.addItem(menubarToggle)
+        menubarIconMenuItem = menubarToggle
+
+        let launchToggle = NSMenuItem(
+            title: "Launch at Login",
+            action: #selector(toggleLaunchAtLogin),
+            keyEquivalent: "")
+        launchToggle.target = self
+        launchToggle.state = (launchAtLoginApplied ?? false) ? .on : .off
+        menu.addItem(launchToggle)
+        launchAtLoginMenuItem = launchToggle
+
         menu.addItem(.separator())
         menu.addItem(NSMenuItem(
             title: "Quit KAltSwitch",
             action: #selector(NSApplication.terminate(_:)),
             keyEquivalent: "q"))
-        item.menu = menu
-        statusItem = item
+        return menu
     }
 
     @objc private func openInspectorFromMenu() {
         log("[swift] openInspector via menubar")
         showInspector()
+    }
+
+    @objc private func toggleMenubarIcon() {
+        // Flip the persisted setting; the observer will tear down the
+        // status item and stop the menu from being reachable until the user
+        // re-enables it via the settings panel.
+        let next = !(showMenubarIconApplied ?? true)
+        log("[swift] toggleMenubarIcon -> \(next)")
+        ComposeViewKt.store.setShowMenubarIcon(show: next)
+    }
+
+    @objc private func toggleLaunchAtLogin() {
+        let next = !(launchAtLoginApplied ?? false)
+        log("[swift] toggleLaunchAtLogin -> \(next)")
+        ComposeViewKt.store.setLaunchAtLogin(enabled: next)
+    }
+
+    /// Sync `SMAppService` with the current `launchAtLogin` setting. Idempotent;
+    /// also reflects the new state in the menu's checkmark.
+    private func applyLaunchAtLogin(_ enabled: Bool) {
+        let prev = launchAtLoginApplied
+        launchAtLoginApplied = enabled
+        launchAtLoginMenuItem?.state = enabled ? .on : .off
+
+        // Don't poke SMAppService on the seed value if it already matches —
+        // avoids a redundant register/unregister at every launch.
+        let smState = SMAppService.mainApp.status
+        let alreadyRegistered = (smState == .enabled)
+        if prev == nil && alreadyRegistered == enabled {
+            return
+        }
+
+        do {
+            if enabled {
+                try SMAppService.mainApp.register()
+            } else if alreadyRegistered || smState == .requiresApproval {
+                try SMAppService.mainApp.unregister()
+            }
+            log("[swift] launchAtLogin set to \(enabled), SMAppService.status=\(SMAppService.mainApp.status.rawValue)")
+        } catch {
+            log("[swift] launchAtLogin \(enabled) failed: \(error.localizedDescription)")
+        }
     }
 
     /// Bring the inspector to front. Used by the menubar Open action and by

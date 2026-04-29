@@ -61,6 +61,12 @@ data class AppConfig(
      *  sidebar (Settings + Filters) takes the full window width and the
      *  window title drops "Inspector". */
     val inspectorVisible: Boolean = true,
+    /** Whether the menubar status item is installed. When false the user
+     *  reaches Settings via Dock-icon click / Spotlight-relaunch (which
+     *  trigger `applicationShouldHandleReopen`). */
+    val showMenubarIcon: Boolean = true,
+    /** Whether macOS auto-launches the app at user login (via SMAppService). */
+    val launchAtLogin: Boolean = false,
 )
 
 /** Single shared JSON instance — pretty-printed so the file is hand-editable. */

@@ -27,6 +27,8 @@ val store = WorldStore().also { initStore ->
         initStore.setInspectorWidth(cfg.inspectorWidth)
         initStore.setSwitcherSettings(cfg.switcher)
         initStore.setInspectorVisible(cfg.inspectorVisible)
+        initStore.setShowMenubarIcon(cfg.showMenubarIcon)
+        initStore.setLaunchAtLogin(cfg.launchAtLogin)
     }
 }
 
@@ -36,7 +38,10 @@ val store = WorldStore().also { initStore ->
  * immediately overwrite the file we just loaded.
  */
 private val configScope = CoroutineScope(Dispatchers.Main).also { scope ->
-    kotlinx.coroutines.flow.combine(
+    // combine() has overloads up to 5 flows. Once we cross that, build the
+    // AppConfig in two stages: the inspector-related fields first, then merge
+    // in the system-wide toggles. Functionally equivalent to a single combine.
+    val coreCfg = kotlinx.coroutines.flow.combine(
         store.filters,
         store.windowFrame,
         store.inspectorWidth,
@@ -50,6 +55,13 @@ private val configScope = CoroutineScope(Dispatchers.Main).also { scope ->
             switcher = switcher,
             inspectorVisible = inspectorVisible,
         )
+    }
+    kotlinx.coroutines.flow.combine(
+        coreCfg,
+        store.showMenubarIcon,
+        store.launchAtLogin,
+    ) { base, menubar, launchAtLogin ->
+        base.copy(showMenubarIcon = menubar, launchAtLogin = launchAtLogin)
     }
         .drop(1)
         .onEach { ConfigStore.save(it) }
@@ -106,6 +118,20 @@ fun observeInspectorVisible(onChange: (Boolean) -> Unit) {
         .launchIn(bridgeScope)
 }
 
+/** Whether the menubar status item should be installed. */
+fun observeShowMenubarIcon(onChange: (Boolean) -> Unit) {
+    store.showMenubarIcon
+        .onEach(onChange)
+        .launchIn(bridgeScope)
+}
+
+/** Auto-launch at login (SMAppService on the Swift side). */
+fun observeLaunchAtLogin(onChange: (Boolean) -> Unit) {
+    store.launchAtLogin
+        .onEach(onChange)
+        .launchIn(bridgeScope)
+}
+
 fun AttachMainComposeView(
     window: NSWindow,
 ): ComposeNSViewDelegate = ComposeNSViewDelegate(
@@ -118,6 +144,8 @@ fun AttachMainComposeView(
         val filters by store.filters.collectAsState()
         val switcherSettings by store.switcherSettings.collectAsState()
         val inspectorVisible by store.inspectorVisible.collectAsState()
+        val showMenubarIcon by store.showMenubarIcon.collectAsState()
+        val launchAtLogin by store.launchAtLogin.collectAsState()
         App(
             world = world,
             axTrusted = axTrusted,
@@ -129,6 +157,10 @@ fun AttachMainComposeView(
             onSwitcherSettingsChange = { store.setSwitcherSettings(it) },
             inspectorVisible = inspectorVisible,
             onInspectorVisibleChange = { store.setInspectorVisible(it) },
+            showMenubarIcon = showMenubarIcon,
+            onShowMenubarIconChange = { store.setShowMenubarIcon(it) },
+            launchAtLogin = launchAtLogin,
+            onLaunchAtLoginChange = { store.setLaunchAtLogin(it) },
             onGrantAxClick = {
                 val granted = requestAxPermission()
                 store.setAxTrusted(granted)

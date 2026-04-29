@@ -55,6 +55,20 @@ class WorldStore(initial: World = World(ActivationLog(), emptyMap(), emptyMap())
         _inspectorVisible.value = visible
     }
 
+    private val _showMenubarIcon = MutableStateFlow(true)
+    val showMenubarIcon: StateFlow<Boolean> = _showMenubarIcon.asStateFlow()
+
+    fun setShowMenubarIcon(show: Boolean) {
+        _showMenubarIcon.value = show
+    }
+
+    private val _launchAtLogin = MutableStateFlow(false)
+    val launchAtLogin: StateFlow<Boolean> = _launchAtLogin.asStateFlow()
+
+    fun setLaunchAtLogin(enabled: Boolean) {
+        _launchAtLogin.value = enabled
+    }
+
     /** True while a switcher session is open or just closed. AX/Workspace activation
      *  events arriving in this window are dropped — they describe our own preview-raise
      *  / commit echo, not user-driven activity, and would otherwise corrupt the log. */

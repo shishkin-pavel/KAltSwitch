@@ -59,6 +59,10 @@ fun App(
     onSwitcherSettingsChange: (SwitcherSettings) -> Unit = {},
     inspectorVisible: Boolean = true,
     onInspectorVisibleChange: (Boolean) -> Unit = {},
+    showMenubarIcon: Boolean = true,
+    onShowMenubarIconChange: (Boolean) -> Unit = {},
+    launchAtLogin: Boolean = false,
+    onLaunchAtLoginChange: (Boolean) -> Unit = {},
     onGrantAxClick: () -> Unit = {},
 ) {
     val snapshot = remember(world, filters) { world.filteredSnapshot(filters) }
@@ -82,6 +86,10 @@ fun App(
             SettingsPanel(
                 settings = switcherSettings,
                 onChange = onSwitcherSettingsChange,
+                showMenubarIcon = showMenubarIcon,
+                onShowMenubarIconChange = onShowMenubarIconChange,
+                launchAtLogin = launchAtLogin,
+                onLaunchAtLoginChange = onLaunchAtLoginChange,
             )
             Spacer(Modifier.height(2.dp))
             FiltersPanel(
@@ -275,6 +283,10 @@ private fun Color.dimmedFor(mode: TriFilter): Color = when (mode) {
 private fun SettingsPanel(
     settings: SwitcherSettings,
     onChange: (SwitcherSettings) -> Unit,
+    showMenubarIcon: Boolean,
+    onShowMenubarIconChange: (Boolean) -> Unit,
+    launchAtLogin: Boolean,
+    onLaunchAtLoginChange: (Boolean) -> Unit,
 ) {
     Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
         Text(
@@ -308,26 +320,49 @@ private fun SettingsPanel(
             range = 30f..500f,
             onChange = { onChange(settings.copy(repeatIntervalMs = it)) },
         )
-        Row(
-            Modifier.fillMaxWidth().padding(top = 4.dp),
-            verticalAlignment = Alignment.CenterVertically,
-            horizontalArrangement = Arrangement.spacedBy(8.dp),
-        ) {
-            Text(
-                "Preview-raise on hover",
-                color = Color(0xFFE0E0E0),
-                style = MaterialTheme.typography.labelSmall,
-                modifier = Modifier.weight(1f),
-            )
-            Switch(
-                checked = settings.previewEnabled,
-                onCheckedChange = { onChange(settings.copy(previewEnabled = it)) },
-                colors = SwitchDefaults.colors(
-                    checkedTrackColor = Color(0xFFFFC107),
-                    checkedThumbColor = Color.Black,
-                ),
-            )
-        }
+        ToggleRow(
+            label = "Preview-raise on hover",
+            checked = settings.previewEnabled,
+            onCheckedChange = { onChange(settings.copy(previewEnabled = it)) },
+        )
+        ToggleRow(
+            label = "Show menubar icon",
+            checked = showMenubarIcon,
+            onCheckedChange = onShowMenubarIconChange,
+        )
+        ToggleRow(
+            label = "Launch at login",
+            checked = launchAtLogin,
+            onCheckedChange = onLaunchAtLoginChange,
+        )
+    }
+}
+
+@Composable
+private fun ToggleRow(
+    label: String,
+    checked: Boolean,
+    onCheckedChange: (Boolean) -> Unit,
+) {
+    Row(
+        Modifier.fillMaxWidth().padding(top = 4.dp),
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(8.dp),
+    ) {
+        Text(
+            label,
+            color = Color(0xFFE0E0E0),
+            style = MaterialTheme.typography.labelSmall,
+            modifier = Modifier.weight(1f),
+        )
+        Switch(
+            checked = checked,
+            onCheckedChange = onCheckedChange,
+            colors = SwitchDefaults.colors(
+                checkedTrackColor = Color(0xFFFFC107),
+                checkedThumbColor = Color.Black,
+            ),
+        )
     }
 }
 
