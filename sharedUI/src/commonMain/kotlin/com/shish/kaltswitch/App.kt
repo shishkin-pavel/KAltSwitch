@@ -384,12 +384,23 @@ private fun SettingsPanel(
             range = 0f..200f,
             onChange = { onChange(settings.copy(showDelayMs = it)) },
         )
-        DelaySlider(
-            label = "Preview delay",
-            valueMs = settings.previewDelayMs,
-            range = 50f..1000f,
-            onChange = { onChange(settings.copy(previewDelayMs = it)) },
+        // Preview group: toggle on top, the delay slider only renders
+        // when the toggle is on, indented to read as a child setting.
+        ToggleRow(
+            label = "Preview-raise on hover",
+            checked = settings.previewEnabled,
+            onCheckedChange = { onChange(settings.copy(previewEnabled = it)) },
         )
+        if (settings.previewEnabled) {
+            Box(Modifier.padding(start = 16.dp)) {
+                DelaySlider(
+                    label = "Preview delay",
+                    valueMs = settings.previewDelayMs,
+                    range = 50f..1000f,
+                    onChange = { onChange(settings.copy(previewDelayMs = it)) },
+                )
+            }
+        }
         DelaySlider(
             label = "Auto-advance after",
             valueMs = settings.repeatInitialDelayMs,
@@ -401,11 +412,6 @@ private fun SettingsPanel(
             valueMs = settings.repeatIntervalMs,
             range = 30f..500f,
             onChange = { onChange(settings.copy(repeatIntervalMs = it)) },
-        )
-        ToggleRow(
-            label = "Preview-raise on hover",
-            checked = settings.previewEnabled,
-            onCheckedChange = { onChange(settings.copy(previewEnabled = it)) },
         )
         ToggleRow(
             label = "Show menubar icon",

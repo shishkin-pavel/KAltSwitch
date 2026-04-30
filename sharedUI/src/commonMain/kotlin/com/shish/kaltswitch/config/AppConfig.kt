@@ -48,7 +48,10 @@ data class WindowFrame(
 data class SwitcherSettings(
     val showDelayMs: Long = 20L,
     val previewDelayMs: Long = 250L,
-    val previewEnabled: Boolean = false,
+    /** Hover-and-hold raises the cursor's window behind the panel after
+     *  [previewDelayMs]. On by default — see decisions.md §9 for why this
+     *  switched on after iter14's live snapshot tightened the gating. */
+    val previewEnabled: Boolean = true,
     /** How long to keep the shortcut held before auto-advancing through
      *  elements. A short tap (release before this delay) advances exactly
      *  once. Default tuned to be longer than typical OS keyboard repeat

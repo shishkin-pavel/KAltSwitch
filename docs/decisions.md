@@ -254,32 +254,47 @@ NSWorkspace mouse-driven switches) and need cleaner attribution.
 
 ---
 
-## 9. Preview-raise deferred to post-MVP
+## 9. Preview-raise on by default (was deferred to post-MVP)
 
 **Question.** PLAN.md §"Switcher activation timing" specs a `previewDelay`
 (default 250 ms) after which the cursor's window is AX-raised behind the
-switcher panel as a real-window preview. Why is `previewEnabled = false`
-by default?
+switcher panel as a real-window preview. Originally we shipped this off
+by default because of two concerns: `kAXRaiseAction` reorders other
+windows of the target app, and `switcherActive`'s synchronous-clear
+timing risked leaking the preview's own AX echo back into the activation
+log.
 
-**Sources.** `window-state-attributes.md` §8 captures the long-form
-reasoning. Short: `kAXRaiseAction` reorders other windows in unwanted ways
-without a window-level z-order trick to keep our panel above the raised
-window, and `switcherActive`'s synchronous-clear timing leaks the preview's
-own AX echo back into the log on slow apps.
+**Decision.** **`SwitcherSettings.previewEnabled` defaults to `true`** as
+of iter23. Two things made it OK:
 
-**Decision.** `SwitcherSettings.previewEnabled` defaults to `false`. The
-inspector's Settings panel has a toggle so users can opt in. The full code
-path (`schedulePreview` → `onRaiseWindow` → `AxAppWatcher.raiseWindow` →
-`kAXRaiseAction`) stays compiled and tested via `previewRaise_*` tests in
-`SwitcherControllerTest`.
+  1. iter14's live snapshot tightened the gating: the snapshot is
+     re-derived from `combine(world × filters × ...)` continuously, and
+     `WorldStore.recordActivation` still drops events while
+     `switcherActive` is true — so any AX echo from a preview-raise is
+     either dropped (during session) or harmlessly de-duplicated
+     (post-session, via `ActivationLog.record`'s adjacent-equal
+     collapse, iter11).
+  2. Our overlay panel is `.popUpMenu` level — among the highest
+     standard NSWindow levels. AX-raised windows from other apps stay
+     below it.
 
-**Confidence.** High that the call to defer is right for v1. Medium on
-which fix is the right one when we re-enable — z-order trick vs. extended
-debounce vs. CGS-driven raise instead of AX.
+The inspector's Settings panel has a toggle (still labelled
+"Preview-raise on hover"); the `previewDelayMs` slider only renders
+when the toggle is on, indented to read as a child setting.
 
-**Revisit-trigger.** First user feedback session, or when we dogfood the
-switcher long enough to build intuition for what "preview" should *feel*
-like.
+**Caveats.**
+  - When the user cancels the session via Esc, any preview-raise that
+    fired during the session **stays raised** — `kAXRaiseAction` has
+    no undo. Matches alt-tab-macos behaviour and the user-facing
+    expectation that "looking at" a window is an action.
+  - Preview-raise of an app's window may move other windows of that
+    same app (the OS's z-order semantics). Acceptable: the user is
+    actively previewing, and on commit-or-cancel they reach the
+    intended target.
+
+**Revisit-trigger.** Reports of unexpected window reordering on cancel,
+or of preview events polluting the activation log (would surface as
+"the inspector's row order drifted right after I let go of the switcher").
 
 ---
 
