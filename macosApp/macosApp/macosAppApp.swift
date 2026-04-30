@@ -64,14 +64,18 @@ class AppDelegate: NSObject, NSApplicationDelegate {
 
         composeDelegate = ComposeViewKt.AttachMainComposeView(window: window)
 
-        // Restore the saved window frame. Width recorded in windowFrame is
-        // the *settings-only* width — when the inspector starts visible we
-        // add the saved inspectorWidth on top.
+        // Restore the saved window frame. Stored width is the *settings-only*
+        // width; when the inspector starts visible we add the saved
+        // inspectorWidth on top. Math lives in Kotlin
+        // (`InspectorWindowLayoutKt.restoredInspectorWindowFrame`) so it can
+        // be unit-tested next to the persisted `WindowFrame` semantics.
         let initialInspectorVisible = (ComposeViewKt.store.inspectorVisible.value as? KotlinBoolean)?.boolValue ?? true
-        if let saved = ComposeViewKt.store.windowFrame.value as? WindowFrame {
-            let inspW = currentInspectorWidth()
-            let totalWidth = initialInspectorVisible ? saved.width + inspW : saved.width
-            let restored = NSRect(x: saved.x, y: saved.y, width: totalWidth, height: saved.height)
+        if let restoredFrame = InspectorWindowLayoutKt.restoredInspectorWindowFrame(
+            settingsFrame: ComposeViewKt.store.windowFrame.value as? WindowFrame,
+            inspectorVisible: initialInspectorVisible,
+            inspectorWidth: currentInspectorWidth()
+        ) {
+            let restored = restoredFrame.nsRect
             if NSScreen.screens.contains(where: { $0.visibleFrame.intersects(restored) }) {
                 window.setFrame(restored, display: false)
             }
@@ -377,29 +381,18 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     private func persistFrame() {
-        let f = window.frame
-        if inspectorVisibleApplied == true {
-            // Inspector visible: window.width = settingsWidth + inspectorWidth.
-            // The settings portion (Compose sidebar = fixed 260dp) doesn't
-            // change as the user resizes — all the delta goes to the
-            // inspector. So keep settingsWidth stable and recompute
-            // inspectorWidth from the new total.
-            let settingsW = currentSettingsWidth()
-            let newInspectorW = max(120, Double(f.size.width) - settingsW)
-            ComposeViewKt.store.saveInspectorWidth(width: newInspectorW)
-            ComposeViewKt.store.saveWindowFrame(
-                x: Double(f.origin.x),
-                y: Double(f.origin.y),
-                width: settingsW,
-                height: Double(f.size.height))
-        } else {
-            // Inspector hidden: full window width = settings-only width.
-            ComposeViewKt.store.saveWindowFrame(
-                x: Double(f.origin.x),
-                y: Double(f.origin.y),
-                width: Double(f.size.width),
-                height: Double(f.size.height))
-        }
+        // Split the live window frame back into the persisted shape via the
+        // Kotlin helper. Same min-inspector-width clamp (120) the inline
+        // Swift version used to apply.
+        let persisted = InspectorWindowLayoutKt.persistInspectorWindowLayout(
+            currentFrame: window.frame.windowFrame,
+            inspectorVisible: inspectorVisibleApplied == true,
+            settingsWidth: currentSettingsWidth(),
+            currentInspectorWidth: currentInspectorWidth(),
+            minInspectorWidth: 120.0
+        )
+        ComposeViewKt.store.setWindowFrame(frame: persisted.settingsFrame)
+        ComposeViewKt.store.saveInspectorWidth(width: persisted.inspectorWidth)
     }
 
     /// Inspector visibility transitioned (or just received its initial seed
@@ -421,13 +414,15 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         }
 
         let f = window.frame
-        let inspW = CGFloat(currentInspectorWidth())
-        let newWidth: CGFloat = visible
-            ? f.size.width + inspW
-            : max(200, f.size.width - inspW)
-        let target = NSRect(x: f.origin.x, y: f.origin.y, width: newWidth, height: f.size.height)
+        let targetFrame = InspectorWindowLayoutKt.inspectorVisibilityTargetFrame(
+            currentFrame: f.windowFrame,
+            visible: visible,
+            inspectorWidth: currentInspectorWidth(),
+            minSettingsWidth: 200.0
+        )
+        let target = targetFrame.nsRect
         log("[swift] applyInspectorVisibility prev=\(prev ?? false) -> visible=\(visible) " +
-            "width \(f.size.width) -> \(newWidth) (inspW=\(inspW))")
+            "width \(f.size.width) -> \(target.size.width) (inspW=\(currentInspectorWidth()))")
         window.setFrame(target, display: true, animate: false)
     }
 
@@ -556,5 +551,25 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         composeDelegate?.destroy()
         // Hand cmd+tab / cmd+shift+tab / cmd+` back to macOS.
         setSymbolicHotKeysEnabled(true)
+    }
+}
+
+/// AppKit `NSRect` ↔ Kotlin `WindowFrame` adapters. The math itself lives in
+/// `InspectorWindowLayout.kt`; these are just primitive-shape converters that
+/// keep the Swift host's `NSWindow` access tidy.
+private extension NSRect {
+    var windowFrame: WindowFrame {
+        WindowFrame(
+            x: Double(origin.x),
+            y: Double(origin.y),
+            width: Double(size.width),
+            height: Double(size.height)
+        )
+    }
+}
+
+private extension WindowFrame {
+    var nsRect: NSRect {
+        NSRect(x: x, y: y, width: width, height: height)
     }
 }
