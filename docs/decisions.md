@@ -397,3 +397,77 @@ flow *back* to the Swift host beyond the existing
 Swift (Kotlin/Native can produce ObjC-callable `Cancellable` adapters)
 rather than growing the bespoke-callback bridge.
 
+---
+
+## 12. Bounded `ActivationLog` + runtime-id pruning at the WorldStore boundary
+
+**Question.** `ActivationLog.events` was append-only, and `WorldStore`
+removal paths (`removeApp`, `setWindows`) didn't prune the log. Two
+problems:
+
+  1. KAltSwitch is a long-running menubar app. AX and NSWorkspace can
+     each emit the same activation (we record synchronously in
+     `SwitcherController.commit`, the OS may echo later). With nothing
+     evicting old events, memory grows linearly forever.
+  2. Pids and AX window ids are macOS-runtime ids that get reused.
+     A future unrelated launch could inherit dead-ancestor recency just
+     by happening to take the same pid.
+
+**Sources.** Cross-branch review of `codex` iterations 1–3 + 9. The
+`codex` branch independently reached the same conclusion working from
+a slightly earlier base.
+
+**Decision.** Three changes, all in commonMain so they're testable:
+
+  * Bound `ActivationLog` at `DefaultMaxActivationEvents = 2_048`. The
+    cap is memory-only — `appOrder()` / `windowOrder()` already project
+    older duplicates away.
+  * `record(event)` collapses adjacent-equal events. Catches the AX echo
+    immediately after our own synchronous commit.
+  * Add `withoutPid` / `withoutWindow` / `withoutMissingWindows` log
+    helpers and call them from `WorldStore.removeApp` and
+    `WorldStore.setWindows`. Active-pointer pointers (`activeAppPid`,
+    `activeWindowId`) clear if the thing they pointed at disappears,
+    but the active *app* pointer survives a sub-window vanishing.
+  * `setWindows` recursively collects every live id, including child
+    windows reported under `Window.children`, so attached
+    sheets/drawers/popovers don't get their events pruned.
+
+**Confidence.** High. The contract is pinned by 6 new
+`ActivationLogTest` cases + 4 new `WorldStoreTest` cases.
+
+**Revisit-trigger.** If a future feature needs long-term focus history
+(analytics, dwell-time reporting), promote the cap to a configurable
+constant with a separate "audit log" if needed — but keep `appOrder` /
+`windowOrder` driven by the bounded recency view either way.
+
+---
+
+## 13. Settings/Inspector frame math lives in commonMain Kotlin
+
+**Question.** The arithmetic translating `WindowFrame.width =
+settings-only width` to/from the live `NSWindow.frame` was inline in
+`macosAppApp.swift`. It's pure math, but it touches a persisted-model
+contract (`AppConfig`/`WindowFrame` semantics). Where should it live?
+
+**Sources.** Cross-branch review of `codex`'s independent
+`InspectorWindowLayout.kt` work. Same reasoning the project's iter1–4
+applied to leaf platform-glue (decisions.md §10): if it's pure math
+that touches a persisted contract, the contract owner is Kotlin.
+
+**Decision.** Three pure functions in
+`commonMain/.../config/InspectorWindowLayout.kt`:
+`restoredInspectorWindowFrame`, `persistInspectorWindowLayout`,
+`inspectorVisibilityTargetFrame`. Each maps live frame ↔ persisted
+shape. Swift keeps `NSWindow.frame` access and provides tiny
+`NSRect` ↔ `WindowFrame` adapters; everything else is one Kotlin call
+per location.
+
+**Confidence.** High. 7 commonTest cases cover restore-with-and-without
+inspector, persist with width clamps, toggle with min-settings clamp,
+and the no-saved-frame first-launch path.
+
+**Revisit-trigger.** If inspector layout becomes platform-specific in
+a way that can't be expressed as pure frame math (e.g. stage-manager
+adaptations on iPadOS-style sidebars).
+
