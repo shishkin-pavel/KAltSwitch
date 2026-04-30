@@ -1,5 +1,8 @@
 package com.shish.kaltswitch
 
+import androidx.compose.animation.animateContentSize
+import androidx.compose.animation.core.FastOutSlowInEasing
+import androidx.compose.animation.core.tween
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.focusable
@@ -159,6 +162,12 @@ private fun SwitcherPanel(
                 // turns NSVisualEffectView into a solid-colour fill).
                 .background(Color(0x661B1B1F))
                 .border(1.dp, Color(0x33FFFFFF), RoundedCornerShape(16.dp))
+                // Smoothly grow/shrink the panel envelope when an app or
+                // window appears/disappears mid-session. NSVisualEffectView
+                // tracks via the existing `onPanelSize` callback below — it
+                // re-fires on every layout pass, so the blur backdrop's
+                // rounded mask stays in lockstep with the animation.
+                .animateContentSize(animationSpec = tween(durationMillis = 150, easing = FastOutSlowInEasing))
                 // Push the box's measured size out to Swift so it can drop
                 // an NSVisualEffectView underneath, exactly matching the
                 // visible rounded rectangle. dp not px — Swift wants
@@ -171,6 +180,12 @@ private fun SwitcherPanel(
                 .padding(horizontal = 16.dp, vertical = 12.dp),
         ) {
             FlowRow(
+                modifier = Modifier
+                    // FlowRow's measured size shrinks when an AppCell unmounts
+                    // and grows when one appears. Animate both — the parent
+                    // Box's animateContentSize handles the overall envelope,
+                    // this one keeps the row layout itself fluid mid-flow.
+                    .animateContentSize(animationSpec = tween(durationMillis = 150, easing = FastOutSlowInEasing)),
                 horizontalArrangement = Arrangement.spacedBy(6.dp),
                 verticalArrangement = Arrangement.spacedBy(8.dp),
             ) {
@@ -186,19 +201,25 @@ private fun SwitcherPanel(
                                 .background(AccentColor)
                         )
                     }
-                    AppCell(
-                        name = entry.app.name,
-                        pid = entry.app.pid,
-                        iconBytes = iconsByPid[entry.app.pid],
-                        windows = entry.windows,
-                        shownWindowCount = entry.shownWindowCount,
-                        isSelected = appIndex == state.cursor.appIndex,
-                        selectedWindowIndex = if (appIndex == state.cursor.appIndex) state.cursor.windowIndex else -1,
-                        onHoverApp = { onPointAt(appIndex, null) },
-                        onHoverWindow = { wi -> onPointAt(appIndex, wi) },
-                        onClickApp = { onPointAt(appIndex, null); onCommit() },
-                        onClickWindow = { wi -> onPointAt(appIndex, wi); onCommit() },
-                    )
+                    // `key` ties the cell to its app's pid so Compose treats
+                    // the same app moving in `entries` as a position change,
+                    // not unmount + remount — preserving icon caching and
+                    // any future per-cell transition state.
+                    androidx.compose.runtime.key(entry.app.pid) {
+                        AppCell(
+                            name = entry.app.name,
+                            pid = entry.app.pid,
+                            iconBytes = iconsByPid[entry.app.pid],
+                            windows = entry.windows,
+                            shownWindowCount = entry.shownWindowCount,
+                            isSelected = appIndex == state.cursor.appIndex,
+                            selectedWindowIndex = if (appIndex == state.cursor.appIndex) state.cursor.windowIndex else -1,
+                            onHoverApp = { onPointAt(appIndex, null) },
+                            onHoverWindow = { wi -> onPointAt(appIndex, wi) },
+                            onClickApp = { onPointAt(appIndex, null); onCommit() },
+                            onClickWindow = { wi -> onPointAt(appIndex, wi); onCommit() },
+                        )
+                    }
                 }
             }
         }
@@ -230,6 +251,11 @@ private fun AppCell(
             .widthIn(min = 80.dp, max = 120.dp)
             .clip(RoundedCornerShape(10.dp))
             .border(2.dp, borderColor, RoundedCornerShape(10.dp))
+            // Smoothly resize the cell when its window list changes (e.g.
+            // user closes one of the windows of this app while the switcher
+            // is open). Same easing/duration as the panel envelope so the
+            // motions don't desync visually.
+            .animateContentSize(animationSpec = tween(durationMillis = 150, easing = FastOutSlowInEasing))
             .onPointerEvent(PointerEventType.Enter) { onHoverApp() }
             .pointerInput(Unit) { detectTapGestures(onTap = { onClickApp() }) }
             .padding(horizontal = 6.dp, vertical = 6.dp),
@@ -249,7 +275,13 @@ private fun AppCell(
         if (windows.isNotEmpty()) {
             Spacer(Modifier.height(2.dp))
             Column(
-                Modifier.fillMaxWidth(),
+                Modifier
+                    .fillMaxWidth()
+                    // When a window of this app closes, the row unmounts and
+                    // the column reflows. animateContentSize on the column
+                    // gives the surviving rows a smooth shift instead of an
+                    // instant jump.
+                    .animateContentSize(animationSpec = tween(durationMillis = 150, easing = FastOutSlowInEasing)),
                 verticalArrangement = Arrangement.spacedBy(1.dp),
             ) {
                 windows.forEachIndexed { i, w ->
@@ -264,12 +296,14 @@ private fun AppCell(
                                 .background(AccentColor)
                         )
                     }
-                    WindowTitleRow(
-                        title = effectiveWindowTitle(w.title, name),
-                        isActive = isSelected && i == selectedWindowIndex,
-                        onHover = { onHoverWindow(i) },
-                        onClick = { onClickWindow(i) },
-                    )
+                    androidx.compose.runtime.key(w.id) {
+                        WindowTitleRow(
+                            title = effectiveWindowTitle(w.title, name),
+                            isActive = isSelected && i == selectedWindowIndex,
+                            onHover = { onHoverWindow(i) },
+                            onClick = { onClickWindow(i) },
+                        )
+                    }
                 }
             }
         }
