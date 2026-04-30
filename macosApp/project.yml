@@ -57,6 +57,14 @@ targets:
         LSMinimumSystemVersion: "15.0"
         CFBundleDisplayName: KAltSwitch
         NSHighResolutionCapable: true
+        # Accessory (menubar-utility) policy: no Dock icon, not present in
+        # the system cmd+tab list, no Force-Quit dialog entry. Doesn't
+        # change focus mechanics — those go through SkyLight regardless
+        # (decisions.md §2). Doesn't change menu-bar handling: our main
+        # menu still shows when the inspector window is frontmost
+        # (which is the only path that activates us, since the switcher
+        # overlay is `.nonactivatingPanel`).
+        LSUIElement: true
     entitlements:
       path: macosApp/macosApp.entitlements
       properties:

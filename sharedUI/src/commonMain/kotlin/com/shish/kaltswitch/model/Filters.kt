@@ -61,11 +61,17 @@ data class FilteringRules(
  */
 val SeedRules: List<Rule> = listOf(
     Rule(
-        id = "default-hide-kaltswitch-untitled",
-        name = "hide KAltSwitch switcher",
+        // KAltSwitch is the switcher itself — appearing in its own switcher
+        // is at best curious and at worst lets the user accidentally
+        // navigate to KAltSwitch instead of their actual target. The OS-
+        // level `LSUIElement = true` already removes us from the system
+        // cmd+tab list and the Dock; this rule does the same for our own
+        // switcher. Disable the rule if you want the inspector window
+        // accessible via cmd+tab.
+        id = "default-hide-kaltswitch",
+        name = "hide KAltSwitch from its own switcher",
         predicates = listOf(
             BundleIdPredicate(value = "com.shish.kaltswitch"),
-            TitlePredicate(op = StringOp.Eq, value = ""),
         ),
         outcome = TriFilter.Hide,
     ),
