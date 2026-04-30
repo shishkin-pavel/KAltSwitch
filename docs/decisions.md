@@ -168,15 +168,19 @@ no longer receives flagsChanged when key.
 
 ---
 
-## 6. Hot-key restoration on graceful exit and signals (but not on crash)
+## 6. Hot-key restoration: three in-process layers + an out-of-process watchdog
 
 **Question.** Where does the lifecycle state — "system cmd+tab disabled" —
-get restored?
+get restored, and how do we cover hard process death (SIGKILL, SIGSEGV,
+kernel panic) where no in-process handler can run?
 
 **Sources.** alt-tab-macos `Sigtrap.swift`; macOS signal-source docs
-(`DispatchSource.makeSignalSource`).
+(`DispatchSource.makeSignalSource`); kqueue(2) man page on
+`EVFILT_PROC` / `NOTE_EXIT`.
 
-**Decision.** Three layers:
+**Decision.** Four layers, the first three in-process and the fourth a
+separate process:
+
   1. `applicationWillTerminate` — normal Cocoa shutdown. Calls
      `setSymbolicHotKeysEnabled(true)` and `hotkeyController.stop()`.
   2. `installSignalHandlers` — catches SIGINT (Ctrl-C from Xcode console),
@@ -185,17 +189,32 @@ get restored?
      `DispatchSourceSignal` on the main queue runs the same teardown and
      `exit(0)`. Safe to call CGS APIs because the dispatch source fires
      off the signal context.
-  3. *Nothing* covers SIGKILL, SIGSEGV, force-quit, kernel panic. The user
-     loses system cmd+tab until next launch. Mitigation: the symbolic hotkey
-     re-enable runs on every launch *after* we re-disable it, so a single
-     `open -a KAltSwitch` followed by a normal quit fixes the user's state.
+  3. **`KAltSwitchWatchdog`** — separate Swift CLI binary bundled in
+     `Contents/MacOS/`. Spawned by `applicationWillFinishLaunching` after
+     we disable the hot keys; holds the main app's pid as argv. Uses
+     `kqueue` with `EVFILT_PROC` / `NOTE_EXIT` to wait for the parent to
+     exit for **any** reason, then calls
+     `_CGSSetSymbolicHotKeyEnabled(_, true)` for the same three IDs the
+     main app disabled. `kqueue` works cross-process for same-user pids
+     and fires on SIGKILL / SIGSEGV / kernel-induced kill / force-quit
+     in Activity Monitor — exactly the cases layers 1 + 2 can't cover.
 
-**Confidence.** High for layers 1+2. Layer 3 is documented and accepted —
-no software-only fix exists.
+  *Caveats* of the watchdog: if a user explicitly kills the watchdog
+  process before the main app dies, we degrade to the pre-watchdog
+  behaviour (no restoration on hard crash). The watchdog itself is
+  intentionally tiny (single Swift file, no AppKit / Foundation
+  observers / dispatch sources) to make its own crashes unlikely.
 
-**Revisit-trigger.** User reports of "system cmd+tab gone after KAltSwitch
-crash" — surface a one-shot launchd-style helper that re-enables the hotkey
-on the next user session.
+**Confidence.** High for layers 1 + 2 + watchdog. The watchdog covers
+the previously-uncovered hard-crash path; manual smoke tests
+(`kill -9 <victim>`) confirm the kqueue NOTE_EXIT fires and the CGS
+restoration call succeeds.
+
+**Revisit-trigger.** User reports of "system cmd+tab gone after a
+KAltSwitch crash" *with* the watchdog binary present — would indicate
+either codesigning fail (watchdog couldn't load), kqueue issue on a new
+macOS, or the user killed both processes (e.g. `killall -9 KAltSwitch`
+hitting both binaries). Each has a distinct fix.
 
 ---
 

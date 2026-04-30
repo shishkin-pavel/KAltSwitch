@@ -10,11 +10,46 @@ settings:
     SWIFT_VERSION: "5.0"
 
 targets:
+  # Tiny CLI helper bundled in `Contents/MacOS/`. The main app spawns it
+  # at launch; it watches our pid via kqueue NOTE_EXIT and restores the
+  # private symbolic hotkeys on death. Sole reason for being a separate
+  # process: outlives SIGKILL / SIGSEGV / kernel-panic of the main app,
+  # which an in-process signal handler can't.
+  KAltSwitchWatchdog:
+    type: tool
+    platform: macOS
+    sources:
+      - path: Watchdog
+    settings:
+      base:
+        PRODUCT_NAME: KAltSwitchWatchdog
+        CODE_SIGN_STYLE: Automatic
+        CODE_SIGN_IDENTITY: "-"
+        # SkyLight is linked for the same `_CGSSetSymbolicHotKeyEnabled`
+        # private symbol the main app uses.
+        OTHER_LDFLAGS:
+          - "-framework"
+          - "SkyLight"
+        FRAMEWORK_SEARCH_PATHS:
+          - "$(inherited)"
+          - "/System/Library/PrivateFrameworks"
+
   macosApp:
     type: application
     platform: macOS
     sources:
       - path: macosApp
+    dependencies:
+      - target: KAltSwitchWatchdog
+        # Embed the watchdog binary in `Contents/MacOS/` so
+        # `Bundle.main.path(forAuxiliaryExecutable:)` can find it. Code-
+        # sign on copy so the embedded binary inherits our adhoc
+        # signature (otherwise launching it from a sandboxed/signed app
+        # would fail signature validation).
+        embed: true
+        copy:
+          destination: executables
+          codeSign: true
     info:
       path: macosApp/Info.plist
       properties:

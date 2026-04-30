@@ -21,6 +21,9 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     private var frameObservers: [NSObjectProtocol] = []
     private var statusItem: NSStatusItem? = nil
     private var signalSources: [DispatchSourceSignal] = []
+    /// Best-effort hot-key-restoration helper. See
+    /// `macosApp/Watchdog/main.swift` for the rationale and protocol.
+    private var watchdogProcess: Process?
     /// Latest applied inspector-visibility state. `nil` until the first
     /// observeInspectorVisible callback fires; afterwards used by
     /// persistFrame() to know whether the user is editing the
@@ -463,15 +466,53 @@ class AppDelegate: NSObject, NSApplicationDelegate {
 
     func applicationWillFinishLaunching(_ notification: Notification) {
         StderrRedirectKt.redirectStderrToLogFile()
-        // Take over cmd+tab / cmd+shift+tab / cmd+` from the system. The setting
-        // persists past process exit, so we always pair this with restoration
-        // in applicationWillTerminate AND in our SIGINT/SIGTERM/SIGHUP handler.
-        // A hard crash (SIGSEGV, SIGKILL, kernel panic) still leaves the user
-        // without system cmd+tab until next launch — documented in
-        // docs/decisions.md.
+        // Take over cmd+tab / cmd+shift+tab / cmd+` from the system. The
+        // setting persists past process exit, so we pair this with three
+        // restoration paths:
+        //  1. `applicationWillTerminate` — normal Cocoa shutdown.
+        //  2. `installSignalHandlers` — SIGINT/SIGTERM/SIGHUP via
+        //     DispatchSource (off the signal context).
+        //  3. `launchHotkeyWatchdog` — separate process that survives
+        //     SIGSEGV / SIGKILL / kernel panic and restores via the same
+        //     CGS API. This is the **only** layer that covers hard
+        //     crashes; without it, after a crash the user is stuck
+        //     without system cmd+tab until they relaunch + quit
+        //     KAltSwitch once.
         setSymbolicHotKeysEnabled(false)
         installSignalHandlers()
+        launchHotkeyWatchdog()
         installMainMenu()
+    }
+
+    /// Spawn `KAltSwitchWatchdog` (bundled in `Contents/MacOS/`). The
+    /// watchdog uses `kqueue NOTE_EXIT` to wait for our pid to die and
+    /// then calls `_CGSSetSymbolicHotKeyEnabled(_, true)` for the same
+    /// hot keys we disabled. See `macosApp/Watchdog/main.swift`.
+    ///
+    /// Failures here (binary missing, spawn refused) are non-fatal —
+    /// log and proceed; we just degrade to the pre-iter25 behaviour
+    /// (graceful + signal exits restore; hard crashes don't).
+    private func launchHotkeyWatchdog() {
+        guard let path = Bundle.main.path(forAuxiliaryExecutable: "KAltSwitchWatchdog") else {
+            log("[swift] watchdog binary not found in bundle — hard-crash recovery disabled")
+            return
+        }
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: path)
+        process.arguments = [String(ProcessInfo.processInfo.processIdentifier)]
+        // Don't share stdio. The watchdog logs via NSLog and we don't
+        // want its output mingled with ours, plus inheriting our
+        // redirected file descriptors complicates things.
+        process.standardInput = FileHandle.nullDevice
+        process.standardOutput = FileHandle.nullDevice
+        process.standardError = FileHandle.nullDevice
+        do {
+            try process.run()
+            watchdogProcess = process
+            log("[swift] watchdog launched, pid=\(process.processIdentifier)")
+        } catch {
+            log("[swift] watchdog launch failed: \(error.localizedDescription)")
+        }
     }
 
     /// Catch SIGINT/SIGTERM/SIGHUP (e.g. `kill <pid>`, terminal Ctrl-C, logout)
