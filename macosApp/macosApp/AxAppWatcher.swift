@@ -320,6 +320,47 @@ final class AxAppWatcher {
         return setMain == .success || raise == .success
     }
 
+    // MARK: - Switcher actions on a specific window
+
+    /// Press the window's close button (`kAXCloseButtonAttribute → kAXPressAction`).
+    /// Same effect as the user clicking the red traffic light or hitting
+    /// cmd+W in the target app. Returns `false` if the window has no close
+    /// button (some kAXSheet / kAXSystemDialog windows don't), the press
+    /// failed, or the AX id is unknown to this watcher.
+    @discardableResult
+    func closeWindow(windowId: Int64) -> Bool {
+        guard let el = windowsByHash[Int(windowId)] else { return false }
+        guard let btn = readAttributeAsElement(el, kAXCloseButtonAttribute as String) else {
+            NSLog("KAltSwitch: closeWindow(pid=%d, wid=%lld) — no AXCloseButton", pid, windowId)
+            return false
+        }
+        return AXUIElementPerformAction(btn, kAXPressAction as CFString) == .success
+    }
+
+    /// Toggle `kAXMinimizedAttribute` on the window. AX exposes the attribute
+    /// as a Bool; we read the current value to flip it. Reads fall back to
+    /// `false` so a brand-new window with no minimized attribute set is
+    /// treated as "not minimized" → the toggle minimizes it.
+    @discardableResult
+    func toggleMinimize(windowId: Int64) -> Bool {
+        guard let el = windowsByHash[Int(windowId)] else { return false }
+        let current = (readAttribute(el, kAXMinimizedAttribute as String) as? Bool) ?? false
+        let target: CFBoolean = if current { kCFBooleanFalse } else { kCFBooleanTrue }
+        return AXUIElementSetAttributeValue(el, kAXMinimizedAttribute as CFString, target) == .success
+    }
+
+    /// Toggle `AXFullScreen` on the window. Note: the constant is
+    /// `kAXFullscreenAttribute` in some headers but the underlying ObjC
+    /// string is `"AXFullScreen"` — we use the literal because the public
+    /// constant isn't always available across SDK versions.
+    @discardableResult
+    func toggleFullscreen(windowId: Int64) -> Bool {
+        guard let el = windowsByHash[Int(windowId)] else { return false }
+        let current = (readAttribute(el, "AXFullScreen") as? Bool) ?? false
+        let target: CFBoolean = if current { kCFBooleanFalse } else { kCFBooleanTrue }
+        return AXUIElementSetAttributeValue(el, "AXFullScreen" as CFString, target) == .success
+    }
+
     /// Resolve the window's CGWindowID via the private `_AXUIElementGetWindow`
     /// API. The CGS focus call (`_SLPSSetFrontProcessWithOptions`) operates on
     /// CGWindowIDs, not AXUIElements, so we need this conversion.

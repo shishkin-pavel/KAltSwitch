@@ -120,6 +120,33 @@ class AppDelegate: NSObject, NSApplicationDelegate {
             registry?.commit(pid: pid_t(truncatingIfNeeded: pid.int32Value),
                              windowId: windowId?.int64Value)
         }
+        // Single-key actions (Q/W/M/H/F) fired from the Compose overlay
+        // while the session is open. The session stays open after each
+        // action; the world mutates and the live snapshot collector
+        // (iter14) walks the cursor to a neighbour automatically when a
+        // close/quit removes the target.
+        controller.onPerformAction = { [weak registry] action, pid, windowId in
+            guard let registry = registry else { return }
+            let p = pid_t(truncatingIfNeeded: pid.int32Value)
+            let wid = windowId?.int64Value
+            // K/N exports Kotlin enum cases as ObjC class properties named
+            // by the *raw* lower-cased identifier (no word separation), so
+            // `SwitcherAction.QuitApp` becomes `.quitapp` etc. at the Swift
+            // call site. Switch on equality with the static instances rather
+            // than via `case .quitapp:` because Swift treats CAMSwitcherAction
+            // as an Obj-C class subclass, not a native Swift enum.
+            if action == SwitcherAction.quitapp {
+                registry.quitApp(pid: p)
+            } else if action == SwitcherAction.togglehide {
+                registry.toggleHide(pid: p)
+            } else if action == SwitcherAction.closewindow, let wid = wid {
+                registry.closeWindow(pid: p, windowId: wid)
+            } else if action == SwitcherAction.toggleminimize, let wid = wid {
+                registry.toggleMinimize(pid: p, windowId: wid)
+            } else if action == SwitcherAction.togglefullscreen, let wid = wid {
+                registry.toggleFullscreen(pid: p, windowId: wid)
+            }
+        }
 
         // Global hotkeys + cmd-release detection feed the Kotlin SwitcherController.
         hotkeyController = HotkeyController(controller: controller)

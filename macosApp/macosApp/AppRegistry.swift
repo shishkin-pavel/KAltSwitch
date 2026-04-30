@@ -163,11 +163,51 @@ final class AppRegistry {
         watchers.removeAll()
     }
 
-    // MARK: - Switcher actions (raise / commit)
+    // MARK: - Switcher actions (raise / commit / quit / hide / window-actions)
 
     /// Raise a window for preview without changing frontmost-app.
     func raise(pid: pid_t, windowId: Int64) {
         watchers[pid]?.raiseWindow(windowId: windowId)
+    }
+
+    /// `Q` — terminate the application gracefully (cmd+Q-equivalent: gives
+    /// the app a chance to prompt for unsaved changes etc.). The world
+    /// reflects the change via `NSWorkspace.didTerminateApplicationNotification`,
+    /// which our handler routes through `removeApp`; the live snapshot
+    /// collector (iter14) walks the cursor to a neighbour automatically.
+    func quitApp(pid: pid_t) {
+        guard let nsApp = NSRunningApplication(processIdentifier: pid) else { return }
+        let ok = nsApp.terminate()
+        log("[reg] quitApp pid=\(pid) → \(ok ? "ok" : "fail")")
+    }
+
+    /// `H` — toggle `NSRunningApplication.isHidden`. NSWorkspace fires
+    /// didHide/didUnhide which we already route through
+    /// `AppRecordKt.upsertAppRecord`, so the inspector and the switcher
+    /// status badge update without further plumbing.
+    func toggleHide(pid: pid_t) {
+        guard let nsApp = NSRunningApplication(processIdentifier: pid) else { return }
+        let ok = if nsApp.isHidden { nsApp.unhide() } else { nsApp.hide() }
+        log("[reg] toggleHide pid=\(pid) wasHidden=\(nsApp.isHidden) → \(ok ? "ok" : "fail")")
+    }
+
+    /// `W` — press the window's red-circle close button via AX. Forwards
+    /// to the per-pid watcher that owns the live AXUIElement.
+    func closeWindow(pid: pid_t, windowId: Int64) {
+        let ok = watchers[pid]?.closeWindow(windowId: windowId) ?? false
+        log("[reg] closeWindow pid=\(pid) wid=\(windowId) → \(ok ? "ok" : "fail")")
+    }
+
+    /// `M` — toggle the window's `kAXMinimizedAttribute`.
+    func toggleMinimize(pid: pid_t, windowId: Int64) {
+        let ok = watchers[pid]?.toggleMinimize(windowId: windowId) ?? false
+        log("[reg] toggleMinimize pid=\(pid) wid=\(windowId) → \(ok ? "ok" : "fail")")
+    }
+
+    /// `F` — toggle the window's `AXFullScreen` (private constant).
+    func toggleFullscreen(pid: pid_t, windowId: Int64) {
+        let ok = watchers[pid]?.toggleFullscreen(windowId: windowId) ?? false
+        log("[reg] toggleFullscreen pid=\(pid) wid=\(windowId) → \(ok ? "ok" : "fail")")
     }
 
     /// Final activation on cmd-release.
