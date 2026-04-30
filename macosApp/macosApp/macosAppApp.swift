@@ -97,7 +97,16 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         let resize = center.addObserver(forName: NSWindow.didEndLiveResizeNotification, object: window, queue: .main) { [weak self] _ in
             self?.persistFrame()
         }
-        frameObservers = [move, resize]
+        // Dock icon + system cmd+tab presence are tied to the inspector
+        // window's visibility. Closing it (cmd+W or red-circle) drops us
+        // back to `.accessory` — a pure menubar utility in steady state.
+        // Re-opening (menubar / Spotlight relaunch) flips us to `.regular`
+        // again via showInspector(). NSWindow.willClose fires before the
+        // window is hidden so the policy change races perfectly.
+        let willClose = center.addObserver(forName: NSWindow.willCloseNotification, object: window, queue: .main) { [weak self] _ in
+            self?.setActivationPolicyForInspector(visible: false)
+        }
+        frameObservers = [move, resize, willClose]
 
         // Bring up the per-app AX watchers. Store is the singleton owned by the framework.
         let registry = AppRegistry(store: ComposeViewKt.store)
@@ -373,8 +382,25 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         // If a switcher session is in flight, cancel it before stealing focus —
         // settings always win over an in-flight switch (per PLAN.md).
         ComposeViewKt.switcherController.onEsc()
+        // Inspector is a heavyweight UI window — promote to .regular so
+        // it gets a Dock icon + system cmd+tab presence while it's
+        // open. Drops back to .accessory on willClose. Calling
+        // setActivationPolicy is idempotent if we're already .regular,
+        // so the menubar-while-already-open path is a no-op.
+        setActivationPolicyForInspector(visible: true)
         window.makeKeyAndOrderFront(nil)
         NSApp.activate()
+    }
+
+    /// Toggle our activation policy in step with the inspector window's
+    /// visibility. `.regular` while the window is on screen → Dock icon
+    /// shows up, KAltSwitch appears in the system cmd+tab list. `.accessory`
+    /// once it's closed → pure menubar utility again.
+    private func setActivationPolicyForInspector(visible: Bool) {
+        let target: NSApplication.ActivationPolicy = visible ? .regular : .accessory
+        if NSApp.activationPolicy() == target { return }
+        NSApp.setActivationPolicy(target)
+        log("[swift] activation policy → \(visible ? "regular" : "accessory")")
     }
 
     /// Spotlight / Dock relaunch / `open -a` while we're already running.
