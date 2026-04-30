@@ -11,6 +11,7 @@ import com.shish.kaltswitch.model.NoVisibleWindowsPredicate
 import com.shish.kaltswitch.model.Rule
 import com.shish.kaltswitch.model.SwitcherEntry
 import com.shish.kaltswitch.model.SwitcherEvent
+import com.shish.kaltswitch.model.SwitcherAction
 import com.shish.kaltswitch.model.SwitcherCursor
 import com.shish.kaltswitch.model.SwitcherSnapshot
 import com.shish.kaltswitch.model.SwitcherState
@@ -489,6 +490,114 @@ class SwitcherControllerTest {
         val before = store.state.value.log.events.size
         store.recordActivation(pid = 1, windowId = 11)
         assertEquals(before, store.state.value.log.events.size)
+    }
+
+    // ---- onAction dispatch -------------------------------------------------
+
+    @Test
+    fun action_appLevel_firesPerformActionForSelectedApp_regardlessOfWindow() = runTest {
+        val store = seededStore()
+        val actions = mutableListOf<Triple<SwitcherAction, Int, Long?>>()
+        val ctl = SwitcherController(store, scope = backgroundScope)
+            .also { it.onPerformAction = { a, p, w -> actions += Triple(a, p, w) } }
+
+        ctl.onShortcut(SwitcherEntry.App)  // selects IDE/21
+        advanceTimeBy(50)
+
+        ctl.onAction(SwitcherAction.QuitApp)
+        ctl.onAction(SwitcherAction.ToggleHide)
+
+        assertEquals(
+            listOf<Triple<SwitcherAction, Int, Long?>>(
+                Triple(SwitcherAction.QuitApp, 2, null),
+                Triple(SwitcherAction.ToggleHide, 2, null),
+            ),
+            actions,
+        )
+    }
+
+    @Test
+    fun action_windowLevel_firesPerformActionWithSelectedWindowId() = runTest {
+        val store = seededStore()
+        val actions = mutableListOf<Triple<SwitcherAction, Int, Long?>>()
+        val ctl = SwitcherController(store, scope = backgroundScope)
+            .also { it.onPerformAction = { a, p, w -> actions += Triple(a, p, w) } }
+
+        ctl.onShortcut(SwitcherEntry.App)  // selects IDE/21
+        advanceTimeBy(50)
+
+        ctl.onAction(SwitcherAction.CloseWindow)
+        ctl.onAction(SwitcherAction.ToggleMinimize)
+        ctl.onAction(SwitcherAction.ToggleFullscreen)
+
+        assertEquals(
+            listOf<Triple<SwitcherAction, Int, Long?>>(
+                Triple(SwitcherAction.CloseWindow, 2, 21L),
+                Triple(SwitcherAction.ToggleMinimize, 2, 21L),
+                Triple(SwitcherAction.ToggleFullscreen, 2, 21L),
+            ),
+            actions,
+        )
+    }
+
+    @Test
+    fun action_withoutSession_isNoOp() = runTest {
+        val store = seededStore()
+        val actions = mutableListOf<Triple<SwitcherAction, Int, Long?>>()
+        val ctl = SwitcherController(store, scope = backgroundScope)
+            .also { it.onPerformAction = { a, p, w -> actions += Triple(a, p, w) } }
+
+        // No onShortcut → no session → onAction silently does nothing.
+        ctl.onAction(SwitcherAction.QuitApp)
+        ctl.onAction(SwitcherAction.CloseWindow)
+
+        assertEquals(0, actions.size)
+    }
+
+    @Test
+    fun action_windowLevel_noOpsWhenSelectedAppIsWindowless() = runTest {
+        // App with no windows → cursor lands on it (windowless bucket).
+        val app = App(pid = 1, bundleId = "a", name = "Solo")
+        val store = WorldStore(World(
+            log = ActivationLog(),
+            runningApps = mapOf(1 to app),
+            windowsByPid = mapOf(1 to emptyList()),
+        ))
+        val actions = mutableListOf<Triple<SwitcherAction, Int, Long?>>()
+        val ctl = SwitcherController(store, scope = backgroundScope)
+            .also { it.onPerformAction = { a, p, w -> actions += Triple(a, p, w) } }
+
+        ctl.onShortcut(SwitcherEntry.App)
+        advanceTimeBy(50)
+
+        // App-level still works.
+        ctl.onAction(SwitcherAction.QuitApp)
+        // Window-level no-ops (no selected window).
+        ctl.onAction(SwitcherAction.CloseWindow)
+        ctl.onAction(SwitcherAction.ToggleMinimize)
+        ctl.onAction(SwitcherAction.ToggleFullscreen)
+
+        assertEquals(
+            listOf<Triple<SwitcherAction, Int, Long?>>(
+                Triple(SwitcherAction.QuitApp, 1, null),
+            ),
+            actions,
+        )
+    }
+
+    @Test
+    fun action_doesNotCloseTheSession() = runTest {
+        val store = seededStore()
+        val ctl = SwitcherController(store, scope = backgroundScope)
+            .also { it.onPerformAction = { _, _, _ -> /* no-op */ } }
+
+        ctl.onShortcut(SwitcherEntry.App)
+        advanceTimeBy(50)
+        assertNotNull(ctl.ui.value)
+
+        ctl.onAction(SwitcherAction.ToggleMinimize)
+        // Session stays open — user is still holding cmd.
+        assertNotNull(ctl.ui.value)
     }
 
     @Test

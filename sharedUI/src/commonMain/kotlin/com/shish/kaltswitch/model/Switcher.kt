@@ -3,6 +3,34 @@ package com.shish.kaltswitch.model
 enum class SwitcherEntry { App, Window }
 
 /**
+ * Side-effecting actions a user can fire on the currently-selected target
+ * via single-key bindings while the switcher session is open (cmd held).
+ * Bindings: `Q` → [QuitApp], `W` → [CloseWindow], `M` → [ToggleMinimize],
+ * `H` → [ToggleHide], `F` → [ToggleFullscreen].
+ *
+ * The actions split by **scope**:
+ *   - App-level ([QuitApp], [ToggleHide]) — fire on `selectedAppPid`
+ *     regardless of whether a window is selected. Always available.
+ *   - Window-level ([CloseWindow], [ToggleMinimize], [ToggleFullscreen]) —
+ *     no-op when no specific window is selected (e.g. windowless app).
+ *
+ * Side effects flow back through the live snapshot ([SwitcherState.refreshedWith]):
+ * a quit/close removes the target from the world, the cursor jumps to the
+ * right-neighbour automatically; a minimize/hide/fullscreen toggle changes
+ * status flags but keeps identity. The session itself **stays open** — the
+ * user keeps holding cmd and can navigate further.
+ */
+enum class SwitcherAction(internal val scope: ActionScope) {
+    QuitApp(ActionScope.App),
+    CloseWindow(ActionScope.Window),
+    ToggleMinimize(ActionScope.Window),
+    ToggleHide(ActionScope.App),
+    ToggleFullscreen(ActionScope.Window),
+}
+
+internal enum class ActionScope { App, Window }
+
+/**
  * Range the navigation event applies to:
  *   - [Shown]: only the inspector's `Show` items (`withWindows` for apps,
  *     leading `shownWindowCount` for windows). The Carbon hot keys

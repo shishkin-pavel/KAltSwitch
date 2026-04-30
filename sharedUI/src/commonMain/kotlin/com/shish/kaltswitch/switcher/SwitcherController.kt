@@ -1,7 +1,9 @@
 package com.shish.kaltswitch.switcher
 
 import com.shish.kaltswitch.log.log
+import com.shish.kaltswitch.model.ActionScope
 import com.shish.kaltswitch.model.NavScope
+import com.shish.kaltswitch.model.SwitcherAction
 import com.shish.kaltswitch.model.SwitcherCursor
 import com.shish.kaltswitch.model.SwitcherEntry
 import com.shish.kaltswitch.model.SwitcherEvent
@@ -69,6 +71,20 @@ class SwitcherController(
     private val previewEnabled: Boolean get() = store.switcherSettings.value.previewEnabled
     var onRaiseWindow: ((pid: Int, windowId: WindowId) -> Unit)? = null
     var onCommitActivation: ((pid: Int, windowId: WindowId?) -> Unit)? = null
+
+    /**
+     * Wired by the platform layer to side-effect APIs:
+     *   - [SwitcherAction.QuitApp] / [SwitcherAction.ToggleHide] — fire with
+     *     `windowId == null` (app-level).
+     *   - [SwitcherAction.CloseWindow] / [SwitcherAction.ToggleMinimize] /
+     *     [SwitcherAction.ToggleFullscreen] — fire with the selected window's
+     *     id; never fires for a windowless cell.
+     *
+     * The world will mutate as a result (e.g. window closes, app terminates),
+     * the live-snapshot collector picks it up, and the cursor moves to a
+     * neighbour automatically — see [SwitcherState.refreshedWith].
+     */
+    var onPerformAction: ((action: SwitcherAction, pid: Int, windowId: WindowId?) -> Unit)? = null
 
     private val _ui = MutableStateFlow<SwitcherUiState?>(null)
     val ui: StateFlow<SwitcherUiState?> = _ui.asStateFlow()
@@ -309,6 +325,37 @@ class SwitcherController(
         if (_ui.value == null) return
         log("[ctl] onEsc cursor=${_ui.value?.state?.cursor}")
         cancel()
+    }
+
+    /**
+     * Fire a side-effecting action ([SwitcherAction]) on the currently-selected
+     * target. App-level actions ([SwitcherAction.QuitApp],
+     * [SwitcherAction.ToggleHide]) always fire when an app is selected;
+     * window-level actions are no-ops when no specific window is selected.
+     *
+     * Does **not** close the session — the user is still holding cmd. The
+     * world mutates as a result, the live snapshot collector picks it up,
+     * and the cursor moves to a neighbour automatically if the target
+     * disappears (close/quit).
+     */
+    fun onAction(action: SwitcherAction) {
+        val cur = _ui.value ?: return
+        val app = cur.state.selectedAppEntry?.app ?: return
+        val window = cur.state.selectedWindow
+        when (action.scope) {
+            ActionScope.App -> {
+                log("[ctl] action=$action pid=${app.pid}")
+                onPerformAction?.invoke(action, app.pid, null)
+            }
+            ActionScope.Window -> {
+                if (window == null) {
+                    log("[ctl] action=$action SKIPPED — no window selected")
+                    return
+                }
+                log("[ctl] action=$action pid=${app.pid} wid=${window.id}")
+                onPerformAction?.invoke(action, app.pid, window.id)
+            }
+        }
     }
 
     private fun openSession(entry: SwitcherEntry) {
