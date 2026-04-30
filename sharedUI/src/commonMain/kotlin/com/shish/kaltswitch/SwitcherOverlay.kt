@@ -17,6 +17,7 @@ import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
@@ -322,8 +323,14 @@ private fun AppCell(
     ) {
         // Stack the hidden-status badge on top-right of the icon. Box uses
         // the icon's intrinsic size; the badge is positioned with
-        // Alignment.TopEnd and a small inset so it slightly overhangs the
-        // icon's rounded corner — readable but not cropped.
+        // Alignment.TopEnd and a small `offset` so it slightly overhangs
+        // the icon's rounded corner — readable but not cropped.
+        //
+        // `offset()` accepts negatives; `padding()` does NOT. An earlier
+        // attempt with `Modifier.padding(top = (-2).dp, end = (-2).dp)`
+        // crashed at the moment the badge first composed (i.e. the very
+        // first time the user hid an app via cmd+H), via Compose's
+        // `PaddingElement.<init>` precondition check.
         Box(contentAlignment = Alignment.TopEnd) {
             AppIconBox(pid = pid, iconBytes = iconBytes, name = name)
             if (isHidden) {
@@ -331,7 +338,7 @@ private fun AppCell(
                     glyph = "−",
                     background = HiddenBadgeColor,
                     contentColor = Color.White,
-                    modifier = Modifier.padding(top = (-2).dp, end = (-2).dp),
+                    modifier = Modifier.offset(x = 4.dp, y = (-4).dp),
                 )
             }
         }
