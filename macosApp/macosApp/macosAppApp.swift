@@ -344,7 +344,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         // settings always win over an in-flight switch (per PLAN.md).
         ComposeViewKt.switcherController.onEsc()
         window.makeKeyAndOrderFront(nil)
-        NSApp.activate(ignoringOtherApps: true)
+        NSApp.activate()
     }
 
     /// Spotlight / Dock relaunch / `open -a` while we're already running.

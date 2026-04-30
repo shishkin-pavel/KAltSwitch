@@ -59,6 +59,20 @@ data class SwitcherSettings(
 )
 
 /**
+ * Clamp values that feed into coroutine `delay(...)` calls so a hand-edited
+ * config or a buggy settings UI can't poison the switcher's runtime path.
+ * `delay(...)` allows zero (returns immediately), so most fields are simply
+ * coerced non-negative — but `repeatIntervalMs == 0` would spin a tight
+ * coroutine loop, so we keep that one ≥ 1 ms.
+ */
+fun SwitcherSettings.sanitized(): SwitcherSettings = copy(
+    showDelayMs = showDelayMs.coerceAtLeast(0L),
+    previewDelayMs = previewDelayMs.coerceAtLeast(0L),
+    repeatInitialDelayMs = repeatInitialDelayMs.coerceAtLeast(0L),
+    repeatIntervalMs = repeatIntervalMs.coerceAtLeast(1L),
+)
+
+/**
  * Persisted user configuration. Versioned so we can migrate gracefully if the
  * schema changes — older configs missing fields will get defaults via
  * `ignoreUnknownKeys` / kotlinx-serialization defaults.

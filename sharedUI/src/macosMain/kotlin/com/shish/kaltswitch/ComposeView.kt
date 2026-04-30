@@ -26,11 +26,16 @@ val store = WorldStore().apply {
 /**
  * Persists config changes to disk. `WorldStore.configFlow()` re-emits whenever
  * any persisted field changes; `drop(1)` skips the initial combined emission
- * so we don't immediately overwrite the file we just loaded above.
+ * so we don't immediately overwrite the file we just loaded above. The extra
+ * `distinctUntilChanged` guards against native observers that re-fire with
+ * identical state — e.g. `applyShowMenubarIcon` getting the seed value back
+ * through the StateFlow seed → callback → `setShowMenubarIcon` round-trip
+ * that boils down to the same `AppConfig`.
  */
 private val configScope = CoroutineScope(Dispatchers.Main).also { scope ->
     store.configFlow()
         .drop(1)
+        .distinctUntilChanged()
         .onEach(ConfigStore::save)
         .launchIn(scope)
 }

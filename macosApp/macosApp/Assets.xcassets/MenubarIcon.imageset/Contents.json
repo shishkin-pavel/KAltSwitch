@@ -1,8 +1,7 @@
 {
   "images" : [
     { "filename" : "menubar_18.png", "idiom" : "mac", "scale" : "1x" },
-    { "filename" : "menubar_36.png", "idiom" : "mac", "scale" : "2x" },
-    { "filename" : "menubar_54.png", "idiom" : "mac", "scale" : "3x" }
+    { "filename" : "menubar_36.png", "idiom" : "mac", "scale" : "2x" }
   ],
   "info" : {
     "author" : "xcode",

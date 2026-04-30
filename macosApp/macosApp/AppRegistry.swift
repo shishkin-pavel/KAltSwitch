@@ -184,8 +184,11 @@ final class AppRegistry {
     ///     processes the AX message — otherwise some apps (Safari, FF) ignore
     ///     a kAXMain change to a backgrounded window and re-raise their
     ///     previous frontmost window instead.
-    ///  4. `nsApp.activate(...)` as a free fallback. If a future macOS breaks
+    ///  4. `nsApp.activate()` as a free fallback. If a future macOS breaks
     ///     the SkyLight call, this keeps focus moving on the public path.
+    ///     The `.activateIgnoringOtherApps` option was deprecated on macOS
+    ///     14+ and Apple documents it as ineffective — the no-arg form is
+    ///     the modern equivalent and avoids a deprecation warning at build.
     func commit(pid: pid_t, windowId: Int64?) {
         let watcher = watchers[pid]
         let cgWid: CGWindowID? = (windowId != nil)
@@ -196,8 +199,7 @@ final class AppRegistry {
         if let wid = windowId {
             axOk = watcher?.makeWindowMain(windowId: wid) ?? false
         }
-        let nsAppOk = NSRunningApplication(processIdentifier: pid)?
-            .activate(options: [.activateIgnoringOtherApps]) ?? false
+        let nsAppOk = NSRunningApplication(processIdentifier: pid)?.activate() ?? false
         log("[reg] commit pid=\(pid) ax=\(windowId ?? 0) cg=\(cgWid ?? 0) " +
             "cgs=\(cgsOk ? "ok" : "fail") axRaise=\(axOk ? "ok" : "fail") nsapp=\(nsAppOk ? "ok" : "fail")")
     }

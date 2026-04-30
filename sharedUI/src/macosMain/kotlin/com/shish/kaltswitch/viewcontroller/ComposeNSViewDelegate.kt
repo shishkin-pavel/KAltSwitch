@@ -98,7 +98,7 @@ class ComposeNSViewDelegate(
         @OptIn(ExperimentalForeignApi::class)
         override fun updateTrackingAreas() {
             trackingArea?.let { removeTrackingArea(it) }
-            trackingArea = NSTrackingArea(
+            val nextTrackingArea = NSTrackingArea(
                 rect = bounds,
                 options = NSTrackingActiveAlways or
                         NSTrackingMouseEnteredAndExited or
@@ -108,7 +108,8 @@ class ComposeNSViewDelegate(
                         NSTrackingInVisibleRect,
                 owner = this, userInfo = null
             )
-            addTrackingArea(trackingArea!!)
+            trackingArea = nextTrackingArea
+            addTrackingArea(nextTrackingArea)
         }
 
         override fun mouseDown(event: NSEvent) =
@@ -148,7 +149,10 @@ class ComposeNSViewDelegate(
     }
 
     @Suppress("Unused") fun destroy() {
-        check(!isDisposed) { "ComposeWindow is already disposed" }
+        // Idempotent: AppKit / window-replacement / app-shutdown lifecycles
+        // can race the Swift teardown order, and a second `destroy()` should
+        // be a no-op rather than a crash.
+        if (isDisposed) return
         skiaLayer.detach()
         scene.close()
         isDisposed = true

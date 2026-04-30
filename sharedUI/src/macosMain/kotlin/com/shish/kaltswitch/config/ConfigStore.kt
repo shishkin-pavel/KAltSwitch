@@ -64,9 +64,12 @@ object ConfigStore {
             inDomains = NSUserDomainMask,
         ) as List<NSURL>
         val support = urls.firstOrNull() ?: return null
+        // Plain nullable chain — `load()` and `save()` both already treat a
+        // null URL as "skip silently". Force-unwrapping here would crash on
+        // the rare Foundation hiccup, which is not worth dying for.
         return support
-            .URLByAppendingPathComponent("KAltSwitch")!!
-            .URLByAppendingPathComponent("config.json")
+            .URLByAppendingPathComponent("KAltSwitch")
+            ?.URLByAppendingPathComponent("config.json")
     }
 
     private fun ensureParentDirectoryExists(fileURL: NSURL) {

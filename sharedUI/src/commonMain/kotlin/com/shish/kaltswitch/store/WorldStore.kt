@@ -3,6 +3,7 @@ package com.shish.kaltswitch.store
 import com.shish.kaltswitch.config.AccentColorChoice
 import com.shish.kaltswitch.config.AppConfig
 import com.shish.kaltswitch.config.SwitcherSettings
+import com.shish.kaltswitch.config.sanitized
 import com.shish.kaltswitch.model.ActivationEvent
 import com.shish.kaltswitch.model.ActivationLog
 import com.shish.kaltswitch.model.App
@@ -48,8 +49,11 @@ class WorldStore(initial: World = World(ActivationLog(), emptyMap(), emptyMap())
     private val _switcherSettings = MutableStateFlow(SwitcherSettings())
     val switcherSettings: StateFlow<SwitcherSettings> = _switcherSettings.asStateFlow()
 
+    /** Sanitised on the way in so the runtime path (coroutine `delay`) never
+     *  sees a negative value or a zero `repeatIntervalMs` that would tight-loop.
+     *  Both config-load (`applyConfig`) and the settings UI go through here. */
     fun setSwitcherSettings(s: SwitcherSettings) {
-        _switcherSettings.value = s
+        _switcherSettings.value = s.sanitized()
     }
 
     private val _inspectorVisible = MutableStateFlow(true)
