@@ -193,20 +193,58 @@ class WorldStore(initial: World = World(ActivationLog(), emptyMap(), emptyMap())
         _state.update { it.copy(runningApps = it.runningApps + (app.pid to app)) }
     }
 
-    /** Remove an app and any windows we knew about for it. */
+    /** Remove an app and any windows we knew about for it. Also prunes that
+     *  pid's activation history and clears the active-app/window pointers if
+     *  they pointed at it — pids are runtime ids that macOS may reuse, and
+     *  leaving stale entries would let a future unrelated launch inherit the
+     *  recency of the dead one. */
     fun removeApp(pid: Int) {
         _state.update {
             it.copy(
                 runningApps = it.runningApps - pid,
                 windowsByPid = it.windowsByPid - pid,
+                log = it.log.withoutPid(pid),
             )
         }
         _iconsByPid.update { it - pid }
+        if (_activeAppPid.value == pid) {
+            setActive(pid = null, windowId = null)
+        }
     }
 
-    /** Replace the full window list for a pid. Use for snapshot-style refreshes. */
+    /** Replace the full window list for a pid. Use for snapshot-style refreshes.
+     *  Also prunes any activation events that referenced now-missing windows
+     *  (AX window ids are tied to native element lifetimes and can be reused);
+     *  app-level events for the pid are kept. Clears [activeWindowId] if the
+     *  pointed-at window has disappeared. */
     fun setWindows(pid: Int, windows: List<Window>) {
-        _state.update { it.copy(windowsByPid = it.windowsByPid + (pid to windows)) }
+        val liveIds: Set<WindowId> = collectAllWindowIds(windows)
+        _state.update {
+            it.copy(
+                windowsByPid = it.windowsByPid + (pid to windows),
+                log = it.log.withoutMissingWindows(pid, liveIds),
+            )
+        }
+        if (_activeAppPid.value == pid) {
+            val activeWid = _activeWindowId.value
+            if (activeWid != null && activeWid !in liveIds) {
+                _activeWindowId.value = null
+            }
+        }
+    }
+
+    /** Recursively collect every window id under [windows], including
+     *  attached sheets/drawers/popovers reported as children. AX often
+     *  reports those as part of the parent's tree, and the activation log
+     *  may contain events for them; we want to keep those events live. */
+    private fun collectAllWindowIds(windows: List<Window>): Set<WindowId> {
+        val out = HashSet<WindowId>()
+        fun visit(w: Window) {
+            out.add(w.id)
+            for (c in w.children) visit(c)
+        }
+        for (w in windows) visit(w)
+        return out
     }
 
     /** Insert or update a single window. */

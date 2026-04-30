@@ -5,6 +5,7 @@ import com.shish.kaltswitch.config.AppConfig
 import com.shish.kaltswitch.config.SwitcherSettings
 import com.shish.kaltswitch.config.WindowFrame
 import com.shish.kaltswitch.model.FilteringRules
+import com.shish.kaltswitch.model.Window
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.test.runTest
 import kotlin.test.Test
@@ -124,6 +125,70 @@ class WorldStoreTest {
     }
 
     @Test
+    fun removeApp_prunesActivationHistory_andClearsActivePointersIfThatPid() {
+        val store = WorldStore()
+        store.recordActivation(pid = 10, windowId = 100)
+        store.recordActivation(pid = 20, windowId = 200)
+        store.recordActivation(pid = 10, windowId = 101)
+
+        store.removeApp(pid = 10)
+
+        // History no longer mentions pid 10 — a future reused pid 10 starts fresh.
+        assertEquals(listOf(20), store.state.value.log.appOrder())
+        assertEquals(emptyList(), store.state.value.log.windowOrder(pid = 10))
+        // Active pointers were pointing at the removed pid → cleared.
+        assertNull(store.activeAppPid.value)
+        assertNull(store.activeWindowId.value)
+    }
+
+    @Test
+    fun setWindows_prunesActivationLog_forDisappearedWindows() {
+        val store = WorldStore()
+        store.recordActivation(pid = 10, windowId = 100)
+        store.recordActivation(pid = 10, windowId = 101)
+        store.recordActivation(pid = 10, windowId = null)  // app-level
+
+        // Snapshot reports only window 101 alive.
+        store.setWindows(pid = 10, windows = listOf(window(id = 101, pid = 10)))
+
+        // Window 100 is gone from history, 101 + the app-level event remain.
+        assertEquals(listOf(101L), store.state.value.log.windowOrder(pid = 10))
+        // App-level event preserved (windowId == null is not a window id).
+        assertEquals(listOf(10), store.state.value.log.appOrder())
+    }
+
+    @Test
+    fun setWindows_clearsActiveWindowIdIfThatWindowDisappeared() {
+        val store = WorldStore()
+        store.recordActivation(pid = 10, windowId = 100)
+        store.setWindows(pid = 10, windows = listOf(window(id = 100, pid = 10)))
+        // Sanity: still pointing at 100.
+        assertEquals(100L, store.activeWindowId.value)
+
+        store.setWindows(pid = 10, windows = listOf(window(id = 101, pid = 10)))
+
+        assertEquals(10, store.activeAppPid.value)        // app pointer kept
+        assertNull(store.activeWindowId.value)            // window pointer cleared
+    }
+
+    @Test
+    fun setWindows_keepsActivationEventsForChildWindowIds() {
+        val store = WorldStore()
+        store.recordActivation(pid = 10, windowId = 200)  // a child / sheet
+        store.recordActivation(pid = 10, windowId = 100)
+
+        // Snapshot: window 100 has child id 200 attached.
+        store.setWindows(
+            pid = 10,
+            windows = listOf(
+                window(id = 100, pid = 10, children = listOf(window(id = 200, pid = 10))),
+            ),
+        )
+
+        assertEquals(listOf(100L, 200L), store.state.value.log.windowOrder(pid = 10))
+    }
+
+    @Test
     fun removeApp_dropsWindows_andIcon() {
         val store = WorldStore()
         store.upsertAppFields(
@@ -144,4 +209,10 @@ class WorldStoreTest {
         assertNull(store.state.value.windowsByPid[10])
         assertNull(store.iconsByPid.value[10])
     }
+
+    private fun window(
+        id: Long,
+        pid: Int,
+        children: List<Window> = emptyList(),
+    ): Window = Window(id = id, pid = pid, title = "", children = children)
 }
