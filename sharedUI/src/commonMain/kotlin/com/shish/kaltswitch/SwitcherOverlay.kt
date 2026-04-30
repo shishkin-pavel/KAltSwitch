@@ -12,6 +12,7 @@ import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.ExperimentalLayoutApi
 import androidx.compose.foundation.layout.FlowRow
+import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
@@ -53,6 +54,7 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.shish.kaltswitch.icon.rememberAppIcon
+import com.shish.kaltswitch.model.SwitcherAction
 import com.shish.kaltswitch.model.SwitcherEntry
 import com.shish.kaltswitch.model.SwitcherEvent
 import com.shish.kaltswitch.model.SwitcherState
@@ -79,6 +81,7 @@ fun SwitcherOverlay(
     onPointerMoved: () -> Unit,
     onPanelSize: (Float, Float) -> Unit,
     onCommit: () -> Unit,
+    onAction: (SwitcherAction) -> Unit,
 ) {
     val focus = remember { FocusRequester() }
     LaunchedEffect(Unit) { focus.requestFocus() }
@@ -88,7 +91,7 @@ fun SwitcherOverlay(
             .fillMaxSize()
             .focusRequester(focus)
             .focusable()
-            .onPreviewKeyEvent { ev -> handleKey(ev, onNavigate, onEsc, onShortcut) }
+            .onPreviewKeyEvent { ev -> handleKey(ev, onNavigate, onEsc, onShortcut, onAction) }
             // Real pointer-move events flip the controller's stationary-mouse
             // gate. Without this, hover-Enter events fired purely because
             // the panel just appeared under a stationary mouse would yank
@@ -111,12 +114,20 @@ fun SwitcherOverlay(
  *  them here causes the cursor to skip several elements per actual press
  *  (each repeat advances once). Arrow keys and Esc remain — they aren't
  *  Carbon-registered, and arrow navigation is the common keyboard fallback
- *  for users who want to step around without re-tapping the modifier-key. */
+ *  for users who want to step around without re-tapping the modifier-key.
+ *
+ *  Action keys (Q/W/M/H/F) MUST be consumed (return true) regardless of
+ *  whether they fire — without that, `cmd+Q` flows through to NSApp's
+ *  main menu and **terminates KAltSwitch itself** (we have a "Quit
+ *  KAltSwitch" item bound to cmd+Q). Same hazard for cmd+W (Close),
+ *  cmd+M (Minimize), cmd+H (Hide app). cmd+F is harmless on its own
+ *  (no main-menu binding) but consume it for symmetry. */
 private fun handleKey(
     ev: KeyEvent,
     onNavigate: (SwitcherEvent) -> Unit,
     onEsc: () -> Unit,
     onShortcut: (SwitcherEntry) -> Unit,
+    onAction: (SwitcherAction) -> Unit,
 ): Boolean {
     if (ev.type != KeyEventType.KeyDown) return false
     return when (ev.key) {
@@ -125,9 +136,54 @@ private fun handleKey(
         Key.DirectionLeft -> { onNavigate(SwitcherEvent.PrevApp); true }
         Key.DirectionDown -> { onNavigate(SwitcherEvent.NextWindow); true }
         Key.DirectionUp -> { onNavigate(SwitcherEvent.PrevWindow); true }
+        Key.Q -> { onAction(SwitcherAction.QuitApp); true }
+        Key.W -> { onAction(SwitcherAction.CloseWindow); true }
+        Key.M -> { onAction(SwitcherAction.ToggleMinimize); true }
+        Key.H -> { onAction(SwitcherAction.ToggleHide); true }
+        Key.F -> { onAction(SwitcherAction.ToggleFullscreen); true }
         else -> false
     }
 }
+
+/**
+ * Tiny circular badge rendered top-right of a cell or row. The colour
+ * mirrors the macOS "traffic light" associations users already know:
+ *   - yellow ≈ minimize
+ *   - blue/grey ≈ hidden (no native traffic-light, but consistent with
+ *     menubar "hidden" indicators)
+ *   - green ≈ fullscreen / maximize
+ *
+ * Symbols are unicode glyphs rather than icon assets to keep the overlay
+ * dependency-free; the dot, dash and corner brackets are recognisable
+ * enough at the 14 dp size used here.
+ */
+@Composable
+private fun StatusBadge(
+    glyph: String,
+    background: Color,
+    contentColor: Color = Color.Black,
+    modifier: Modifier = Modifier,
+) {
+    Box(
+        modifier
+            .size(14.dp)
+            .clip(RoundedCornerShape(7.dp))
+            .background(background),
+        contentAlignment = Alignment.Center,
+    ) {
+        Text(
+            glyph,
+            color = contentColor,
+            fontSize = 9.sp,
+            fontWeight = FontWeight.Bold,
+            maxLines = 1,
+        )
+    }
+}
+
+private val HiddenBadgeColor = Color(0xFFAFAFB7)        // muted grey-blue
+private val MinimizedBadgeColor = Color(0xFFFFBD2E)     // macOS yellow traffic-light
+private val FullscreenBadgeColor = Color(0xFF28C940)    // macOS green traffic-light
 
 @OptIn(ExperimentalLayoutApi::class)
 @Composable
@@ -210,6 +266,7 @@ private fun SwitcherPanel(
                             name = entry.app.name,
                             pid = entry.app.pid,
                             iconBytes = iconsByPid[entry.app.pid],
+                            isHidden = entry.app.isHidden,
                             windows = entry.windows,
                             shownWindowCount = entry.shownWindowCount,
                             isSelected = appIndex == state.cursor.appIndex,
@@ -232,6 +289,7 @@ private fun AppCell(
     name: String,
     pid: Int,
     iconBytes: ByteArray?,
+    isHidden: Boolean,
     windows: List<com.shish.kaltswitch.model.Window>,
     shownWindowCount: Int,
     isSelected: Boolean,
@@ -262,7 +320,21 @@ private fun AppCell(
         horizontalAlignment = Alignment.CenterHorizontally,
         verticalArrangement = Arrangement.spacedBy(4.dp),
     ) {
-        AppIconBox(pid = pid, iconBytes = iconBytes, name = name)
+        // Stack the hidden-status badge on top-right of the icon. Box uses
+        // the icon's intrinsic size; the badge is positioned with
+        // Alignment.TopEnd and a small inset so it slightly overhangs the
+        // icon's rounded corner — readable but not cropped.
+        Box(contentAlignment = Alignment.TopEnd) {
+            AppIconBox(pid = pid, iconBytes = iconBytes, name = name)
+            if (isHidden) {
+                StatusBadge(
+                    glyph = "−",
+                    background = HiddenBadgeColor,
+                    contentColor = Color.White,
+                    modifier = Modifier.padding(top = (-2).dp, end = (-2).dp),
+                )
+            }
+        }
         Text(
             name,
             color = nameColor,
@@ -300,6 +372,8 @@ private fun AppCell(
                         WindowTitleRow(
                             title = effectiveWindowTitle(w.title, name),
                             isActive = isSelected && i == selectedWindowIndex,
+                            isMinimized = w.isMinimized,
+                            isFullscreen = w.isFullscreen,
                             onHover = { onHoverWindow(i) },
                             onClick = { onClickWindow(i) },
                         )
@@ -343,12 +417,14 @@ private fun AppIconBox(pid: Int, iconBytes: ByteArray?, name: String) {
 private fun WindowTitleRow(
     title: String,
     isActive: Boolean,
+    isMinimized: Boolean,
+    isFullscreen: Boolean,
     onHover: () -> Unit,
     onClick: () -> Unit,
 ) {
     val bg = if (isActive) AccentColor else Color.Transparent
     val fg = if (isActive) Color.Black else Color(0xFFBBBBBB)
-    Box(
+    Row(
         Modifier
             .fillMaxWidth()
             .clip(RoundedCornerShape(4.dp))
@@ -359,6 +435,8 @@ private fun WindowTitleRow(
             .onPointerEvent(PointerEventType.Enter) { onHover() }
             .pointerInput(Unit) { detectTapGestures(onTap = { onClick() }) }
             .padding(horizontal = 6.dp, vertical = 2.dp),
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(4.dp),
     ) {
         Text(
             title,
@@ -366,6 +444,15 @@ private fun WindowTitleRow(
             style = MaterialTheme.typography.bodySmall,
             maxLines = 1,
             overflow = TextOverflow.Ellipsis,
+            modifier = Modifier.weight(1f, fill = true),
         )
+        // Trailing status badge. macOS doesn't simultaneously minimize +
+        // fullscreen a window (minimized takes precedence visually if both
+        // ever showed up), so we render at most one.
+        if (isMinimized) {
+            StatusBadge(glyph = "−", background = MinimizedBadgeColor)
+        } else if (isFullscreen) {
+            StatusBadge(glyph = "⤢", background = FullscreenBadgeColor)
+        }
     }
 }
