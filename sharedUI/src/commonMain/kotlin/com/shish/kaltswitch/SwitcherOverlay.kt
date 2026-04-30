@@ -20,7 +20,6 @@ import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
-import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.MaterialTheme
@@ -35,6 +34,8 @@ import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.ExperimentalComposeUiApi
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.ColorFilter
+import androidx.compose.ui.graphics.ColorMatrix
 import androidx.compose.ui.graphics.ImageBitmap
 import androidx.compose.ui.input.key.Key
 import androidx.compose.ui.input.key.KeyEvent
@@ -186,6 +187,16 @@ private val HiddenBadgeColor = Color(0xFFAFAFB7)        // muted grey-blue
 private val MinimizedBadgeColor = Color(0xFFFFBD2E)     // macOS yellow traffic-light
 private val FullscreenBadgeColor = Color(0xFF28C940)    // macOS green traffic-light
 
+/**
+ * Backdrop tint for *demoted* apps and windows — apps the inspector's
+ * filter rules sent to the secondary bucket, plus the trailing windows of
+ * a partially-demoted app. Faint white over the panel's blurred dark
+ * background reads as a slightly raised plate. Adjacent demoted cells'
+ * backdrops touch (via FlowRow `spacedBy(0.dp)` + outer-bg-then-padding
+ * modifier order) so a sequence of demoted apps reads as one visual block.
+ */
+private val DemoteBackdropColor = Color(0x1FFFFFFF)
+
 @OptIn(ExperimentalLayoutApi::class)
 @Composable
 private fun SwitcherPanel(
@@ -243,21 +254,18 @@ private fun SwitcherPanel(
                     // Box's animateContentSize handles the overall envelope,
                     // this one keeps the row layout itself fluid mid-flow.
                     .animateContentSize(animationSpec = tween(durationMillis = 150, easing = FastOutSlowInEasing)),
-                horizontalArrangement = Arrangement.spacedBy(6.dp),
+                // 0dp horizontal gap + each AppCell carries its own
+                // `Modifier.padding(horizontal = 3.dp)` *inside* its background.
+                // Net effect: non-demoted cells look like before (6dp visual
+                // gap), but adjacent demoted cells' grey backgrounds touch
+                // at the cell boundary so they read as one continuous block.
+                // The Center alignment handles wrapped rows that don't fill
+                // the panel width.
+                horizontalArrangement = Arrangement.spacedBy(0.dp, Alignment.CenterHorizontally),
                 verticalArrangement = Arrangement.spacedBy(8.dp),
             ) {
                 entries.forEachIndexed { appIndex, entry ->
-                    if (appIndex == withWindowsCount && withWindowsCount > 0 && withWindowsCount < entries.size) {
-                        // Vertical separator between Show and Demote app
-                        // buckets. Coloured with the accent so it reads as
-                        // a deliberate boundary, not visual noise.
-                        Spacer(
-                            Modifier
-                                .width(1.dp)
-                                .height(96.dp)
-                                .background(AccentColor)
-                        )
-                    }
+                    val isDemoted = appIndex >= withWindowsCount
                     // `key` ties the cell to its app's pid so Compose treats
                     // the same app moving in `entries` as a position change,
                     // not unmount + remount — preserving icon caching and
@@ -268,6 +276,7 @@ private fun SwitcherPanel(
                             pid = entry.app.pid,
                             iconBytes = iconsByPid[entry.app.pid],
                             isHidden = entry.app.isHidden,
+                            isDemoted = isDemoted,
                             windows = entry.windows,
                             shownWindowCount = entry.shownWindowCount,
                             isSelected = appIndex == state.cursor.appIndex,
@@ -291,6 +300,7 @@ private fun AppCell(
     pid: Int,
     iconBytes: ByteArray?,
     isHidden: Boolean,
+    isDemoted: Boolean,
     windows: List<com.shish.kaltswitch.model.Window>,
     shownWindowCount: Int,
     isSelected: Boolean,
@@ -301,13 +311,29 @@ private fun AppCell(
     onClickWindow: (Int) -> Unit,
 ) {
     val borderColor = if (isSelected) AccentColor else Color.Transparent
-    val nameColor = if (isSelected) Color.White else Color(0xFFCCCCCC)
-    // Hover/click handlers stay on the cell-level Column so the entire app
-    // cell (icon + name + window list) is one click target. Per-window rows
-    // override the windowIndex via their own handlers.
+    // Demoted cell name: dim further than the normal-cell-non-selected one.
+    val nameColor = when {
+        isSelected -> Color.White
+        isDemoted -> Color(0xFF8A8A8A)
+        else -> Color(0xFFCCCCCC)
+    }
+    // Modifier order matters here. Outer-to-inner:
+    //   widthIn   → cell occupies a strip of the FlowRow
+    //   background(grey if demoted) → fills the WHOLE cell strip; with
+    //     FlowRow's spacedBy(0.dp) two adjacent demoted cells' backgrounds
+    //     touch at the boundary and read as one continuous block
+    //   padding(horizontal = 3.dp) → adds visual gap *inside* the cell;
+    //     the demote backdrop already filled the gap area, so the visual
+    //     join is gap-free across consecutive demoted cells while still
+    //     giving non-demoted cells a 6dp content-to-content gap as before
+    //   clip+border → applied to the inner content area; selection ring
+    //     hugs the visible icon/name/list, not the demote backdrop
+    //   animateContentSize / pointer / inner padding → as before
     Column(
         Modifier
-            .widthIn(min = 80.dp, max = 120.dp)
+            .widthIn(min = 92.dp, max = 132.dp)
+            .let { if (isDemoted) it.background(DemoteBackdropColor) else it }
+            .padding(horizontal = 3.dp)
             .clip(RoundedCornerShape(10.dp))
             .border(2.dp, borderColor, RoundedCornerShape(10.dp))
             // Smoothly resize the cell when its window list changes (e.g.
@@ -332,7 +358,7 @@ private fun AppCell(
         // first time the user hid an app via cmd+H), via Compose's
         // `PaddingElement.<init>` precondition check.
         Box(contentAlignment = Alignment.TopEnd) {
-            AppIconBox(pid = pid, iconBytes = iconBytes, name = name)
+            AppIconBox(pid = pid, iconBytes = iconBytes, name = name, isDemoted = isDemoted)
             if (isHidden) {
                 StatusBadge(
                     glyph = "−",
@@ -349,40 +375,100 @@ private fun AppCell(
             style = MaterialTheme.typography.labelMedium,
             maxLines = 1,
             overflow = TextOverflow.Ellipsis,
+            // Center on the icon's column. Without this the text would
+            // ellipsis from the right edge under the cell's content
+            // arrangement, looking off-balance under a centered icon.
+            textAlign = androidx.compose.ui.text.style.TextAlign.Center,
             modifier = Modifier.fillMaxWidth(),
         )
         if (windows.isNotEmpty()) {
             Spacer(Modifier.height(2.dp))
+            WindowList(
+                appName = name,
+                windows = windows,
+                shownWindowCount = shownWindowCount,
+                isAppSelected = isSelected,
+                selectedWindowIndex = selectedWindowIndex,
+                onHoverWindow = onHoverWindow,
+                onClickWindow = onClickWindow,
+            )
+        }
+    }
+}
+
+/**
+ * Two-container window list: the leading `shownWindowCount` rows render
+ * directly on the cell background; the trailing rows are wrapped in a
+ * grey-backed Column so the demote bucket reads as a unified block (the
+ * same role the old colour-accent hairline served, but visually softer
+ * and consistent with the app-level demote backdrop).
+ *
+ * Per-window callbacks receive the **full** index in the original
+ * `windows` list — the split is purely visual; the controller still
+ * navigates `windows[i]`.
+ */
+@OptIn(ExperimentalComposeUiApi::class)
+@Composable
+private fun WindowList(
+    appName: String,
+    windows: List<com.shish.kaltswitch.model.Window>,
+    shownWindowCount: Int,
+    isAppSelected: Boolean,
+    selectedWindowIndex: Int,
+    onHoverWindow: (Int) -> Unit,
+    onClickWindow: (Int) -> Unit,
+) {
+    val showWindows = if (shownWindowCount <= 0) emptyList() else windows.take(shownWindowCount)
+    val demoteWindows = if (shownWindowCount >= windows.size) emptyList() else windows.drop(shownWindowCount)
+    Column(
+        // animateContentSize on the outer wrapper so removing/adding rows
+        // (or moving a row from the show bucket into demote when filters
+        // change live) reflows smoothly.
+        Modifier
+            .fillMaxWidth()
+            .animateContentSize(animationSpec = tween(durationMillis = 150, easing = FastOutSlowInEasing)),
+        verticalArrangement = Arrangement.spacedBy(2.dp),
+    ) {
+        if (showWindows.isNotEmpty()) {
+            Column(
+                Modifier.fillMaxWidth(),
+                verticalArrangement = Arrangement.spacedBy(1.dp),
+            ) {
+                showWindows.forEachIndexed { i, w ->
+                    androidx.compose.runtime.key(w.id) {
+                        WindowTitleRow(
+                            title = effectiveWindowTitle(w.title, appName),
+                            isActive = isAppSelected && i == selectedWindowIndex,
+                            isMinimized = w.isMinimized,
+                            isFullscreen = w.isFullscreen,
+                            isDemoted = false,
+                            onHover = { onHoverWindow(i) },
+                            onClick = { onClickWindow(i) },
+                        )
+                    }
+                }
+            }
+        }
+        if (demoteWindows.isNotEmpty()) {
             Column(
                 Modifier
                     .fillMaxWidth()
-                    // When a window of this app closes, the row unmounts and
-                    // the column reflows. animateContentSize on the column
-                    // gives the surviving rows a smooth shift instead of an
-                    // instant jump.
-                    .animateContentSize(animationSpec = tween(durationMillis = 150, easing = FastOutSlowInEasing)),
+                    .clip(RoundedCornerShape(4.dp))
+                    .background(DemoteBackdropColor)
+                    .padding(horizontal = 2.dp, vertical = 2.dp),
                 verticalArrangement = Arrangement.spacedBy(1.dp),
             ) {
-                windows.forEachIndexed { i, w ->
-                    if (i == shownWindowCount && shownWindowCount > 0 && shownWindowCount < windows.size) {
-                        // Horizontal hairline between Show and Demote
-                        // windows of the same app. Same accent colour as the
-                        // app-bucket separator above for visual consistency.
-                        Box(
-                            Modifier
-                                .fillMaxWidth()
-                                .height(1.dp)
-                                .background(AccentColor)
-                        )
-                    }
+                demoteWindows.forEachIndexed { i, w ->
+                    val fullIndex = i + shownWindowCount
                     androidx.compose.runtime.key(w.id) {
                         WindowTitleRow(
-                            title = effectiveWindowTitle(w.title, name),
-                            isActive = isSelected && i == selectedWindowIndex,
+                            title = effectiveWindowTitle(w.title, appName),
+                            isActive = isAppSelected && fullIndex == selectedWindowIndex,
                             isMinimized = w.isMinimized,
                             isFullscreen = w.isFullscreen,
-                            onHover = { onHoverWindow(i) },
-                            onClick = { onClickWindow(i) },
+                            isDemoted = true,
+                            onHover = { onHoverWindow(fullIndex) },
+                            onClick = { onClickWindow(fullIndex) },
                         )
                     }
                 }
@@ -392,13 +478,27 @@ private fun AppCell(
 }
 
 @Composable
-private fun AppIconBox(pid: Int, iconBytes: ByteArray?, name: String) {
+private fun AppIconBox(pid: Int, iconBytes: ByteArray?, name: String, isDemoted: Boolean) {
     val icon: ImageBitmap? = rememberAppIcon(pid, iconBytes)
+    // Light desaturation for demoted icons — keeps app branding identifiable
+    // (full grayscale erases too much information when there are 30 demoted
+    // apps in a row) while still clearly tagging the bucket. The matrix is
+    // remembered per-flag so we don't reallocate it every recomposition.
+    val demoteColorFilter = remember(isDemoted) {
+        if (isDemoted) {
+            ColorFilter.colorMatrix(ColorMatrix().apply { setToSaturation(0.3f) })
+        } else null
+    }
     Box(
         Modifier
-            .size(64.dp)
-            .clip(RoundedCornerShape(12.dp))
-            .background(Color(0x22FFFFFF)),
+            // 80dp (was 64dp). The icon is the strongest visual anchor for
+            // app identification, especially in a row of unfamiliar apps;
+            // bumping size is the cheapest readability win.
+            .size(80.dp),
+        // No background — sits directly on the panel's blur. The Color(0x22FFFFFF)
+        // backplate the previous version had created a subtle "icon tray"
+        // effect that diluted the icon's own design (especially for icons
+        // with their own circular backgrounds, like Safari).
         contentAlignment = Alignment.Center,
     ) {
         if (icon != null) {
@@ -406,14 +506,15 @@ private fun AppIconBox(pid: Int, iconBytes: ByteArray?, name: String) {
                 bitmap = icon,
                 contentDescription = name,
                 contentScale = ContentScale.Fit,
-                modifier = Modifier.fillMaxSize().padding(4.dp),
+                modifier = Modifier.fillMaxSize(),
+                colorFilter = demoteColorFilter,
             )
         } else {
             Text(
                 name.take(1).uppercase(),
-                color = Color(0xFFEEEEEE),
+                color = if (isDemoted) Color(0xFF8A8A8A) else Color(0xFFEEEEEE),
                 fontWeight = FontWeight.Bold,
-                fontSize = 28.sp,
+                fontSize = 32.sp,
             )
         }
     }
@@ -426,11 +527,16 @@ private fun WindowTitleRow(
     isActive: Boolean,
     isMinimized: Boolean,
     isFullscreen: Boolean,
+    isDemoted: Boolean,
     onHover: () -> Unit,
     onClick: () -> Unit,
 ) {
     val bg = if (isActive) AccentColor else Color.Transparent
-    val fg = if (isActive) Color.Black else Color(0xFFBBBBBB)
+    val fg = when {
+        isActive -> Color.Black
+        isDemoted -> Color(0xFF8A8A8A)
+        else -> Color(0xFFBBBBBB)
+    }
     Row(
         Modifier
             .fillMaxWidth()
