@@ -90,7 +90,11 @@ val SeedRules: List<Rule> = listOf(
         enabled = false,
         predicates = listOf(
             ActivationPolicyPredicate(value = PolicyValue.Accessory),
-            RolePredicate(op = StringOp.Eq, value = "Window"),
+            // AX role values include the "AX" prefix verbatim; a literal
+            // match against "Window" never matched anything because the
+            // stored value is "AXWindow". The inspector now shows the
+            // real AX-prefixed name (iter27).
+            RolePredicate(op = StringOp.Eq, value = "AXWindow"),
         ),
         outcome = TriFilter.Show,
     ),

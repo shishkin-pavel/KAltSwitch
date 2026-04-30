@@ -310,8 +310,15 @@ private fun WindowRow(view: WindowView, appName: String, depth: Int, isActive: B
     val pictogram = windowPictogram(view, isActive)
     val tags = buildList {
         if (view.mode != TriFilter.Show) add(view.mode.name.lowercase())
-        if (!w.role.isNullOrBlank()) add("role: " + w.role.removePrefix("AX"))
-        if (!w.subrole.isNullOrBlank()) add("subrole: " + w.subrole.removePrefix("AX"))
+        // Show role/subrole verbatim (with the "AX" prefix AX returns).
+        // Pre-iter27 the inspector silently stripped the prefix on
+        // display, but rules stored "AXWindow" — meaning a user who
+        // typed "Window" into a RolePredicate(Eq) got no match while
+        // Contains worked as a substring. Honest naming closes the
+        // gap: what you see in the inspector is what you put in the
+        // rule.
+        if (!w.role.isNullOrBlank()) add("role: " + w.role)
+        if (!w.subrole.isNullOrBlank()) add("subrole: " + w.subrole)
         if (w.isMain) add("main")
         if (w.width != null && w.height != null) add("${w.width.toInt()}×${w.height.toInt()}")
         if (view.children.isNotEmpty()) add("${view.children.size} child")
