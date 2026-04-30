@@ -471,3 +471,100 @@ and the no-saved-frame first-launch path.
 a way that can't be expressed as pure frame math (e.g. stage-manager
 adaptations on iPadOS-style sidebars).
 
+---
+
+## 14. Live switcher snapshot, identity-stored cursor
+
+**Question.** Until iter14 the switcher captured a `SwitcherSnapshot`
+once at session-open and froze it for the duration. New windows opening
+mid-session were invisible; closed windows kept "ghost" cells the user
+could navigate to. Should the snapshot be live, and if so how do we keep
+the cursor stable?
+
+**Sources.** User-driven decision after a code-walk-through. The
+existing gate `WorldStore.switcherActive` already prevents log mutation
+during a session, so app/window *order* stays frozen — only the
+*structure* (which apps/windows exist) was the open question.
+
+**Decision.** Make the snapshot derived for the duration of the session,
+gated on the same flow combine the inspector uses
+(`store.state × filters × currentSpaceOnly × visibleSpaceIds`). Pair
+this with an **identity-based cursor**: `SwitcherState` stores
+`selectedAppPid` + `selectedWindowId` rather than `(appIndex,
+windowIndex)`, with `cursor: SwitcherCursor` computed against the
+current snapshot. The visual rules:
+
+  - New window/app appears → cursor unchanged.
+  - Disappeared window/app **not** under cursor → cursor unchanged.
+  - Disappeared window **under** cursor → move to right-neighbour in
+    the *previous* snapshot's window order, falling back leftward if
+    no right-neighbour survives.
+  - Disappeared app **under** cursor → analogous: right-neighbour app
+    in the previous snapshot's app order, with leftward fallback. The
+    new selection lands on its first (newest) window or app-level cell.
+  - Empty snapshot → identity sentinel `(-1, null)`.
+
+`refreshedWith(newSnapshot)` is the no-op-fast-path entry point and
+returns `this` when the snapshot is structurally equal. The Swift
+host needs no changes — `SwitcherUiState` stays the only signal it
+observes.
+
+**Confidence.** High. The model is fully-tested in commonTest (8
+`refreshedWith` cases + 5 controller integration cases through
+`WorldStore` mutations).
+
+**Revisit-trigger.** First user feedback that the right-neighbour
+fallback feels wrong (e.g. "I expected the cursor to go *left* when X
+disappeared at the end of the row"). The policy is encoded in
+`pickWindowNeighbour` / `pickAppNeighbour` — easy to swap if needed.
+
+---
+
+## 15. Real desktop blur (NSVisualEffectView) over pure-Compose overlay
+
+**Question.** The switcher overlay panel hosts a Compose UI on top of an
+`NSVisualEffectView` blur backdrop sized via the existing
+`onPanelSize` Compose→Swift bridge. Is the blur worth the extra cross-
+boundary plumbing, or should we go pure Compose (`Box.background(
+Color(0x...))` for a flat translucent fill)?
+
+**Decision.** Keep the blur. Reasons:
+
+* `NSVisualEffectView` samples the desktop / windows behind the panel.
+  Compose / Skia have no access to the framebuffer behind the host
+  window, so a Compose-only path can only fake blur with a static
+  translucent fill — visibly less polished and not what macOS users
+  expect from cmd+tab.
+* The size-bridge cost is low: one `onSizeChanged` per layout pass on
+  the Compose side, one matching `setFrame` on the Swift side, plus
+  the rounded mask image computed once. No per-frame work in steady
+  state.
+* iter15's `animateContentSize` exercises the bridge ~60× per second
+  during transitions and the visual lockstep is already correct, so
+  the bridge isn't a bottleneck for the new motion design either.
+
+**Revisit-trigger / future-fallback (option B).** If we ever want to
+delete the bridge entirely, the migration is roughly:
+
+  1. Drop `WorldStore.switcherPanelSize` and the
+     `observeSwitcherPanelSize` Kotlin→Swift function.
+  2. Drop `SwitcherOverlayWindow.installBlurBackdrop` /
+     `updateBlurFrame` / `roundedMaskImage` and the
+     `NSVisualEffectView` instance — the panel becomes a plain
+     transparent host whose `contentView` is the Compose NSView.
+  3. In `SwitcherOverlay`, replace the `Box.background(Color(0x66...))`
+     tint with a higher-alpha solid (or a faux-blur via a translucent
+     blurred image asset; Skia can blur a baked image cheaply but not
+     live desktop content).
+  4. Remove the AccessibilityInspector "Reduce transparency" fallback
+     comment — irrelevant once the surface is fully Compose.
+
+Estimated cost: ~80 LOC removed, ~5–10 LOC added on the Compose side.
+Visual cost: the panel reads as flat translucent rather than blurred —
+a step backwards on macOS aesthetic terms unless paired with a
+different design language.
+
+**Confidence.** High that A is the right call now; B is a clean
+alternative if the architectural-simplicity argument ever beats the
+real-blur aesthetic.
+
