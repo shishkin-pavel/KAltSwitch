@@ -249,6 +249,18 @@ private fun SwitcherPanel(
                 }
                 .padding(horizontal = 16.dp, vertical = 12.dp),
         ) {
+            // Split entries into the show bucket (rendered as direct
+            // children of the outer FlowRow) and the demote bucket
+            // (wrapped in a single grey-backdrop Box). Wrapping all
+            // demoted cells in ONE Box gives them a uniform background
+            // height regardless of any single cell's content height — a
+            // demoted app *with* windows is taller than its windowless
+            // siblings, but the Box's bg fills the row's max height so
+            // shorter cells no longer leave a transparent gap below them.
+            val showEntries = entries.subList(0, withWindowsCount.coerceAtMost(entries.size))
+            val demoteEntries = if (withWindowsCount < entries.size) {
+                entries.subList(withWindowsCount, entries.size)
+            } else emptyList()
             FlowRow(
                 modifier = Modifier
                     // FlowRow's measured size shrinks when an AppCell unmounts
@@ -256,40 +268,18 @@ private fun SwitcherPanel(
                     // Box's animateContentSize handles the overall envelope,
                     // this one keeps the row layout itself fluid mid-flow.
                     .animateContentSize(animationSpec = tween(durationMillis = 150, easing = FastOutSlowInEasing)),
-                // 0dp horizontal gap + each AppCell carries its own
-                // `Modifier.padding(horizontal = 3.dp)` *inside* its background.
-                // Net effect: non-demoted cells look like before (6dp visual
-                // gap), but adjacent demoted cells' grey backgrounds touch
-                // at the cell boundary so they read as one continuous block.
-                // The Center alignment handles wrapped rows that don't fill
-                // the panel width.
-                horizontalArrangement = Arrangement.spacedBy(0.dp, Alignment.CenterHorizontally),
+                horizontalArrangement = Arrangement.spacedBy(6.dp, Alignment.CenterHorizontally),
                 verticalArrangement = Arrangement.spacedBy(8.dp),
             ) {
-                entries.forEachIndexed { appIndex, entry ->
-                    val isDemoted = appIndex >= withWindowsCount
-                    // First / last in the demote sequence — drives which
-                    // corners of the cell's grey backdrop are rounded.
-                    // Single-row case (most common) gets a clean
-                    // pill-shaped block. Wrapping multiple rows of demoted
-                    // apps would mis-round the wrap edges; FlowRow doesn't
-                    // expose row boundaries, so we accept that compromise
-                    // for the typical 1-row layout.
-                    val isFirstDemoted = isDemoted && appIndex == withWindowsCount
-                    val isLastDemoted = isDemoted && appIndex == entries.lastIndex
-                    // `key` ties the cell to its app's pid so Compose treats
-                    // the same app moving in `entries` as a position change,
-                    // not unmount + remount — preserving icon caching and
-                    // any future per-cell transition state.
+                showEntries.forEachIndexed { showIndex, entry ->
+                    val appIndex = showIndex
                     androidx.compose.runtime.key(entry.app.pid) {
                         AppCell(
                             name = entry.app.name,
                             pid = entry.app.pid,
                             iconBytes = iconsByPid[entry.app.pid],
                             isHidden = entry.app.isHidden,
-                            isDemoted = isDemoted,
-                            isFirstDemoted = isFirstDemoted,
-                            isLastDemoted = isLastDemoted,
+                            isDemoted = false,
                             windows = entry.windows,
                             shownWindowCount = entry.shownWindowCount,
                             isSelected = appIndex == state.cursor.appIndex,
@@ -299,6 +289,40 @@ private fun SwitcherPanel(
                             onClickApp = { onPointAt(appIndex, null); onCommit() },
                             onClickWindow = { wi -> onPointAt(appIndex, wi); onCommit() },
                         )
+                    }
+                }
+                if (demoteEntries.isNotEmpty()) {
+                    Box(
+                        modifier = Modifier
+                            .clip(RoundedCornerShape(10.dp))
+                            .background(DemoteBackdropColor)
+                            .padding(horizontal = 4.dp, vertical = 4.dp),
+                    ) {
+                        FlowRow(
+                            horizontalArrangement = Arrangement.spacedBy(6.dp, Alignment.CenterHorizontally),
+                            verticalArrangement = Arrangement.spacedBy(6.dp),
+                        ) {
+                            demoteEntries.forEachIndexed { demoteIndex, entry ->
+                                val appIndex = withWindowsCount + demoteIndex
+                                androidx.compose.runtime.key(entry.app.pid) {
+                                    AppCell(
+                                        name = entry.app.name,
+                                        pid = entry.app.pid,
+                                        iconBytes = iconsByPid[entry.app.pid],
+                                        isHidden = entry.app.isHidden,
+                                        isDemoted = true,
+                                        windows = entry.windows,
+                                        shownWindowCount = entry.shownWindowCount,
+                                        isSelected = appIndex == state.cursor.appIndex,
+                                        selectedWindowIndex = if (appIndex == state.cursor.appIndex) state.cursor.windowIndex else -1,
+                                        onHoverApp = { onPointAt(appIndex, null) },
+                                        onHoverWindow = { wi -> onPointAt(appIndex, wi) },
+                                        onClickApp = { onPointAt(appIndex, null); onCommit() },
+                                        onClickWindow = { wi -> onPointAt(appIndex, wi); onCommit() },
+                                    )
+                                }
+                            }
+                        }
                     }
                 }
             }
@@ -314,8 +338,6 @@ private fun AppCell(
     iconBytes: ByteArray?,
     isHidden: Boolean,
     isDemoted: Boolean,
-    isFirstDemoted: Boolean,
-    isLastDemoted: Boolean,
     windows: List<com.shish.kaltswitch.model.Window>,
     shownWindowCount: Int,
     isSelected: Boolean,
@@ -326,48 +348,20 @@ private fun AppCell(
     onClickWindow: (Int) -> Unit,
 ) {
     val borderColor = if (isSelected) AccentColor else Color.Transparent
-    // Demoted text — keep close to the non-selected non-demoted colours
-    // so it stays legible against the darker demote backdrop. The demote
-    // cue is carried by the backdrop tint + icon desaturation, not by
-    // dimming text into illegibility.
-    val nameColor = when {
-        isSelected -> Color.White
-        isDemoted -> Color(0xFFCCCCCC)
-        else -> Color(0xFFCCCCCC)
-    }
-    // Modifier order matters here. Outer-to-inner:
-    //   widthIn   → cell occupies a strip of the FlowRow
-    //   clip(demoteShape) → outer shape with topStart/bottomStart rounded
-    //     only on the FIRST demoted cell, topEnd/bottomEnd only on the
-    //     LAST. Middle demoted cells have all corners flat → adjacent
-    //     cells' backdrops touch at perfectly straight seams = one
-    //     continuous rounded-rectangle block.
-    //   background(grey if demoted) → fills the clipped (rounded outer)
-    //     shape. Combined with FlowRow's spacedBy(0.dp), adjacent demoted
-    //     cells' backgrounds touch at the boundary.
-    //   padding(horizontal = 3.dp) → adds visual gap *inside* the cell;
-    //     the demote backdrop already filled the gap area, so the visual
-    //     join is gap-free across consecutive demoted cells while still
-    //     giving non-demoted cells a 6dp content-to-content gap as before
-    //   clip+border → applied to the inner content area; selection ring
-    //     hugs the visible icon/name/list, not the demote backdrop
-    //   animateContentSize / pointer / inner padding → as before
-    val demoteShape = if (isDemoted) {
-        RoundedCornerShape(
-            topStart = if (isFirstDemoted) 10.dp else 0.dp,
-            bottomStart = if (isFirstDemoted) 10.dp else 0.dp,
-            topEnd = if (isLastDemoted) 10.dp else 0.dp,
-            bottomEnd = if (isLastDemoted) 10.dp else 0.dp,
-        )
-    } else null
+    // The demote cue is carried by the parent Box's backdrop + the icon
+    // desaturation; the cell's text colour matches the normal-row colour
+    // so it stays legible against the darker backdrop.
+    val nameColor = if (isSelected) Color.White else Color(0xFFCCCCCC)
+    // The demote backdrop now lives on the parent Box (not per-cell), so
+    // the cell's modifier chain is just the inner clip + selection
+    // border + interaction. Doing the bg per-cell broke under varying
+    // cell heights — a demoted app with windows is taller than its
+    // windowless siblings; per-cell bg leaves a transparent strip below
+    // the shorter cells. The Box-wrapper fills uniform height across the
+    // whole demote section.
     Column(
         Modifier
             .widthIn(min = 92.dp, max = 132.dp)
-            .let { m ->
-                if (demoteShape != null) m.clip(demoteShape).background(DemoteBackdropColor)
-                else m
-            }
-            .padding(horizontal = 3.dp)
             .clip(RoundedCornerShape(10.dp))
             .border(2.dp, borderColor, RoundedCornerShape(10.dp))
             // Smoothly resize the cell when its window list changes (e.g.
