@@ -190,12 +190,14 @@ private val FullscreenBadgeColor = Color(0xFF28C940)    // macOS green traffic-l
 /**
  * Backdrop tint for *demoted* apps and windows — apps the inspector's
  * filter rules sent to the secondary bucket, plus the trailing windows of
- * a partially-demoted app. Faint white over the panel's blurred dark
- * background reads as a slightly raised plate. Adjacent demoted cells'
- * backdrops touch (via FlowRow `spacedBy(0.dp)` + outer-bg-then-padding
- * modifier order) so a sequence of demoted apps reads as one visual block.
+ * a partially-demoted app. A faint *black* tint over the panel's blurred
+ * background reads as a recessed/sunken plate (vs the previous 0x1FFFFFFF
+ * "raised" feel which had poor text contrast). Adjacent demoted cells'
+ * backdrops touch (via FlowRow `spacedBy(0.dp)` + outer-clip-then-bg
+ * modifier order) and share rounded corners only on the block's outer
+ * edges (first/last demoted cell), so a sequence reads as one visual block.
  */
-private val DemoteBackdropColor = Color(0x1FFFFFFF)
+private val DemoteBackdropColor = Color(0x33000000)
 
 @OptIn(ExperimentalLayoutApi::class)
 @Composable
@@ -266,6 +268,15 @@ private fun SwitcherPanel(
             ) {
                 entries.forEachIndexed { appIndex, entry ->
                     val isDemoted = appIndex >= withWindowsCount
+                    // First / last in the demote sequence — drives which
+                    // corners of the cell's grey backdrop are rounded.
+                    // Single-row case (most common) gets a clean
+                    // pill-shaped block. Wrapping multiple rows of demoted
+                    // apps would mis-round the wrap edges; FlowRow doesn't
+                    // expose row boundaries, so we accept that compromise
+                    // for the typical 1-row layout.
+                    val isFirstDemoted = isDemoted && appIndex == withWindowsCount
+                    val isLastDemoted = isDemoted && appIndex == entries.lastIndex
                     // `key` ties the cell to its app's pid so Compose treats
                     // the same app moving in `entries` as a position change,
                     // not unmount + remount — preserving icon caching and
@@ -277,6 +288,8 @@ private fun SwitcherPanel(
                             iconBytes = iconsByPid[entry.app.pid],
                             isHidden = entry.app.isHidden,
                             isDemoted = isDemoted,
+                            isFirstDemoted = isFirstDemoted,
+                            isLastDemoted = isLastDemoted,
                             windows = entry.windows,
                             shownWindowCount = entry.shownWindowCount,
                             isSelected = appIndex == state.cursor.appIndex,
@@ -301,6 +314,8 @@ private fun AppCell(
     iconBytes: ByteArray?,
     isHidden: Boolean,
     isDemoted: Boolean,
+    isFirstDemoted: Boolean,
+    isLastDemoted: Boolean,
     windows: List<com.shish.kaltswitch.model.Window>,
     shownWindowCount: Int,
     isSelected: Boolean,
@@ -311,17 +326,25 @@ private fun AppCell(
     onClickWindow: (Int) -> Unit,
 ) {
     val borderColor = if (isSelected) AccentColor else Color.Transparent
-    // Demoted cell name: dim further than the normal-cell-non-selected one.
+    // Demoted text — keep close to the non-selected non-demoted colours
+    // so it stays legible against the darker demote backdrop. The demote
+    // cue is carried by the backdrop tint + icon desaturation, not by
+    // dimming text into illegibility.
     val nameColor = when {
         isSelected -> Color.White
-        isDemoted -> Color(0xFF8A8A8A)
+        isDemoted -> Color(0xFFCCCCCC)
         else -> Color(0xFFCCCCCC)
     }
     // Modifier order matters here. Outer-to-inner:
     //   widthIn   → cell occupies a strip of the FlowRow
-    //   background(grey if demoted) → fills the WHOLE cell strip; with
-    //     FlowRow's spacedBy(0.dp) two adjacent demoted cells' backgrounds
-    //     touch at the boundary and read as one continuous block
+    //   clip(demoteShape) → outer shape with topStart/bottomStart rounded
+    //     only on the FIRST demoted cell, topEnd/bottomEnd only on the
+    //     LAST. Middle demoted cells have all corners flat → adjacent
+    //     cells' backdrops touch at perfectly straight seams = one
+    //     continuous rounded-rectangle block.
+    //   background(grey if demoted) → fills the clipped (rounded outer)
+    //     shape. Combined with FlowRow's spacedBy(0.dp), adjacent demoted
+    //     cells' backgrounds touch at the boundary.
     //   padding(horizontal = 3.dp) → adds visual gap *inside* the cell;
     //     the demote backdrop already filled the gap area, so the visual
     //     join is gap-free across consecutive demoted cells while still
@@ -329,10 +352,21 @@ private fun AppCell(
     //   clip+border → applied to the inner content area; selection ring
     //     hugs the visible icon/name/list, not the demote backdrop
     //   animateContentSize / pointer / inner padding → as before
+    val demoteShape = if (isDemoted) {
+        RoundedCornerShape(
+            topStart = if (isFirstDemoted) 10.dp else 0.dp,
+            bottomStart = if (isFirstDemoted) 10.dp else 0.dp,
+            topEnd = if (isLastDemoted) 10.dp else 0.dp,
+            bottomEnd = if (isLastDemoted) 10.dp else 0.dp,
+        )
+    } else null
     Column(
         Modifier
             .widthIn(min = 92.dp, max = 132.dp)
-            .let { if (isDemoted) it.background(DemoteBackdropColor) else it }
+            .let { m ->
+                if (demoteShape != null) m.clip(demoteShape).background(DemoteBackdropColor)
+                else m
+            }
             .padding(horizontal = 3.dp)
             .clip(RoundedCornerShape(10.dp))
             .border(2.dp, borderColor, RoundedCornerShape(10.dp))
@@ -512,7 +546,10 @@ private fun AppIconBox(pid: Int, iconBytes: ByteArray?, name: String, isDemoted:
         } else {
             Text(
                 name.take(1).uppercase(),
-                color = if (isDemoted) Color(0xFF8A8A8A) else Color(0xFFEEEEEE),
+                // Slightly dimmer when demoted but still readable on the
+                // darker backdrop. The desaturation matrix doesn't apply
+                // to this fallback Text path.
+                color = if (isDemoted) Color(0xFFCCCCCC) else Color(0xFFEEEEEE),
                 fontWeight = FontWeight.Bold,
                 fontSize = 32.sp,
             )
@@ -534,7 +571,9 @@ private fun WindowTitleRow(
     val bg = if (isActive) AccentColor else Color.Transparent
     val fg = when {
         isActive -> Color.Black
-        isDemoted -> Color(0xFF8A8A8A)
+        // Demoted titles share the normal-row colour; the demote cue
+        // is the backdrop, not the text dim — the previous 0x8A was
+        // unreadable against any backdrop tint.
         else -> Color(0xFFBBBBBB)
     }
     Row(
