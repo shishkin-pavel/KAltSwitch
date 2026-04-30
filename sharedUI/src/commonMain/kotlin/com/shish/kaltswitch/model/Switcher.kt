@@ -14,15 +14,54 @@ enum class NavScope { Shown, All }
 
 data class SwitcherCursor(val appIndex: Int, val windowIndex: Int)
 
+/**
+ * Live state of the switcher UI.
+ *
+ * The cursor is stored as **identity** (`selectedAppPid` + `selectedWindowId`)
+ * rather than indices. The visual position ([cursor]) is computed against
+ * [snapshot]: that way a live snapshot refresh during the session — a window
+ * closing, a new app launching — can update the snapshot without making the
+ * user's selection silently jump to whatever sits at the same index. See
+ * [refreshedWith] for the fallback rules when the selected target itself
+ * disappears.
+ *
+ * `selectedAppPid == -1` represents "no selection" (empty snapshot, transient).
+ * `selectedWindowId == null` represents an app-level cell (windowless app, or
+ * an app whose AX window list is unknown).
+ */
 data class SwitcherState(
     val snapshot: SwitcherSnapshot,
     val entry: SwitcherEntry,
-    val cursor: SwitcherCursor,
+    val selectedAppPid: Int,
+    val selectedWindowId: WindowId?,
 ) {
     val selectedAppEntry: AppEntry?
-        get() = snapshot.all.getOrNull(cursor.appIndex)
+        get() = if (selectedAppPid < 0) null
+        else snapshot.all.firstOrNull { it.app.pid == selectedAppPid }
+
     val selectedWindow: Window?
-        get() = selectedAppEntry?.windows?.getOrNull(cursor.windowIndex)
+        get() {
+            val app = selectedAppEntry ?: return null
+            val wid = selectedWindowId ?: return null
+            return app.windows.firstOrNull { it.id == wid }
+        }
+
+    /**
+     * UI-friendly indices into [snapshot]. Falls back to `(0, 0)` if the
+     * identity isn't resolvable in the current snapshot — should be
+     * unreachable while [refreshedWith] is the only path that mutates
+     * [snapshot] mid-session.
+     */
+    val cursor: SwitcherCursor
+        get() {
+            val appIndex = snapshot.all.indexOfFirst { it.app.pid == selectedAppPid }
+            if (appIndex < 0) return SwitcherCursor(0, 0)
+            val app = snapshot.all[appIndex]
+            val windowIndex = if (selectedWindowId == null) 0
+            else app.windows.indexOfFirst { it.id == selectedWindowId }
+                .takeIf { it >= 0 } ?: 0
+            return SwitcherCursor(appIndex, windowIndex)
+        }
 }
 
 sealed interface SwitcherEvent {
@@ -67,8 +106,25 @@ fun SwitcherSnapshot.defaultCursor(
     }
 }
 
-fun openSwitcher(snapshot: SwitcherSnapshot, entry: SwitcherEntry): SwitcherState =
-    SwitcherState(snapshot, entry, snapshot.defaultCursor(entry))
+fun openSwitcher(snapshot: SwitcherSnapshot, entry: SwitcherEntry): SwitcherState {
+    val initialCursor = snapshot.defaultCursor(entry)
+    val (pid, wid) = snapshot.identityAt(initialCursor)
+    return SwitcherState(
+        snapshot = snapshot,
+        entry = entry,
+        selectedAppPid = pid,
+        selectedWindowId = wid,
+    )
+}
+
+/** Resolve `(appIndex, windowIndex)` to (pid, windowId?) against this snapshot.
+ *  Returns `(-1, null)` when the snapshot is empty so an empty switcher session
+ *  has a well-defined "no selection" identity. */
+internal fun SwitcherSnapshot.identityAt(cursor: SwitcherCursor): Pair<Int, WindowId?> {
+    val app = all.getOrNull(cursor.appIndex) ?: return -1 to null
+    val wid = app.windows.getOrNull(cursor.windowIndex)?.id
+    return app.app.pid to wid
+}
 
 /**
  * Apply a navigation event under the given scope. Wraps around at the scope's
@@ -87,33 +143,146 @@ fun SwitcherState.apply(
 ): SwitcherState {
     val items = snapshot.all
     if (items.isEmpty()) return this
+    val current = cursor
 
     return when (event) {
         SwitcherEvent.NextApp -> {
             val maxIdx = snapshot.appLastIndexInScope(scope)
             if (maxIdx < 0) return this
-            val next = nextInRange(cursor.appIndex, 0, maxIdx)
-            copy(cursor = SwitcherCursor(appIndex = next, windowIndex = 0))
+            val next = nextInRange(current.appIndex, 0, maxIdx)
+            withCursor(SwitcherCursor(appIndex = next, windowIndex = 0))
         }
         SwitcherEvent.PrevApp -> {
             val maxIdx = snapshot.appLastIndexInScope(scope)
             if (maxIdx < 0) return this
-            val prev = prevInRange(cursor.appIndex, 0, maxIdx)
-            copy(cursor = SwitcherCursor(appIndex = prev, windowIndex = 0))
+            val prev = prevInRange(current.appIndex, 0, maxIdx)
+            withCursor(SwitcherCursor(appIndex = prev, windowIndex = 0))
         }
         SwitcherEvent.NextWindow -> {
-            val app = items.getOrNull(cursor.appIndex) ?: return this
+            val app = items.getOrNull(current.appIndex) ?: return this
             val maxIdx = app.windowLastIndexInScope(scope)
             if (maxIdx < 0) this
-            else copy(cursor = cursor.copy(windowIndex = nextInRange(cursor.windowIndex, 0, maxIdx)))
+            else withCursor(current.copy(windowIndex = nextInRange(current.windowIndex, 0, maxIdx)))
         }
         SwitcherEvent.PrevWindow -> {
-            val app = items.getOrNull(cursor.appIndex) ?: return this
+            val app = items.getOrNull(current.appIndex) ?: return this
             val maxIdx = app.windowLastIndexInScope(scope)
             if (maxIdx < 0) this
-            else copy(cursor = cursor.copy(windowIndex = prevInRange(cursor.windowIndex, 0, maxIdx)))
+            else withCursor(current.copy(windowIndex = prevInRange(current.windowIndex, 0, maxIdx)))
         }
     }
+}
+
+/** Set the cursor by index, translating to the persisted (pid, windowId)
+ *  identity against the current snapshot. The switcher state is index-driven
+ *  for navigation events but identity-stored, so callers from [apply] / hover
+ *  / [SwitcherController.placeOnLastInRecency] all flow through one helper. */
+fun SwitcherState.withCursor(cursor: SwitcherCursor): SwitcherState {
+    val (pid, wid) = snapshot.identityAt(cursor)
+    return copy(selectedAppPid = pid, selectedWindowId = wid)
+}
+
+/**
+ * Return a state whose [snapshot] is replaced by [newSnapshot], with the
+ * cursor identity preserved if the selected (pid, windowId) still exists,
+ * or moved to the right-neighbour in the **previous** snapshot's order if
+ * the selected target disappeared (so the cursor jump matches what the
+ * user just saw).
+ *
+ * Falls back through:
+ *   1. selected window present in same app → keep identity unchanged
+ *   2. selected window gone, app present → next-then-previous live window
+ *      from the old window order; or app-level cell if app is windowless
+ *   3. selected app gone → next-then-previous live app from the old app
+ *      order; cursor lands on its first window or app-level cell
+ *   4. nothing recoverable → first app/window of new snapshot
+ *   5. new snapshot empty → no-selection sentinel `(-1, null)`
+ *
+ * No-op (returns `this`) when the snapshot is structurally identical so
+ * data-class equality short-circuits unnecessary recompositions.
+ */
+fun SwitcherState.refreshedWith(newSnapshot: SwitcherSnapshot): SwitcherState {
+    if (newSnapshot == snapshot) return this
+
+    val newAll = newSnapshot.all
+    if (newAll.isEmpty()) {
+        return copy(snapshot = newSnapshot, selectedAppPid = -1, selectedWindowId = null)
+    }
+
+    val newApp = newAll.firstOrNull { it.app.pid == selectedAppPid }
+    if (newApp != null) {
+        // Selected app survived. Either window is still alive, or pick a
+        // neighbour from the OLD app's window order.
+        if (selectedWindowId == null) {
+            // App-level cell. If the app is still windowless or unknown, stay
+            // there; otherwise drop into its first (newest) window.
+            val nextWid = if (newApp.windows.isEmpty()) null else newApp.windows.first().id
+            return copy(snapshot = newSnapshot, selectedWindowId = nextWid)
+        }
+        if (newApp.windows.any { it.id == selectedWindowId }) {
+            return copy(snapshot = newSnapshot)
+        }
+        val replacementWid = pickWindowNeighbour(
+            oldApp = snapshot.all.firstOrNull { it.app.pid == selectedAppPid },
+            newApp = newApp,
+            disappearedWid = selectedWindowId,
+        )
+        return copy(snapshot = newSnapshot, selectedWindowId = replacementWid)
+    }
+
+    // Selected app gone. Walk the OLD app order looking for a survivor.
+    val replacementApp = pickAppNeighbour(
+        oldAll = snapshot.all,
+        newAll = newAll,
+        disappearedPid = selectedAppPid,
+    ) ?: newAll.first()
+    return copy(
+        snapshot = newSnapshot,
+        selectedAppPid = replacementApp.app.pid,
+        selectedWindowId = replacementApp.windows.firstOrNull()?.id,
+    )
+}
+
+private fun pickWindowNeighbour(
+    oldApp: AppEntry?,
+    newApp: AppEntry,
+    disappearedWid: WindowId,
+): WindowId? {
+    if (newApp.windows.isEmpty()) return null
+    val oldWindows = oldApp?.windows.orEmpty()
+    val oldIndex = oldWindows.indexOfFirst { it.id == disappearedWid }
+    if (oldIndex >= 0) {
+        // Look right first (visual right-neighbour matches what the user saw).
+        for (i in (oldIndex + 1) until oldWindows.size) {
+            val cand = oldWindows[i].id
+            if (newApp.windows.any { it.id == cand }) return cand
+        }
+        for (i in (oldIndex - 1) downTo 0) {
+            val cand = oldWindows[i].id
+            if (newApp.windows.any { it.id == cand }) return cand
+        }
+    }
+    return newApp.windows.first().id
+}
+
+private fun pickAppNeighbour(
+    oldAll: List<AppEntry>,
+    newAll: List<AppEntry>,
+    disappearedPid: Int,
+): AppEntry? {
+    val oldIndex = oldAll.indexOfFirst { it.app.pid == disappearedPid }
+    if (oldIndex < 0) return null
+    for (i in (oldIndex + 1) until oldAll.size) {
+        val candPid = oldAll[i].app.pid
+        val cand = newAll.firstOrNull { it.app.pid == candPid }
+        if (cand != null) return cand
+    }
+    for (i in (oldIndex - 1) downTo 0) {
+        val candPid = oldAll[i].app.pid
+        val cand = newAll.firstOrNull { it.app.pid == candPid }
+        if (cand != null) return cand
+    }
+    return null
 }
 
 /** Last valid app index inside [scope] in [SwitcherSnapshot.all]. -1 if empty. */

@@ -11,16 +11,20 @@ import com.shish.kaltswitch.model.NoVisibleWindowsPredicate
 import com.shish.kaltswitch.model.Rule
 import com.shish.kaltswitch.model.SwitcherEntry
 import com.shish.kaltswitch.model.SwitcherEvent
+import com.shish.kaltswitch.model.SwitcherCursor
 import com.shish.kaltswitch.model.SwitcherSnapshot
 import com.shish.kaltswitch.model.SwitcherState
 import com.shish.kaltswitch.model.TriFilter
 import com.shish.kaltswitch.model.Window
 import com.shish.kaltswitch.model.World
 import com.shish.kaltswitch.model.apply
+import com.shish.kaltswitch.model.openSwitcher
+import com.shish.kaltswitch.model.withCursor
 import com.shish.kaltswitch.store.WorldStore
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.test.advanceTimeBy
 import kotlinx.coroutines.test.advanceUntilIdle
+import kotlinx.coroutines.test.runCurrent
 import kotlinx.coroutines.test.runTest
 import kotlin.test.Test
 import kotlin.test.assertEquals
@@ -498,6 +502,133 @@ class SwitcherControllerTest {
         assertEquals(2, store.state.value.log.appOrder().first())
     }
 
+    // ---- Live snapshot: structural changes during a session --------------
+
+    @Test
+    fun liveSnapshot_newWindowAppearsForOtherApp_doesNotMoveCursor() = runTest {
+        val store = seededStore()
+        val ctl = SwitcherController(store, scope = backgroundScope)
+
+        ctl.onShortcut(SwitcherEntry.App)
+        advanceTimeBy(50)
+        // Default cursor: app=1 (IDE), window=0 (IDE A, id 21).
+        val before = ctl.ui.value?.state
+        assertEquals(2, before?.selectedAppPid)
+        assertEquals(21L, before?.selectedWindowId)
+
+        // Add a new window to Safari (NOT the selected app).
+        store.upsertWindow(Window(id = 13, pid = 1, title = "Safari C"))
+        runCurrent()
+
+        val after = ctl.ui.value?.state
+        // Cursor stays on IDE/21 by identity.
+        assertEquals(2, after?.selectedAppPid)
+        assertEquals(21L, after?.selectedWindowId)
+    }
+
+    @Test
+    fun liveSnapshot_newWindowOnSelectedApp_doesNotMoveCursor() = runTest {
+        val store = seededStore()
+        val ctl = SwitcherController(store, scope = backgroundScope)
+
+        ctl.onShortcut(SwitcherEntry.App)  // selects IDE/21
+        advanceTimeBy(50)
+
+        // IDE opens a new window. setWindows replaces the full list — keep
+        // the existing windows + the new one at the head.
+        store.setWindows(
+            pid = 2,
+            windows = listOf(
+                Window(id = 23, pid = 2, title = "IDE C"),  // brand new
+                Window(id = 21, pid = 2, title = "IDE A"),
+                Window(id = 22, pid = 2, title = "IDE B"),
+            ),
+        )
+        runCurrent()
+
+        val after = ctl.ui.value?.state
+        assertEquals(2, after?.selectedAppPid)
+        assertEquals(21L, after?.selectedWindowId)
+    }
+
+    @Test
+    fun liveSnapshot_selectedWindowCloses_cursorMovesToRightNeighbour() = runTest {
+        val store = seededStore()
+        val ctl = SwitcherController(store, scope = backgroundScope)
+
+        ctl.onShortcut(SwitcherEntry.App)  // selects IDE/21
+        advanceTimeBy(50)
+        assertEquals(21L, ctl.ui.value?.state?.selectedWindowId)
+
+        // IDE/21 disappears. Right-neighbour in the old window order was
+        // IDE/22, which is still alive → cursor moves there.
+        store.setWindows(
+            pid = 2,
+            windows = listOf(Window(id = 22, pid = 2, title = "IDE B")),
+        )
+        // `runCurrent()` runs everything scheduled at the current virtual time
+        // — that's what flushes the collector's pending resume after the
+        // MutableStateFlow update. `advanceUntilIdle()` alone isn't enough
+        // because no delay() is pending; the StateFlow emission posts as an
+        // immediate continuation that needs the current tick to drain.
+        runCurrent()
+
+        val after = ctl.ui.value?.state
+        assertEquals(2, after?.selectedAppPid)
+        assertEquals(22L, after?.selectedWindowId)
+    }
+
+    @Test
+    fun liveSnapshot_selectedAppTerminates_cursorJumpsToOldRightNeighbour() = runTest {
+        // Three apps so we can test "right neighbour" rather than "first".
+        val safari = App(pid = 1, bundleId = "safari", name = "Safari")
+        val ide = App(pid = 2, bundleId = "ide", name = "IDE")
+        val finder = App(pid = 3, bundleId = "finder", name = "Finder")
+        val w1 = Window(id = 11, pid = 1, title = "Safari A")
+        val w2 = Window(id = 21, pid = 2, title = "IDE A")
+        val w3 = Window(id = 31, pid = 3, title = "Finder A")
+        val log = ActivationLog()
+            .record(ActivationEvent(pid = 3, windowId = 31))
+            .record(ActivationEvent(pid = 2, windowId = 21))
+            .record(ActivationEvent(pid = 1, windowId = 11))  // Safari most-recent
+        val store = WorldStore(World(
+            log = log,
+            runningApps = mapOf(1 to safari, 2 to ide, 3 to finder),
+            windowsByPid = mapOf(1 to listOf(w1), 2 to listOf(w2), 3 to listOf(w3)),
+        ))
+        val ctl = SwitcherController(store, scope = backgroundScope)
+
+        ctl.onShortcut(SwitcherEntry.App)  // default cursor app=1 (IDE)
+        advanceTimeBy(50)
+        assertEquals(2, ctl.ui.value?.state?.selectedAppPid)
+
+        // IDE quits. Old order was [Safari, IDE, Finder]; right-neighbour of
+        // IDE in old order was Finder (pid 3) → cursor should land there.
+        store.removeApp(pid = 2)
+        runCurrent()
+
+        val after = ctl.ui.value?.state
+        assertEquals(3, after?.selectedAppPid)
+        assertEquals(31L, after?.selectedWindowId)
+    }
+
+    @Test
+    fun liveSnapshot_nonSelectedWindowCloses_cursorUnaffected() = runTest {
+        val store = seededStore()
+        val ctl = SwitcherController(store, scope = backgroundScope)
+
+        ctl.onShortcut(SwitcherEntry.App)  // selects IDE/21
+        advanceTimeBy(50)
+
+        // Close a Safari window (different app, different window).
+        store.setWindows(pid = 1, windows = listOf(Window(id = 11, pid = 1, title = "Safari A")))
+        runCurrent()
+
+        val after = ctl.ui.value?.state
+        assertEquals(2, after?.selectedAppPid)
+        assertEquals(21L, after?.selectedWindowId)
+    }
+
     // ---- NavScope: Shown vs All ------------------------------------------
 
     /** Snapshot with two Show apps and one Demote app, single window each. */
@@ -517,7 +648,7 @@ class SwitcherControllerTest {
     @Test
     fun apply_nextApp_shownScope_skipsDemote() {
         val s = snapshot2Show1Demote()  // Show: [A, B], Demote: [C]; size=3, shownAppCount=2
-        var state = SwitcherState(s, SwitcherEntry.App, com.shish.kaltswitch.model.SwitcherCursor(0, 0))
+        var state = openSwitcher(s, SwitcherEntry.App).withCursor(SwitcherCursor(0, 0))
         // NextApp Shown from index 0 → 1 (still in Show).
         state = state.apply(SwitcherEvent.NextApp, NavScope.Shown)
         assertEquals(1, state.cursor.appIndex)
@@ -529,7 +660,7 @@ class SwitcherControllerTest {
     @Test
     fun apply_nextApp_allScope_traversesDemote() {
         val s = snapshot2Show1Demote()
-        var state = SwitcherState(s, SwitcherEntry.App, com.shish.kaltswitch.model.SwitcherCursor(0, 0))
+        var state = openSwitcher(s, SwitcherEntry.App).withCursor(SwitcherCursor(0, 0))
         // All scope wraps over [0, 2].
         state = state.apply(SwitcherEvent.NextApp, NavScope.All)
         assertEquals(1, state.cursor.appIndex)
@@ -544,7 +675,7 @@ class SwitcherControllerTest {
         val s = snapshot2Show1Demote()
         // Cursor is parked on the demoted app (index 2). User just came in via
         // arrow keys; now they hit cmd+tab → Shown scope.
-        var state = SwitcherState(s, SwitcherEntry.App, com.shish.kaltswitch.model.SwitcherCursor(2, 0))
+        var state = openSwitcher(s, SwitcherEntry.App).withCursor(SwitcherCursor(2, 0))
         state = state.apply(SwitcherEvent.NextApp, NavScope.Shown)
         // Snap to the start of the Show range.
         assertEquals(0, state.cursor.appIndex)
@@ -559,7 +690,7 @@ class SwitcherControllerTest {
         val w3 = Window(id = 3, pid = 1, title = "demote 3")
         val entry = AppEntry(app, windows = listOf(w1, w2, w3), shownWindowCount = 2)
         val snapshot = SwitcherSnapshot(withWindows = listOf(entry), windowless = emptyList())
-        var state = SwitcherState(snapshot, SwitcherEntry.Window, com.shish.kaltswitch.model.SwitcherCursor(0, 0))
+        var state = openSwitcher(snapshot, SwitcherEntry.Window).withCursor(SwitcherCursor(0, 0))
         // NextWindow Shown wraps within [0, 1].
         state = state.apply(SwitcherEvent.NextWindow, NavScope.Shown)
         assertEquals(1, state.cursor.windowIndex)

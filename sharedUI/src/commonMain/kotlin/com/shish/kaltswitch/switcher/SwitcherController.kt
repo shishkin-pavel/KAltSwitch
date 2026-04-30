@@ -10,6 +10,8 @@ import com.shish.kaltswitch.model.WindowId
 import com.shish.kaltswitch.model.apply
 import com.shish.kaltswitch.model.filteredSwitcherSnapshot
 import com.shish.kaltswitch.model.openSwitcher
+import com.shish.kaltswitch.model.refreshedWith
+import com.shish.kaltswitch.model.withCursor
 import com.shish.kaltswitch.store.WorldStore
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Job
@@ -17,6 +19,8 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.combine
+import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.launch
 
 /**
@@ -71,6 +75,12 @@ class SwitcherController(
 
     private var showJob: Job? = null
     private var previewJob: Job? = null
+    /** Long-running collector that keeps the active session's snapshot in
+     *  sync with the live world. Started in [openSession], cancelled in
+     *  [closeSession]. Each emission goes through [SwitcherState.refreshedWith]
+     *  so the cursor identity is preserved when its target survives, or moved
+     *  to a deterministic neighbour when it disappears. */
+    private var snapshotJob: Job? = null
 
     /**
      * Auto-advance ("running") job. Started on the first hotkey press and
@@ -179,7 +189,7 @@ class SwitcherController(
             }
         }
         log("[ctl] placeOnLastInRecency entry=$entry cursor=$lastCursor")
-        _ui.value = cur.copy(state = cur.state.copy(cursor = lastCursor), previewedWindowId = null)
+        _ui.value = cur.copy(state = cur.state.withCursor(lastCursor), previewedWindowId = null)
     }
 
     /**
@@ -266,7 +276,7 @@ class SwitcherController(
         val nextCursor = SwitcherCursor(appIndex, resolvedWindowIndex)
         if (nextCursor == cur.state.cursor) return
         log("[ctl] onPointAt appIndex=$appIndex windowIndex=$windowIndex resolved=$nextCursor")
-        _ui.value = cur.copy(state = cur.state.copy(cursor = nextCursor), previewedWindowId = null)
+        _ui.value = cur.copy(state = cur.state.withCursor(nextCursor), previewedWindowId = null)
         schedulePreview()
     }
 
@@ -327,6 +337,13 @@ class SwitcherController(
             _ui.value = cur.copy(visible = true)
             schedulePreview()
         }
+
+        // Live-update the session's snapshot from `store` for the duration of
+        // the session. The collector starts AFTER `_ui.value` is set so the
+        // first emission has a state to refresh against. Identity-based
+        // cursor + `refreshedWith` make new windows / closing windows safe
+        // — see [SwitcherState.refreshedWith].
+        launchSnapshotCollector()
     }
 
     private fun navigate(event: SwitcherEvent, scope: NavScope) {
@@ -336,6 +353,42 @@ class SwitcherController(
         // Cursor moved → previous preview-raise is no longer relevant.
         _ui.value = cur.copy(state = nextState, previewedWindowId = null)
         schedulePreview()
+    }
+
+    /**
+     * Start a long-running coroutine that keeps the active session's snapshot
+     * in sync with the world / filters / current-space toggles. See
+     * [SwitcherState.refreshedWith] for the cursor-survival policy.
+     */
+    private fun launchSnapshotCollector() {
+        snapshotJob?.cancel()
+        snapshotJob = scope.launch {
+            combine(
+                store.state,
+                store.filters,
+                store.currentSpaceOnly,
+                store.visibleSpaceIds,
+            ) { world, filters, currentSpaceOnly, visibleSpaceIds ->
+                world.filteredSwitcherSnapshot(
+                    filters = filters,
+                    currentSpaceOnly = currentSpaceOnly,
+                    visibleSpaceIds = visibleSpaceIds,
+                )
+            }.distinctUntilChanged().collect { newSnapshot ->
+                val cur = _ui.value ?: return@collect
+                val refreshed = cur.state.refreshedWith(newSnapshot)
+                if (refreshed == cur.state) return@collect
+                val selectionChanged =
+                    refreshed.selectedAppPid != cur.state.selectedAppPid ||
+                            refreshed.selectedWindowId != cur.state.selectedWindowId
+                _ui.value = cur.copy(state = refreshed, previewedWindowId = null)
+                if (selectionChanged) schedulePreview()
+                if (selectionChanged) {
+                    log("[ctl] snapshot refresh moved cursor to " +
+                            "pid=${refreshed.selectedAppPid} wid=${refreshed.selectedWindowId}")
+                }
+            }
+        }
     }
 
     private fun schedulePreview() {
@@ -384,6 +437,7 @@ class SwitcherController(
         showJob?.cancel(); showJob = null
         previewJob?.cancel(); previewJob = null
         pressJob?.cancel(); pressJob = null
+        snapshotJob?.cancel(); snapshotJob = null
         // Clear the held combo so the next cmd+tab is recognised as a fresh
         // press; otherwise a stale value would mask the first onShortcut
         // after commit/cancel and the user would see no advance.
