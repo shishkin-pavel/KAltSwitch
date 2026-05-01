@@ -38,16 +38,19 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     /// in some macOS configurations; this monitor sees them at the system
     /// level.
     private var globalKeyMonitor: Any? = nil
-    /// Global + local NSEvent mouse-down monitors. They write
-    /// `lastMouseDownTime` so the panel's resignKey safety net (see
-    /// the resignObs in `applicationDidFinishLaunching`) can tell a
-    /// user-driven click from a system focus reassignment, even when
-    /// cmd is still held.
+    /// Global NSEvent mouse-down monitor. Writes `lastMouseDownTime`
+    /// so the panel's resignKey safety net (see the resignObs in
+    /// `applicationDidFinishLaunching`) can tell a user-driven click
+    /// from a system focus reassignment, even when cmd is still held.
+    /// Only `addGlobalMonitor` (events delivered to OTHER apps) is
+    /// needed: in-app clicks that affect the switcher panel either
+    /// commit/cancel the session before resignKey fires (so the
+    /// notification is harmless) or land in unusual edge cases we
+    /// don't optimise for.
     private var globalMouseMonitor: Any? = nil
-    private var localMouseMonitor: Any? = nil
-    /// `ProcessInfo.processInfo.systemUptime` of the most recent
-    /// mouseDown anywhere (or `-1` if none yet). Same time base as
-    /// `NSEvent.timestamp`.
+    /// Event timestamp of the most recent mouseDown delivered to
+    /// another process (or `-1` if none yet). Same time base as
+    /// `NSEvent.timestamp` / `ProcessInfo.processInfo.systemUptime`.
     private var lastMouseDownTime: TimeInterval = -1
     /// Latest applied state — observers fire eagerly with the seed value
     /// AFTER the initial install, so we record state to detect "change vs
@@ -262,6 +265,13 @@ class AppDelegate: NSObject, NSApplicationDelegate {
             queue: .main
         ) { [weak controller, weak panel, weak self] _ in
             DispatchQueue.main.asyncAfter(deadline: .now() + 0.05) { [weak controller, weak panel, weak self] in
+                // Panel ordered out by setOverlayActive(false) after a
+                // commit / cancel? resignKey fired as a side-effect; nothing
+                // to do — the session is already gone. Both branches below
+                // would be wrong: makeKey on a hidden panel re-shows it
+                // without a session, onEsc on a closed session is a no-op
+                // but the bail keeps the log clean.
+                guard panel?.isVisible == true else { return }
                 let cmdHeld = NSEvent.modifierFlags.contains(.command)
                 let now = ProcessInfo.processInfo.systemUptime
                 let lastClick = self?.lastMouseDownTime ?? -1
@@ -295,20 +305,18 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         installMouseDownMonitor()
     }
 
-    /// Track the wall-clock of every mouseDown anywhere — the panel's
-    /// resignKey safety net (in `applicationDidFinishLaunching`) reads
-    /// `lastMouseDownTime` to tell user clicks apart from system focus
-    /// reassignment. Two monitors needed because `addGlobalMonitor`
-    /// only catches events delivered to OTHER processes;
-    /// `addLocalMonitor` catches in-app events.
+    /// Record every mouseDown delivered to another app — used by the
+    /// panel's resignKey safety net to tell user clicks apart from
+    /// system focus reassignment. In-app clicks are intentionally NOT
+    /// monitored: a click on a switcher cell drives onCommit, which
+    /// closes the session before resignKey fires (the deferred
+    /// resignObs guards on `panel.isVisible` so the notification is a
+    /// no-op there); an unusual click on the inspector while the
+    /// switcher is open is rare enough that we don't optimise for it.
     private func installMouseDownMonitor() {
         let mask: NSEvent.EventTypeMask = [.leftMouseDown, .rightMouseDown, .otherMouseDown]
         globalMouseMonitor = NSEvent.addGlobalMonitorForEvents(matching: mask) { [weak self] event in
             self?.lastMouseDownTime = event.timestamp
-        }
-        localMouseMonitor = NSEvent.addLocalMonitorForEvents(matching: mask) { [weak self] event in
-            self?.lastMouseDownTime = event.timestamp
-            return event
         }
     }
 
@@ -719,10 +727,6 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         if let m = globalMouseMonitor {
             NSEvent.removeMonitor(m)
             globalMouseMonitor = nil
-        }
-        if let m = localMouseMonitor {
-            NSEvent.removeMonitor(m)
-            localMouseMonitor = nil
         }
         hotkeyController?.stop()
         appRegistry?.stop()
