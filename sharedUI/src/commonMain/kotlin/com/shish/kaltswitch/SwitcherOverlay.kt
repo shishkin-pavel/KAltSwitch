@@ -2,7 +2,6 @@ package com.shish.kaltswitch
 
 import androidx.compose.animation.BoundsTransform
 import androidx.compose.animation.animateBounds
-import androidx.compose.animation.animateContentSize
 import androidx.compose.animation.core.FastOutSlowInEasing
 import androidx.compose.animation.core.tween
 import androidx.compose.ui.layout.LookaheadScope
@@ -11,7 +10,6 @@ import androidx.compose.foundation.border
 import androidx.compose.foundation.focusable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
-import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.ExperimentalLayoutApi
 import androidx.compose.foundation.layout.FlowRow
@@ -213,15 +211,20 @@ private fun SwitcherPanel(
     val withWindowsCount = state.snapshot.withWindows.size
     val density = LocalDensity.current
 
-    BoxWithConstraints(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
-        // Cap the panel at the available NSPanel width minus a comfortable
-        // margin so its rounded corners don't kiss the screen edges. FlowRow
-        // wraps within this width, the surrounding bg Box wraps to the actual
-        // content extent, and the rest of the NSPanel stays fully transparent.
-        val maxPanelWidth = (maxWidth - 80.dp).coerceAtLeast(240.dp)
+    Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
         Box(
             Modifier
-                .widthIn(max = maxPanelWidth)
+                // Hard cap on FlowRow's wrap width. Decoupled from the
+                // outer NSPanel size on purpose — Swift dynamically
+                // resizes the panel to whatever this Box measures, so
+                // tying the cap back to the panel width would create a
+                // measurement→panel-resize→re-measurement feedback loop
+                // (Box hugs content, content widens to maxWidth, Swift
+                // shrinks panel, maxWidth shrinks, content reflows…).
+                // 800.dp is wide enough for ~8 cells per row at the
+                // current 92–132.dp cell width, narrow enough for any
+                // realistic display size.
+                .widthIn(max = 800.dp)
                 .clip(RoundedCornerShape(16.dp))
                 // Faint dark tint over the NSVisualEffectView blur Swift
                 // installs underneath. Low alpha so the blurred backdrop
@@ -230,16 +233,14 @@ private fun SwitcherPanel(
                 // turns NSVisualEffectView into a solid-colour fill).
                 .background(Color(0x661B1B1F))
                 .border(1.dp, Color(0x33FFFFFF), RoundedCornerShape(16.dp))
-                // Smoothly grow/shrink the panel envelope when an app or
-                // window appears/disappears mid-session. NSVisualEffectView
-                // tracks via the existing `onPanelSize` callback below — it
-                // re-fires on every layout pass, so the blur backdrop's
-                // rounded mask stays in lockstep with the animation.
-                .animateContentSize(animationSpec = tween(durationMillis = 150, easing = FastOutSlowInEasing))
-                // Push the box's measured size out to Swift so it can drop
-                // an NSVisualEffectView underneath, exactly matching the
-                // visible rounded rectangle. dp not px — Swift wants
-                // points-coordinates for window math.
+                // Push the box's measured size out to Swift on every
+                // layout-driven change. With animateContentSize removed
+                // throughout this composable, this fires once per actual
+                // content change (apps add/remove, filter change) with
+                // the *target* size — Swift uses that to resize the
+                // NSPanel itself; the visual transition between old and
+                // new layout is carried by the `animateBounds` modifier
+                // on each AppCell within the LookaheadScope below.
                 .onSizeChanged { size ->
                     with(density) {
                         onPanelSize(size.width.toDp().value, size.height.toDp().value)
@@ -269,12 +270,6 @@ private fun SwitcherPanel(
             // "after" bounds are both known and the modifier interpolates.
             LookaheadScope {
             FlowRow(
-                modifier = Modifier
-                    // FlowRow's measured size shrinks when an AppCell unmounts
-                    // and grows when one appears. Animate both — the parent
-                    // Box's animateContentSize handles the overall envelope,
-                    // this one keeps the row layout itself fluid mid-flow.
-                    .animateContentSize(animationSpec = tween(durationMillis = 150, easing = FastOutSlowInEasing)),
                 horizontalArrangement = Arrangement.spacedBy(6.dp, Alignment.CenterHorizontally),
                 verticalArrangement = Arrangement.spacedBy(8.dp),
             ) {
@@ -384,11 +379,6 @@ private fun AppCell(
             .widthIn(min = 92.dp, max = 132.dp)
             .clip(RoundedCornerShape(10.dp))
             .border(2.dp, borderColor, RoundedCornerShape(10.dp))
-            // Smoothly resize the cell when its window list changes (e.g.
-            // user closes one of the windows of this app while the switcher
-            // is open). Same easing/duration as the panel envelope so the
-            // motions don't desync visually.
-            .animateContentSize(animationSpec = tween(durationMillis = 150, easing = FastOutSlowInEasing))
             .onPointerEvent(PointerEventType.Enter) { onHoverApp() }
             .pointerInput(Unit) { detectTapGestures(onTap = { onClickApp() }) }
             .padding(horizontal = 6.dp, vertical = 6.dp),
@@ -469,12 +459,7 @@ private fun WindowList(
     val showWindows = if (shownWindowCount <= 0) emptyList() else windows.take(shownWindowCount)
     val demoteWindows = if (shownWindowCount >= windows.size) emptyList() else windows.drop(shownWindowCount)
     Column(
-        // animateContentSize on the outer wrapper so removing/adding rows
-        // (or moving a row from the show bucket into demote when filters
-        // change live) reflows smoothly.
-        Modifier
-            .fillMaxWidth()
-            .animateContentSize(animationSpec = tween(durationMillis = 150, easing = FastOutSlowInEasing)),
+        Modifier.fillMaxWidth(),
         verticalArrangement = Arrangement.spacedBy(2.dp),
     ) {
         if (showWindows.isNotEmpty()) {

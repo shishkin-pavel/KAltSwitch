@@ -37,12 +37,29 @@ final class SwitcherOverlayWindow: NSPanel {
     var onAction: ((SwitcherAction) -> Void)?
 
     /// NSVisualEffectView placed behind the Compose-rendered rounded
-    /// panel. Sized and positioned dynamically from a Compose-side flow
-    /// (`observeSwitcherPanelSize`) so it tracks whatever the layout
-    /// produces — number of apps, FlowRow wrap behaviour, etc. Hidden
-    /// (alphaValue = 0) when there's no active session so the empty panel
-    /// margins don't show a stray blur halo.
+    /// panel. Since iter40 the panel itself is sized to the visible
+    /// content via `setContentSize`, so the blur fills the entire
+    /// content view via autoresizing — no separate frame math. Toggled
+    /// to alpha=0 between sessions via `setBlurVisible`.
     private(set) var blurView: NSVisualEffectView?
+
+    /// `visibleFrame` of the screen the cursor was on at session start.
+    /// Used by `setContentSize` to recenter the panel after each
+    /// content-driven resize. Captured once per session so the panel
+    /// doesn't follow the cursor onto a different display mid-session.
+    private var sessionScreenFrame: NSRect?
+
+    /// Pending shrink work item. When Compose reports a smaller target
+    /// size we keep the panel at the larger envelope until the cell
+    /// `animateBounds` motion completes (≈200 ms in
+    /// `SwitcherOverlay.kt`'s `tileMotion`), then shrink. New size
+    /// reports cancel any in-flight shrink and reschedule.
+    private var pendingShrink: DispatchWorkItem?
+
+    /// Cell-animation duration matching `SwitcherOverlay.kt`'s
+    /// `tileMotion = tween(200ms)`, plus a small safety margin so the
+    /// last interpolation tick has rendered before the panel snaps.
+    private static let shrinkDelay: TimeInterval = 0.22
 
     init() {
         super.init(
@@ -67,10 +84,10 @@ final class SwitcherOverlayWindow: NSPanel {
     }
 
     /// Install the blur backdrop. Called once after the Compose contentView
-    /// is attached: we re-parent the Compose NSView into a wrapper that has
-    /// an [NSVisualEffectView] underneath. The blur frame is driven from
-    /// Compose's reported panel size so the rounded backdrop hugs the
-    /// visible Compose surface rather than smearing across the whole panel.
+    /// is attached: we re-parent the Compose NSView into a wrapper that
+    /// has an [NSVisualEffectView] underneath. The blur fills the wrapper
+    /// via autoresizing — since iter40 the panel itself is sized to the
+    /// visible content, so panel-bounds == visible-rect.
     ///
     /// Rounded corners go via `maskImage` (a 9-slice rounded rect) instead
     /// of `layer.cornerRadius + masksToBounds`. The `cornerRadius` route
@@ -82,7 +99,8 @@ final class SwitcherOverlayWindow: NSPanel {
         let wrapper = NSView(frame: contentView?.bounds ?? composeView.bounds)
         wrapper.autoresizingMask = [.width, .height]
 
-        let blur = NSVisualEffectView(frame: .zero)
+        let blur = NSVisualEffectView(frame: wrapper.bounds)
+        blur.autoresizingMask = [.width, .height]
         blur.material = .hudWindow
         blur.blendingMode = .behindWindow
         blur.state = .active
@@ -99,56 +117,107 @@ final class SwitcherOverlayWindow: NSPanel {
         log("[panel] blur backdrop installed wrapperBounds=\(wrapper.bounds)")
     }
 
-    /// Position and size the blur backdrop. `sizeDp` comes from Compose,
-    /// converted to points (Compose dp == AppKit point on macOS). Pass
-    /// nil to hide the backdrop (between sessions). Re-evaluates
-    /// `ignoresMouseEvents` afterwards so a Compose-driven animation
-    /// frame keeps the click-through region in sync without waiting for
-    /// the next polling tick.
-    func updateBlurFrame(widthPts: CGFloat?, heightPts: CGFloat?) {
-        guard let blur = blurView else { return }
-        guard let w = widthPts, let h = heightPts, w > 0, h > 0 else {
-            blur.alphaValue = 0
-            updateClickThrough()
-            return
-        }
-        let bounds = contentView?.bounds ?? frame
-        let origin = NSPoint(
-            x: (bounds.size.width - w) / 2,
-            y: (bounds.size.height - h) / 2,
-        )
-        blur.frame = NSRect(origin: origin, size: NSSize(width: w, height: h))
-        blur.alphaValue = 1
-        updateClickThrough()
-        log("[panel] blur frame -> \(blur.frame)")
+    /// Show/hide the blur backdrop. Since the panel is sized to the
+    /// visible content, "hide" is just alpha=0 — no frame math.
+    func setBlurVisible(_ visible: Bool) {
+        blurView?.alphaValue = visible ? 1 : 0
     }
 
-    /// Toggle window-level `ignoresMouseEvents` based on whether the
-    /// global cursor is inside the visible blur view. Outside → window
-    /// passes mouse events to whatever app is underneath; inside → window
-    /// catches clicks normally so the Compose layer can drive
-    /// onPointAt / onCommit. Keyboard input is unaffected — the panel
-    /// stays key regardless, and `ignoresMouseEvents` is documented to
-    /// only intercept *mouse* events.
+    /// Cache the screen the cursor is on at session start so subsequent
+    /// `setContentSize` calls can recenter the panel without following
+    /// the cursor to a different display mid-session.
+    func captureSessionScreen() {
+        let mouse = NSEvent.mouseLocation
+        let screen = NSScreen.screens.first(where: { NSMouseInRect(mouse, $0.frame, false) })
+            ?? NSScreen.main
+            ?? NSScreen.screens.first
+        sessionScreenFrame = screen?.visibleFrame
+    }
+
+    /// Reset session-screen state and cancel any pending shrink.
+    /// Called on `setOverlayActive(false)` so a cleared session can't
+    /// later wake up and resize a hidden panel.
+    func clearSessionState() {
+        pendingShrink?.cancel()
+        pendingShrink = nil
+        sessionScreenFrame = nil
+    }
+
+    /// Resize the panel to the Compose-reported visible content size,
+    /// recentering on the session screen. Runs on every `onPanelSize`
+    /// callback. Two-step grow/shrink envelope:
     ///
-    /// Driven from two places: a 60 Hz polling timer started by
-    /// `setOverlayActive(true)` (catches cursor-only motion while blur
-    /// is stationary), and the tail of `updateBlurFrame` (catches
-    /// blur-only motion during Compose's `animateContentSize`).
-    func updateClickThrough() {
-        guard let blur = blurView, blur.alphaValue > 0 else {
-            // No visible content (showDelay or session ended) → panel
-            // is invisible to the eye, should be invisible to the mouse.
-            ignoresMouseEvents = true
+    /// * Grow: panel jumps to the new (larger) size immediately so the
+    ///   incoming Compose layout fits.
+    /// * Shrink: panel stays at the current (envelope) size while
+    ///   Compose's `tileMotion` animates each cell to its new
+    ///   position via `animateBounds`. After ~220 ms (matching the
+    ///   200 ms tween + safety margin) the panel snaps to the smaller
+    ///   target. Without this delay the cells in flight would be
+    ///   clipped at the panel's right/bottom edges as it shrinks.
+    ///
+    /// Successive shrinks reschedule the pending work item, so a fast
+    /// burst of layout changes still ends with one final resize at
+    /// the right size. During `showDelay` (panel alpha=0, blur alpha=0)
+    /// we skip the delay and resize immediately — the user can't see
+    /// the transition, and Compose has no in-flight `animateBounds`
+    /// on the very first layout.
+    func setContentSize(widthPts: CGFloat, heightPts: CGFloat) {
+        guard widthPts > 0, heightPts > 0 else { return }
+        guard let screen = sessionScreenFrame ?? fallbackScreenFrame() else { return }
+
+        let target = NSSize(width: widthPts, height: heightPts)
+        let current = frame.size
+
+        pendingShrink?.cancel()
+        pendingShrink = nil
+
+        // showDelay or first layout of a fresh session: blur is still
+        // invisible, no animateBounds is in flight inside Compose, so
+        // there's nothing to keep the panel large for. Snap straight
+        // to target.
+        let blurVisible = (blurView?.alphaValue ?? 0) > 0.5
+        if !blurVisible {
+            applyFrame(size: target, on: screen)
             return
         }
-        let mouse = NSEvent.mouseLocation
-        let blurOriginScreen = NSPoint(
-            x: frame.origin.x + blur.frame.origin.x,
-            y: frame.origin.y + blur.frame.origin.y
+
+        let envelope = NSSize(
+            width: max(current.width, target.width),
+            height: max(current.height, target.height)
         )
-        let blurScreenFrame = NSRect(origin: blurOriginScreen, size: blur.frame.size)
-        ignoresMouseEvents = !NSPointInRect(mouse, blurScreenFrame)
+
+        if envelope != current {
+            applyFrame(size: envelope, on: screen)
+        }
+
+        if target != envelope {
+            let work = DispatchWorkItem { [weak self] in
+                guard let self = self, let s = self.sessionScreenFrame else { return }
+                self.applyFrame(size: target, on: s)
+                self.pendingShrink = nil
+            }
+            pendingShrink = work
+            DispatchQueue.main.asyncAfter(
+                deadline: .now() + SwitcherOverlayWindow.shrinkDelay,
+                execute: work
+            )
+        }
+    }
+
+    private func applyFrame(size: NSSize, on screen: NSRect) {
+        let origin = NSPoint(
+            x: screen.origin.x + (screen.size.width - size.width) / 2,
+            y: screen.origin.y + (screen.size.height - size.height) / 2
+        )
+        setFrame(NSRect(origin: origin, size: size), display: false)
+    }
+
+    private func fallbackScreenFrame() -> NSRect? {
+        let mouse = NSEvent.mouseLocation
+        return (NSScreen.screens.first(where: { NSMouseInRect(mouse, $0.frame, false) })
+            ?? NSScreen.main
+            ?? NSScreen.screens.first)?.visibleFrame
     }
 
     /// 9-slice rounded-rect mask image for [NSVisualEffectView.maskImage].
@@ -168,25 +237,6 @@ final class SwitcherOverlayWindow: NSPanel {
 
     override var canBecomeKey: Bool { true }
     override var canBecomeMain: Bool { false }
-
-    /// Resize to a generous fraction of the active screen and center on it.
-    /// The Compose layout inside wraps to the actual content size so excess
-    /// area stays fully transparent.
-    func sizeAndCenterOnActiveScreen() {
-        let mouse = NSEvent.mouseLocation
-        let screen = NSScreen.screens.first(where: { NSMouseInRect(mouse, $0.frame, false) })
-            ?? NSScreen.main
-            ?? NSScreen.screens.first
-        guard let screen = screen else { return }
-        let s = screen.visibleFrame
-        let width = s.size.width * 0.9
-        let height = min(640, s.size.height * 0.7)
-        let origin = NSPoint(
-            x: s.origin.x + (s.size.width - width) / 2,
-            y: s.origin.y + (s.size.height - height) / 2
-        )
-        setFrame(NSRect(origin: origin, size: NSSize(width: width, height: height)), display: false)
-    }
 
     /// Catch modifier-state transitions and tab/grave keyUp events globally.
     /// `flagsChanged` and key events flow to the key window; with
