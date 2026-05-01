@@ -300,7 +300,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         let menu = NSMenu()
 
         let openItem = NSMenuItem(
-            title: "Open Settings",
+            title: "Settings",
             action: #selector(openInspectorFromMenu),
             keyEquivalent: "")
         openItem.target = self
