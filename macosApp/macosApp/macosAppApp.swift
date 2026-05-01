@@ -60,8 +60,10 @@ class AppDelegate: NSObject, NSApplicationDelegate {
             defer: false
         )
         // Initial title — overwritten as soon as observeInspectorVisible
-        // delivers the persisted state below.
-        window.title = "KAltSwitch — Settings/Inspector"
+        // delivers the persisted state below. The "right pane" (live
+        // apps/windows table) is still internally called "the inspector"
+        // in code; user-facing copy says "Settings" regardless.
+        window.title = "KAltSwitch — Settings"
         window.center()
         // Closing or cmd+W on the inspector hides it instead of releasing.
         // The app keeps running (see applicationShouldTerminateAfterLastWindowClosed)
@@ -298,7 +300,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         let menu = NSMenu()
 
         let openItem = NSMenuItem(
-            title: "Open Settings/Inspector",
+            title: "Open Settings",
             action: #selector(openInspectorFromMenu),
             keyEquivalent: "")
         openItem.target = self
@@ -462,9 +464,10 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     /// unchanged so the window stretches/contracts toward the right edge.
     private func applyInspectorVisibility(_ visible: Bool) {
         guard let window = window else { return }
-        window.title = visible
-            ? "KAltSwitch — Settings/Inspector"
-            : "KAltSwitch — Settings"
+        // Title stays "Settings" whether the live-state right pane is
+        // showing or not — the toggle in the sidebar is what tells the
+        // user which mode they're in.
+        window.title = "KAltSwitch — Settings"
 
         let prev = inspectorVisibleApplied
         inspectorVisibleApplied = visible

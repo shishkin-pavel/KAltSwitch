@@ -1,8 +1,11 @@
 package com.shish.kaltswitch
 
+import androidx.compose.animation.BoundsTransform
+import androidx.compose.animation.animateBounds
 import androidx.compose.animation.animateContentSize
 import androidx.compose.animation.core.FastOutSlowInEasing
 import androidx.compose.animation.core.tween
+import androidx.compose.ui.layout.LookaheadScope
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.focusable
@@ -261,6 +264,15 @@ private fun SwitcherPanel(
             val demoteEntries = if (withWindowsCount < entries.size) {
                 entries.subList(withWindowsCount, entries.size)
             } else emptyList()
+            // LookaheadScope + Modifier.animateBounds on each AppCell makes
+            // tile *movement* (positional reorder, neighbour shifts when a
+            // sibling appears/disappears, show ↔ demote bucket transitions
+            // when filters change live) slide instead of snap. Without
+            // lookahead, FlowRow's standard layout pass commits final
+            // positions immediately and animateContentSize alone handles
+            // only size changes. With lookahead the cell's "before" and
+            // "after" bounds are both known and the modifier interpolates.
+            LookaheadScope {
             FlowRow(
                 modifier = Modifier
                     // FlowRow's measured size shrinks when an AppCell unmounts
@@ -271,10 +283,17 @@ private fun SwitcherPanel(
                 horizontalArrangement = Arrangement.spacedBy(6.dp, Alignment.CenterHorizontally),
                 verticalArrangement = Arrangement.spacedBy(8.dp),
             ) {
+                val tileMotion = BoundsTransform { _, _ ->
+                    tween(durationMillis = 200, easing = FastOutSlowInEasing)
+                }
                 showEntries.forEachIndexed { showIndex, entry ->
                     val appIndex = showIndex
                     androidx.compose.runtime.key(entry.app.pid) {
                         AppCell(
+                            modifier = Modifier.animateBounds(
+                                lookaheadScope = this@LookaheadScope,
+                                boundsTransform = tileMotion,
+                            ),
                             name = entry.app.name,
                             pid = entry.app.pid,
                             iconBytes = iconsByPid[entry.app.pid],
@@ -306,6 +325,10 @@ private fun SwitcherPanel(
                                 val appIndex = withWindowsCount + demoteIndex
                                 androidx.compose.runtime.key(entry.app.pid) {
                                     AppCell(
+                                        modifier = Modifier.animateBounds(
+                                            lookaheadScope = this@LookaheadScope,
+                                            boundsTransform = tileMotion,
+                                        ),
                                         name = entry.app.name,
                                         pid = entry.app.pid,
                                         iconBytes = iconsByPid[entry.app.pid],
@@ -326,6 +349,7 @@ private fun SwitcherPanel(
                     }
                 }
             }
+            }
         }
     }
 }
@@ -333,6 +357,7 @@ private fun SwitcherPanel(
 @OptIn(ExperimentalComposeUiApi::class)
 @Composable
 private fun AppCell(
+    modifier: Modifier = Modifier,
     name: String,
     pid: Int,
     iconBytes: ByteArray?,
@@ -360,7 +385,7 @@ private fun AppCell(
     // the shorter cells. The Box-wrapper fills uniform height across the
     // whole demote section.
     Column(
-        Modifier
+        modifier
             .widthIn(min = 92.dp, max = 132.dp)
             .clip(RoundedCornerShape(10.dp))
             .border(2.dp, borderColor, RoundedCornerShape(10.dp))
