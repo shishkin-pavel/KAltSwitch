@@ -214,17 +214,19 @@ private fun SwitcherPanel(
     Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
         Box(
             Modifier
-                // Hard cap on FlowRow's wrap width. Decoupled from the
-                // outer NSPanel size on purpose — Swift dynamically
-                // resizes the panel to whatever this Box measures, so
-                // tying the cap back to the panel width would create a
-                // measurement→panel-resize→re-measurement feedback loop
-                // (Box hugs content, content widens to maxWidth, Swift
-                // shrinks panel, maxWidth shrinks, content reflows…).
-                // 800.dp is wide enough for ~8 cells per row at the
-                // current 92–132.dp cell width, narrow enough for any
-                // realistic display size.
-                .widthIn(max = 800.dp)
+                // No widthIn cap here on purpose. The outer Compose
+                // root fills the NSPanel's contentView, so this Box's
+                // parent constraint == the panel's current width. At
+                // session start Swift sizes the panel to ~90% of the
+                // screen so this Box has room to lay out cells in
+                // their natural single-row arrangement; FlowRow's
+                // measured size is what Swift then shrinks the panel
+                // to via setContentSize. Subsequent recompositions
+                // see parent maxWidth == content width → stable, no
+                // further wrap. A constant cap (e.g. 800.dp) breaks
+                // this — the panel would never get a chance to
+                // measure wider than the cap, and on big screens
+                // users with >5 apps would see premature row wrap.
                 .clip(RoundedCornerShape(16.dp))
                 // Faint dark tint over the NSVisualEffectView blur Swift
                 // installs underneath. Low alpha so the blurred backdrop

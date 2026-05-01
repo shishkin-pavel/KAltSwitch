@@ -125,13 +125,30 @@ final class SwitcherOverlayWindow: NSPanel {
 
     /// Cache the screen the cursor is on at session start so subsequent
     /// `setContentSize` calls can recenter the panel without following
-    /// the cursor to a different display mid-session.
+    /// the cursor to a different display mid-session, and pre-size the
+    /// panel to a generous fraction of that screen so the first
+    /// Compose composition has room to lay out cells in their natural
+    /// single-row arrangement. Without the pre-size, Compose's first
+    /// `BoxWithConstraints`-style layout would inherit whatever
+    /// (potentially small) width the panel ended up at after the
+    /// previous session, and FlowRow would wrap prematurely.
+    /// Subsequent `setContentSize` calls shrink the panel to the
+    /// actual content width.
     func captureSessionScreen() {
         let mouse = NSEvent.mouseLocation
         let screen = NSScreen.screens.first(where: { NSMouseInRect(mouse, $0.frame, false) })
             ?? NSScreen.main
             ?? NSScreen.screens.first
-        sessionScreenFrame = screen?.visibleFrame
+        guard let screen = screen else { return }
+        let s = screen.visibleFrame
+        sessionScreenFrame = s
+        let width = s.size.width * 0.9
+        let height = min(640, s.size.height * 0.7)
+        let origin = NSPoint(
+            x: s.origin.x + (s.size.width - width) / 2,
+            y: s.origin.y + (s.size.height - height) / 2
+        )
+        setFrame(NSRect(origin: origin, size: NSSize(width: width, height: height)), display: false)
     }
 
     /// Reset session-screen state and cancel any pending shrink.
