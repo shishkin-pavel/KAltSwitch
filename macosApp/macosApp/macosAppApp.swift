@@ -38,6 +38,17 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     /// in some macOS configurations; this monitor sees them at the system
     /// level.
     private var globalKeyMonitor: Any? = nil
+    /// Global + local NSEvent mouse-down monitors. They write
+    /// `lastMouseDownTime` so the panel's resignKey safety net (see
+    /// the resignObs in `applicationDidFinishLaunching`) can tell a
+    /// user-driven click from a system focus reassignment, even when
+    /// cmd is still held.
+    private var globalMouseMonitor: Any? = nil
+    private var localMouseMonitor: Any? = nil
+    /// `ProcessInfo.processInfo.systemUptime` of the most recent
+    /// mouseDown anywhere (or `-1` if none yet). Same time base as
+    /// `NSEvent.timestamp`.
+    private var lastMouseDownTime: TimeInterval = -1
     /// Latest applied state — observers fire eagerly with the seed value
     /// AFTER the initial install, so we record state to detect "change vs
     /// seed" and keep menu items / SMAppService in sync without thrashing.
@@ -215,36 +226,43 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         panel.onAction = { [weak controller] action in
             controller?.onAction(action: action)
         }
-        // Safety net for the panel losing key status mid-session.
-        // Two distinct causes, distinguished by whether the user is
-        // still holding cmd:
+        // Safety net for the panel losing key status mid-session. Three
+        // ways this fires; we want to close on user actions and stay
+        // open on system events:
         //
-        // 1. cmd NOT held → user-driven loss of focus (clicked another
-        //    app's window, alt-tabbed via the OS, etc.). Treat as Esc:
-        //    cancel the session so the `switcherActive` flag clears,
-        //    AX/Workspace events flow into the store again, and the
-        //    inspector's row order doesn't freeze on stale state.
+        // 1. User clicked another window (anywhere) → close. The cmd
+        //    state alone can't tell us this happened — the user can
+        //    click while still holding cmd, in which case cmd is held
+        //    AND the click should close the switcher. The reliable
+        //    signal is "did a mouseDown fire just now?" — tracked via
+        //    `lastMouseDownTime` that the global+local mouse monitors
+        //    write on every click anywhere.
         //
-        // 2. cmd STILL held → the system reassigned focus while the
-        //    user is mid-gesture. Real triggers we've observed:
+        // 2. cmd NOT held, no recent click → typically OS-driven
+        //    cmd+tab or another app's `NSApp.activate` — treat as
+        //    user-equivalent and close.
+        //
+        // 3. cmd HELD, no recent click → system reassigned focus while
+        //    the user is mid-gesture. Real triggers observed:
         //      * a new window appeared in another app (notification,
         //        build window, dialog) and stole key
         //      * the previously-focused window closed and macOS
-        //        promoted the next window in line, which lives in
-        //        another app
-        //    The user hasn't released the gesture; the previous
-        //    behaviour (always-onEsc) closed the switcher in their
-        //    face. Re-take key on the next runloop turn so the
-        //    session continues. orderFrontRegardless was already
-        //    called in `setOverlayActive(true)` and our level is
-        //    `.popUpMenu`, so visibility is fine; only key status
-        //    needs reclaiming.
+        //        promoted the next window in line, in another app
+        //    Don't close — re-take key so the session continues.
+        //    orderFrontRegardless + `.popUpMenu` level (set in
+        //    `setOverlayActive(true)`) keeps us visible; only key
+        //    status needs reclaiming, on the next runloop turn so the
+        //    in-flight resignKey event finishes settling.
         let resignObs = NotificationCenter.default.addObserver(
             forName: NSWindow.didResignKeyNotification,
             object: panel,
             queue: .main
-        ) { [weak controller, weak panel] _ in
-            if NSEvent.modifierFlags.contains(.command) {
+        ) { [weak controller, weak panel, weak self] _ in
+            let cmdHeld = NSEvent.modifierFlags.contains(.command)
+            let now = ProcessInfo.processInfo.systemUptime
+            let lastClick = self?.lastMouseDownTime ?? -1
+            let recentClick = lastClick >= 0 && (now - lastClick) < 0.2
+            if cmdHeld && !recentClick {
                 DispatchQueue.main.async { panel?.makeKey() }
             } else {
                 controller?.onEsc()
@@ -269,6 +287,24 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         }
 
         installGlobalKeyMonitor()
+        installMouseDownMonitor()
+    }
+
+    /// Track the wall-clock of every mouseDown anywhere — the panel's
+    /// resignKey safety net (in `applicationDidFinishLaunching`) reads
+    /// `lastMouseDownTime` to tell user clicks apart from system focus
+    /// reassignment. Two monitors needed because `addGlobalMonitor`
+    /// only catches events delivered to OTHER processes;
+    /// `addLocalMonitor` catches in-app events.
+    private func installMouseDownMonitor() {
+        let mask: NSEvent.EventTypeMask = [.leftMouseDown, .rightMouseDown, .otherMouseDown]
+        globalMouseMonitor = NSEvent.addGlobalMonitorForEvents(matching: mask) { [weak self] event in
+            self?.lastMouseDownTime = event.timestamp
+        }
+        localMouseMonitor = NSEvent.addLocalMonitorForEvents(matching: mask) { [weak self] event in
+            self?.lastMouseDownTime = event.timestamp
+            return event
+        }
     }
 
     /// Watch tab/grave keyUp at the system level. Belt-and-braces with the
@@ -674,6 +710,14 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         if let m = globalKeyMonitor {
             NSEvent.removeMonitor(m)
             globalKeyMonitor = nil
+        }
+        if let m = globalMouseMonitor {
+            NSEvent.removeMonitor(m)
+            globalMouseMonitor = nil
+        }
+        if let m = localMouseMonitor {
+            NSEvent.removeMonitor(m)
+            localMouseMonitor = nil
         }
         hotkeyController?.stop()
         appRegistry?.stop()
