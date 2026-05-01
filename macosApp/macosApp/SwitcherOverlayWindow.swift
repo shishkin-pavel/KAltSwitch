@@ -79,7 +79,7 @@ final class SwitcherOverlayWindow: NSPanel {
     /// blur with rounded shadow". `maskImage` is the documented API and
     /// works consistently from 10.10 onwards.
     func installBlurBackdrop(under composeView: NSView) {
-        let wrapper = NSView(frame: contentView?.bounds ?? composeView.bounds)
+        let wrapper = ClickThroughWrapperView(frame: contentView?.bounds ?? composeView.bounds)
         wrapper.autoresizingMask = [.width, .height]
 
         let blur = NSVisualEffectView(frame: .zero)
@@ -95,6 +95,7 @@ final class SwitcherOverlayWindow: NSPanel {
         wrapper.addSubview(composeView)
 
         contentView = wrapper
+        wrapper.visibleArea = blur
         blurView = blur
         log("[panel] blur backdrop installed wrapperBounds=\(wrapper.bounds)")
     }
@@ -207,6 +208,33 @@ final class SwitcherOverlayWindow: NSPanel {
             return true
         }
         return super.performKeyEquivalent(with: event)
+    }
+
+    /// Wrapper NSView for the panel's contentView. The panel itself is sized
+    /// to a generous fraction of the screen (`sizeAndCenterOnActiveScreen`)
+    /// so the Compose layout has room to wrap, but the *visible* rounded
+    /// surface — the [NSVisualEffectView] backdrop — only covers a small
+    /// rectangle in the middle. Without this override, clicks anywhere in
+    /// the transparent margin still land on the Compose NSView, which calls
+    /// `scene.sendPointerEvent` and reports the event handled — so apps
+    /// underneath never see the click.
+    ///
+    /// `hitTest` returning nil tells AppKit "no view here", which makes the
+    /// window itself report no hit on `windowNumber(at:)` lookups and lets
+    /// the click propagate to whichever window is below. We use the live
+    /// `visibleArea` frame (== blur view's frame, updated from Compose's
+    /// reported panel size) as the only clickable region.
+    private final class ClickThroughWrapperView: NSView {
+        weak var visibleArea: NSView?
+
+        override func hitTest(_ point: NSPoint) -> NSView? {
+            guard let visible = visibleArea, visible.alphaValue > 0 else { return nil }
+            // `point` is in our superview's coordinate space, which for an
+            // NSWindow's contentView equals the window's content bounds —
+            // same space `visible.frame` lives in.
+            guard NSPointInRect(point, visible.frame) else { return nil }
+            return super.hitTest(point)
+        }
     }
 
     override func sendEvent(_ event: NSEvent) {
