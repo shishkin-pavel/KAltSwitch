@@ -208,6 +208,13 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         panel.onShortcutKeyReleased = { [weak controller] in
             controller?.onShortcutKeyReleased()
         }
+        // cmd+Q/W/M/H/F intercepted by the panel's `performKeyEquivalent`
+        // so they fire on the switcher's selected target instead of being
+        // swallowed by NSApp.mainMenu (which would, e.g., terminate
+        // KAltSwitch on cmd+Q rather than quitting the highlighted app).
+        panel.onAction = { [weak controller] action in
+            controller?.onAction(action: action)
+        }
         // Safety net: if the panel ever loses key status while a session is
         // live (e.g. user clicked another app's window with the mouse), close
         // the session via Esc semantics. Without this the controller's

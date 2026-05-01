@@ -28,6 +28,14 @@ final class SwitcherOverlayWindow: NSPanel {
     /// `SwitcherController.onShortcutKeyReleased`.
     var onShortcutKeyReleased: (() -> Void)?
 
+    /// Called from `performKeyEquivalent` for cmd+Q / cmd+W / cmd+M /
+    /// cmd+H / cmd+F while the panel is key. AppDelegate wires this to
+    /// `SwitcherController.onAction(action:)` so the action fires on the
+    /// switcher's currently-selected target. See the `performKeyEquivalent`
+    /// override below for why we intercept here rather than relying on
+    /// Compose's `onPreviewKeyEvent` path.
+    var onAction: ((SwitcherAction) -> Void)?
+
     /// NSVisualEffectView placed behind the Compose-rendered rounded
     /// panel. Sized and positioned dynamically from a Compose-side flow
     /// (`observeSwitcherPanelSize`) so it tracks whatever the layout
@@ -157,6 +165,44 @@ final class SwitcherOverlayWindow: NSPanel {
     /// dispatcher level, but the matching keyUp is *not* a hotkey event and
     /// reaches us normally. That's the signal we need to tell auto-repeat
     /// from a held key.
+    /// Intercept cmd+Q/W/M/H/F while the panel is key and route them to
+    /// the switcher controller's `onAction`. Without this, NSApp's main
+    /// menu (set up in `AppDelegate.installMainMenu`) sees `cmd+Q` first
+    /// and **terminates KAltSwitch itself** instead of quitting the app
+    /// the switcher is highlighting. Same hazard for `cmd+W` (Close
+    /// would close our overlay panel), `cmd+M` (Minimize), `cmd+H`
+    /// (Hide).
+    ///
+    /// Window-level `performKeyEquivalent` runs **before** NSApp's main
+    /// menu lookup, so returning `true` here pre-empts the menu handler.
+    /// Modifier check is exact-`.command`-only — `cmd+option+H`
+    /// ("Hide Others") and similar combos fall through to standard
+    /// dispatch.
+    override func performKeyEquivalent(with event: NSEvent) -> Bool {
+        let modifiers = event.modifierFlags.intersection(
+            [.command, .shift, .option, .control]
+        )
+        guard modifiers == .command else {
+            return super.performKeyEquivalent(with: event)
+        }
+        let action: SwitcherAction? = {
+            switch event.charactersIgnoringModifiers?.lowercased() {
+            case "q": return .quitapp
+            case "w": return .closewindow
+            case "m": return .toggleminimize
+            case "h": return .togglehide
+            case "f": return .togglefullscreen
+            default: return nil
+            }
+        }()
+        if let action = action {
+            log("[panel] cmd-key=\(event.charactersIgnoringModifiers ?? "?") → action=\(action)")
+            onAction?(action)
+            return true
+        }
+        return super.performKeyEquivalent(with: event)
+    }
+
     override func sendEvent(_ event: NSEvent) {
         if event.type == .flagsChanged {
             let cmdHeld = event.modifierFlags.contains(.command)

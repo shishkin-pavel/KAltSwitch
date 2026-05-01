@@ -59,7 +59,6 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.shish.kaltswitch.icon.rememberAppIcon
-import com.shish.kaltswitch.model.SwitcherAction
 import com.shish.kaltswitch.model.SwitcherEntry
 import com.shish.kaltswitch.model.SwitcherEvent
 import com.shish.kaltswitch.model.SwitcherState
@@ -86,7 +85,6 @@ fun SwitcherOverlay(
     onPointerMoved: () -> Unit,
     onPanelSize: (Float, Float) -> Unit,
     onCommit: () -> Unit,
-    onAction: (SwitcherAction) -> Unit,
 ) {
     val focus = remember { FocusRequester() }
     LaunchedEffect(Unit) { focus.requestFocus() }
@@ -96,7 +94,7 @@ fun SwitcherOverlay(
             .fillMaxSize()
             .focusRequester(focus)
             .focusable()
-            .onPreviewKeyEvent { ev -> handleKey(ev, onNavigate, onEsc, onShortcut, onAction) }
+            .onPreviewKeyEvent { ev -> handleKey(ev, onNavigate, onEsc, onShortcut) }
             // Real pointer-move events flip the controller's stationary-mouse
             // gate. Without this, hover-Enter events fired purely because
             // the panel just appeared under a stationary mouse would yank
@@ -121,18 +119,20 @@ fun SwitcherOverlay(
  *  Carbon-registered, and arrow navigation is the common keyboard fallback
  *  for users who want to step around without re-tapping the modifier-key.
  *
- *  Action keys (Q/W/M/H/F) MUST be consumed (return true) regardless of
- *  whether they fire — without that, `cmd+Q` flows through to NSApp's
- *  main menu and **terminates KAltSwitch itself** (we have a "Quit
- *  KAltSwitch" item bound to cmd+Q). Same hazard for cmd+W (Close),
- *  cmd+M (Minimize), cmd+H (Hide app). cmd+F is harmless on its own
- *  (no main-menu binding) but consume it for symmetry. */
+ *  cmd+Q / cmd+W / cmd+M / cmd+H / cmd+F (the [SwitcherAction] bindings)
+ *  are intentionally absent here — they're intercepted earlier on the
+ *  Swift side via `SwitcherOverlayWindow.performKeyEquivalent(with:)`,
+ *  which dispatches to `controller.onAction`. Doing it Swift-side is
+ *  load-bearing: those cmd-key combos hit NSApp.mainMenu's
+ *  performKeyEquivalent path BEFORE the keyDown reaches Compose, and
+ *  the main menu would happily terminate KAltSwitch on cmd+Q before
+ *  any Compose handler could intercept. The window-level override
+ *  pre-empts the main menu. */
 private fun handleKey(
     ev: KeyEvent,
     onNavigate: (SwitcherEvent) -> Unit,
     onEsc: () -> Unit,
     onShortcut: (SwitcherEntry) -> Unit,
-    onAction: (SwitcherAction) -> Unit,
 ): Boolean {
     if (ev.type != KeyEventType.KeyDown) return false
     return when (ev.key) {
@@ -141,11 +141,6 @@ private fun handleKey(
         Key.DirectionLeft -> { onNavigate(SwitcherEvent.PrevApp); true }
         Key.DirectionDown -> { onNavigate(SwitcherEvent.NextWindow); true }
         Key.DirectionUp -> { onNavigate(SwitcherEvent.PrevWindow); true }
-        Key.Q -> { onAction(SwitcherAction.QuitApp); true }
-        Key.W -> { onAction(SwitcherAction.CloseWindow); true }
-        Key.M -> { onAction(SwitcherAction.ToggleMinimize); true }
-        Key.H -> { onAction(SwitcherAction.ToggleHide); true }
-        Key.F -> { onAction(SwitcherAction.ToggleFullscreen); true }
         else -> false
     }
 }

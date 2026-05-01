@@ -198,7 +198,6 @@ fun AttachSwitcherOverlay(window: NSWindow): ComposeNSViewDelegate = ComposeNSVi
                         store.setSwitcherPanelSize(w.toDouble(), h.toDouble())
                     },
                     onCommit = { switcherController.onCommit() },
-                    onAction = { switcherController.onAction(it) },
                 )
             }
         }
