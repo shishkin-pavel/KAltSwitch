@@ -49,7 +49,11 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     private var launchAtLoginMenuItem: NSMenuItem? = nil
 
     func applicationDidFinishLaunching(_ aNotification: Notification) {
-        window = NSWindow(
+        // InspectorWindow is a thin NSWindow subclass that intercepts
+        // cmd+W/Q/M/H before they reach the Compose NSView's keyDown
+        // path (which silently consumes them). See InspectorWindow.swift
+        // for the rationale.
+        window = InspectorWindow(
             contentRect: NSRect(x: 0, y: 0, width: 800, height: 600),
             styleMask: [.titled, .closable, .miniaturizable, .resizable],
             backing: .buffered,
