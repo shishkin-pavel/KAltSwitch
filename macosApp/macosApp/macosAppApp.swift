@@ -215,18 +215,40 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         panel.onAction = { [weak controller] action in
             controller?.onAction(action: action)
         }
-        // Safety net: if the panel ever loses key status while a session is
-        // live (e.g. user clicked another app's window with the mouse), close
-        // the session via Esc semantics. Without this the controller's
-        // switcherActive flag could stay true indefinitely, blocking all
-        // subsequent activation events from reaching the inspector and
-        // freezing the row order on stale state.
+        // Safety net for the panel losing key status mid-session.
+        // Two distinct causes, distinguished by whether the user is
+        // still holding cmd:
+        //
+        // 1. cmd NOT held → user-driven loss of focus (clicked another
+        //    app's window, alt-tabbed via the OS, etc.). Treat as Esc:
+        //    cancel the session so the `switcherActive` flag clears,
+        //    AX/Workspace events flow into the store again, and the
+        //    inspector's row order doesn't freeze on stale state.
+        //
+        // 2. cmd STILL held → the system reassigned focus while the
+        //    user is mid-gesture. Real triggers we've observed:
+        //      * a new window appeared in another app (notification,
+        //        build window, dialog) and stole key
+        //      * the previously-focused window closed and macOS
+        //        promoted the next window in line, which lives in
+        //        another app
+        //    The user hasn't released the gesture; the previous
+        //    behaviour (always-onEsc) closed the switcher in their
+        //    face. Re-take key on the next runloop turn so the
+        //    session continues. orderFrontRegardless was already
+        //    called in `setOverlayActive(true)` and our level is
+        //    `.popUpMenu`, so visibility is fine; only key status
+        //    needs reclaiming.
         let resignObs = NotificationCenter.default.addObserver(
             forName: NSWindow.didResignKeyNotification,
             object: panel,
             queue: .main
-        ) { [weak controller] _ in
-            controller?.onEsc()
+        ) { [weak controller, weak panel] _ in
+            if NSEvent.modifierFlags.contains(.command) {
+                DispatchQueue.main.async { panel?.makeKey() }
+            } else {
+                controller?.onEsc()
+            }
         }
         frameObservers.append(resignObs)
 
