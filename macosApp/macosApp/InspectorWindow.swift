@@ -1,4 +1,5 @@
 import AppKit
+import Carbon.HIToolbox
 
 /// `NSWindow` subclass for the Settings/Inspector. The only reason it
 /// exists is to intercept `cmd+W`, `cmd+Q`, `cmd+M`, `cmd+H` before they
@@ -34,14 +35,21 @@ final class InspectorWindow: NSWindow {
         guard modifiers == .command else {
             return super.performKeyEquivalent(with: event)
         }
-        switch event.charactersIgnoringModifiers?.lowercased() {
-        case "w":
+        // Match by physical keyCode (kVK_ANSI_*), not by
+        // `charactersIgnoringModifiers`. The latter is layout-dependent —
+        // on the Russian (or any non-ANSI) layout, the physical Q key
+        // emits "й" as its character, which made our cmd+Q binding
+        // silently fall through to NSApp.mainMenu → terminate. kVK_*
+        // codes are raw scan codes, identical across all keyboard
+        // layouts.
+        switch Int(event.keyCode) {
+        case kVK_ANSI_W:
             performClose(nil); return true
-        case "q":
+        case kVK_ANSI_Q:
             NSApp.terminate(nil); return true
-        case "m":
+        case kVK_ANSI_M:
             performMiniaturize(nil); return true
-        case "h":
+        case kVK_ANSI_H:
             NSApp.hide(nil); return true
         default:
             return super.performKeyEquivalent(with: event)

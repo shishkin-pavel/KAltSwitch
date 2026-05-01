@@ -185,18 +185,24 @@ final class SwitcherOverlayWindow: NSPanel {
         guard modifiers == .command else {
             return super.performKeyEquivalent(with: event)
         }
+        // Match by physical keyCode (kVK_ANSI_*), not by
+        // `charactersIgnoringModifiers`. The latter is layout-dependent —
+        // on the Russian (or any non-ANSI) layout, physical Q emits "й"
+        // and the switch silently falls through to NSApp.mainMenu →
+        // terminate, killing KAltSwitch instead of the highlighted app.
+        // kVK_* codes are raw scan codes, identical across all layouts.
         let action: SwitcherAction? = {
-            switch event.charactersIgnoringModifiers?.lowercased() {
-            case "q": return .quitapp
-            case "w": return .closewindow
-            case "m": return .toggleminimize
-            case "h": return .togglehide
-            case "f": return .togglefullscreen
+            switch Int(event.keyCode) {
+            case kVK_ANSI_Q: return .quitapp
+            case kVK_ANSI_W: return .closewindow
+            case kVK_ANSI_M: return .toggleminimize
+            case kVK_ANSI_H: return .togglehide
+            case kVK_ANSI_F: return .togglefullscreen
             default: return nil
             }
         }()
         if let action = action {
-            log("[panel] cmd-key=\(event.charactersIgnoringModifiers ?? "?") → action=\(action)")
+            log("[panel] cmd-key keyCode=\(event.keyCode) → action=\(action)")
             onAction?(action)
             return true
         }
