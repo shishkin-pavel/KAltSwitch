@@ -243,29 +243,34 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         //    user-equivalent and close.
         //
         // 3. cmd HELD, no recent click → system reassigned focus while
-        //    the user is mid-gesture. Real triggers observed:
-        //      * a new window appeared in another app (notification,
-        //        build window, dialog) and stole key
-        //      * the previously-focused window closed and macOS
-        //        promoted the next window in line, in another app
-        //    Don't close — re-take key so the session continues.
-        //    orderFrontRegardless + `.popUpMenu` level (set in
-        //    `setOverlayActive(true)`) keeps us visible; only key
-        //    status needs reclaiming, on the next runloop turn so the
-        //    in-flight resignKey event finishes settling.
+        //    the user is mid-gesture (new window appeared, focused
+        //    window closed). Don't close — re-take key.
+        //
+        // The decision is **deferred by ~50 ms**. Global mouse monitors
+        // are documented to fire asynchronously on the main queue —
+        // empirically they often land AFTER the resignKey notification
+        // even though the click physically came first. Reading
+        // `lastMouseDownTime` immediately would see stale data and
+        // misclassify clicks on other apps as system events. The defer
+        // gives the monitor's callback a turn of the runloop to write.
+        // The original event timestamp (`event.timestamp`) is used for
+        // the recency check, so the 50 ms wait doesn't bias the
+        // 200 ms freshness threshold.
         let resignObs = NotificationCenter.default.addObserver(
             forName: NSWindow.didResignKeyNotification,
             object: panel,
             queue: .main
         ) { [weak controller, weak panel, weak self] _ in
-            let cmdHeld = NSEvent.modifierFlags.contains(.command)
-            let now = ProcessInfo.processInfo.systemUptime
-            let lastClick = self?.lastMouseDownTime ?? -1
-            let recentClick = lastClick >= 0 && (now - lastClick) < 0.2
-            if cmdHeld && !recentClick {
-                DispatchQueue.main.async { panel?.makeKey() }
-            } else {
-                controller?.onEsc()
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.05) { [weak controller, weak panel, weak self] in
+                let cmdHeld = NSEvent.modifierFlags.contains(.command)
+                let now = ProcessInfo.processInfo.systemUptime
+                let lastClick = self?.lastMouseDownTime ?? -1
+                let recentClick = lastClick >= 0 && (now - lastClick) < 0.2
+                if cmdHeld && !recentClick {
+                    panel?.makeKey()
+                } else {
+                    controller?.onEsc()
+                }
             }
         }
         frameObservers.append(resignObs)
