@@ -52,6 +52,18 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     /// another process (or `-1` if none yet). Same time base as
     /// `NSEvent.timestamp` / `ProcessInfo.processInfo.systemUptime`.
     private var lastMouseDownTime: TimeInterval = -1
+    /// 60 Hz timer that polls the cursor position while a switcher
+    /// session is on screen and toggles the panel's
+    /// `ignoresMouseEvents` so clicks in the transparent margin around
+    /// the visible blur backdrop fall through to the app underneath.
+    /// Started from `setOverlayActive(true)` and stopped on
+    /// `setOverlayActive(false)`. Polling (rather than NSTrackingArea
+    /// or a global mouseMoved monitor) is the simplest robust path:
+    /// once `ignoresMouseEvents = true`, the panel stops receiving
+    /// tracking and mouseMoved events — so we'd never detect re-entry
+    /// from "outside" back into the visible region. Reading
+    /// `NSEvent.mouseLocation` works regardless of window flags.
+    private var clickThroughTimer: Timer?
     /// Latest applied state — observers fire eagerly with the seed value
     /// AFTER the initial install, so we record state to detect "change vs
     /// seed" and keep menu items / SMAppService in sync without thrashing.
@@ -504,9 +516,37 @@ class AppDelegate: NSObject, NSApplicationDelegate {
             panel.sizeAndCenterOnActiveScreen()
             panel.orderFrontRegardless()
             panel.makeKey()
+            // Default to fully click-through until the first
+            // updateBlurFrame fires (post-showDelay, alpha=1) — during
+            // showDelay the panel is invisible to the eye, so clicks in
+            // it should fall through too.
+            panel.ignoresMouseEvents = true
+            startClickThroughMonitoring()
         } else {
+            stopClickThroughMonitoring()
             panel.orderOut(nil)
         }
+    }
+
+    /// Run a 60 Hz tick while the switcher session is on screen so the
+    /// panel's `ignoresMouseEvents` tracks the cursor's screen position
+    /// vs the visible blur frame. Implementation lives in
+    /// `SwitcherOverlayWindow.updateClickThrough`.
+    private func startClickThroughMonitoring() {
+        clickThroughTimer?.invalidate()
+        let timer = Timer(timeInterval: 1.0 / 60.0, repeats: true) { [weak self] _ in
+            self?.overlayWindow?.updateClickThrough()
+        }
+        // .common so the timer keeps firing during modal-ish runloop
+        // states (e.g. while the user is dragging across spaces or the
+        // mission-control overlay is up).
+        RunLoop.main.add(timer, forMode: .common)
+        clickThroughTimer = timer
+    }
+
+    private func stopClickThroughMonitoring() {
+        clickThroughTimer?.invalidate()
+        clickThroughTimer = nil
     }
 
     private func currentInspectorWidth() -> Double {
@@ -720,6 +760,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         let center = NotificationCenter.default
         for obs in frameObservers { center.removeObserver(obs) }
         frameObservers.removeAll()
+        stopClickThroughMonitoring()
         if let m = globalKeyMonitor {
             NSEvent.removeMonitor(m)
             globalKeyMonitor = nil

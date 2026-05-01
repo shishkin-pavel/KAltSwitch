@@ -79,7 +79,7 @@ final class SwitcherOverlayWindow: NSPanel {
     /// blur with rounded shadow". `maskImage` is the documented API and
     /// works consistently from 10.10 onwards.
     func installBlurBackdrop(under composeView: NSView) {
-        let wrapper = ClickThroughWrapperView(frame: contentView?.bounds ?? composeView.bounds)
+        let wrapper = NSView(frame: contentView?.bounds ?? composeView.bounds)
         wrapper.autoresizingMask = [.width, .height]
 
         let blur = NSVisualEffectView(frame: .zero)
@@ -95,18 +95,21 @@ final class SwitcherOverlayWindow: NSPanel {
         wrapper.addSubview(composeView)
 
         contentView = wrapper
-        wrapper.visibleArea = blur
         blurView = blur
         log("[panel] blur backdrop installed wrapperBounds=\(wrapper.bounds)")
     }
 
     /// Position and size the blur backdrop. `sizeDp` comes from Compose,
     /// converted to points (Compose dp == AppKit point on macOS). Pass
-    /// nil to hide the backdrop (between sessions).
+    /// nil to hide the backdrop (between sessions). Re-evaluates
+    /// `ignoresMouseEvents` afterwards so a Compose-driven animation
+    /// frame keeps the click-through region in sync without waiting for
+    /// the next polling tick.
     func updateBlurFrame(widthPts: CGFloat?, heightPts: CGFloat?) {
         guard let blur = blurView else { return }
         guard let w = widthPts, let h = heightPts, w > 0, h > 0 else {
             blur.alphaValue = 0
+            updateClickThrough()
             return
         }
         let bounds = contentView?.bounds ?? frame
@@ -116,7 +119,36 @@ final class SwitcherOverlayWindow: NSPanel {
         )
         blur.frame = NSRect(origin: origin, size: NSSize(width: w, height: h))
         blur.alphaValue = 1
+        updateClickThrough()
         log("[panel] blur frame -> \(blur.frame)")
+    }
+
+    /// Toggle window-level `ignoresMouseEvents` based on whether the
+    /// global cursor is inside the visible blur view. Outside → window
+    /// passes mouse events to whatever app is underneath; inside → window
+    /// catches clicks normally so the Compose layer can drive
+    /// onPointAt / onCommit. Keyboard input is unaffected — the panel
+    /// stays key regardless, and `ignoresMouseEvents` is documented to
+    /// only intercept *mouse* events.
+    ///
+    /// Driven from two places: a 60 Hz polling timer started by
+    /// `setOverlayActive(true)` (catches cursor-only motion while blur
+    /// is stationary), and the tail of `updateBlurFrame` (catches
+    /// blur-only motion during Compose's `animateContentSize`).
+    func updateClickThrough() {
+        guard let blur = blurView, blur.alphaValue > 0 else {
+            // No visible content (showDelay or session ended) → panel
+            // is invisible to the eye, should be invisible to the mouse.
+            ignoresMouseEvents = true
+            return
+        }
+        let mouse = NSEvent.mouseLocation
+        let blurOriginScreen = NSPoint(
+            x: frame.origin.x + blur.frame.origin.x,
+            y: frame.origin.y + blur.frame.origin.y
+        )
+        let blurScreenFrame = NSRect(origin: blurOriginScreen, size: blur.frame.size)
+        ignoresMouseEvents = !NSPointInRect(mouse, blurScreenFrame)
     }
 
     /// 9-slice rounded-rect mask image for [NSVisualEffectView.maskImage].
@@ -208,33 +240,6 @@ final class SwitcherOverlayWindow: NSPanel {
             return true
         }
         return super.performKeyEquivalent(with: event)
-    }
-
-    /// Wrapper NSView for the panel's contentView. The panel itself is sized
-    /// to a generous fraction of the screen (`sizeAndCenterOnActiveScreen`)
-    /// so the Compose layout has room to wrap, but the *visible* rounded
-    /// surface — the [NSVisualEffectView] backdrop — only covers a small
-    /// rectangle in the middle. Without this override, clicks anywhere in
-    /// the transparent margin still land on the Compose NSView, which calls
-    /// `scene.sendPointerEvent` and reports the event handled — so apps
-    /// underneath never see the click.
-    ///
-    /// `hitTest` returning nil tells AppKit "no view here", which makes the
-    /// window itself report no hit on `windowNumber(at:)` lookups and lets
-    /// the click propagate to whichever window is below. We use the live
-    /// `visibleArea` frame (== blur view's frame, updated from Compose's
-    /// reported panel size) as the only clickable region.
-    private final class ClickThroughWrapperView: NSView {
-        weak var visibleArea: NSView?
-
-        override func hitTest(_ point: NSPoint) -> NSView? {
-            guard let visible = visibleArea, visible.alphaValue > 0 else { return nil }
-            // `point` is in our superview's coordinate space, which for an
-            // NSWindow's contentView equals the window's content bounds —
-            // same space `visible.frame` lives in.
-            guard NSPointInRect(point, visible.frame) else { return nil }
-            return super.hitTest(point)
-        }
     }
 
     override func sendEvent(_ event: NSEvent) {
