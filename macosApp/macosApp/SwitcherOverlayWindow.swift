@@ -43,6 +43,18 @@ final class SwitcherOverlayWindow: NSPanel {
     /// to alpha=0 between sessions via `setBlurVisible`.
     private(set) var blurView: NSVisualEffectView?
 
+    /// The Compose-host NSView (set up by `ComposeNSViewDelegate`,
+    /// re-parented into our wrapper by `installBlurBackdrop`). Since
+    /// iter48 it is sized to the *captured screen's visibleFrame* and
+    /// repositioned within the wrapper on every `setFrame` so its
+    /// origin in screen coordinates stays pinned to that screen rect.
+    /// That decouples the Compose scene's coordinate system from the
+    /// NSPanel's window position — resizing/recentering the panel
+    /// no longer drags Compose content along, which used to manifest
+    /// as a brief left/right shimmer when the window's left edge
+    /// shifted to keep the panel centered on screen.
+    private(set) var composeView: NSView?
+
     /// `visibleFrame` of the screen the cursor was on at session start.
     /// Used by `setContentSize` to recenter the panel after each
     /// content-driven resize. Captured once per session so the panel
@@ -64,26 +76,13 @@ final class SwitcherOverlayWindow: NSPanel {
     /// when a new row appears below or vanishes from the bottom).
     private var firstContentSizeAfterSession: Bool = true
 
-    /// Stable-size alpha gate. Compose's first frame is drawn at the
-    /// session-start scene size (~90% of the screen, set by
-    /// `captureSessionScreen`). When `setContentSize` then resizes
-    /// the NSPanel, NSView's bounds change immediately but Compose's
-    /// draw buffer is still the old (large) frame — the next render
-    /// tick crops that buffer to the new (smaller) bounds, briefly
-    /// showing the top-left of the old layout offset from where the
-    /// final centered content will land. We hide that frame by
-    /// keeping alphaValue = 0 until Compose has *rendered at the new
-    /// post-resize size* — detected by matching the pixel size
-    /// reported in `ComposeNSViewDelegate.onRenderCallback` against
-    /// the panel's expected pixel size after the resize.
-    private var isSessionSizeStable: Bool = false
-    private var sessionPendingAlphaShow: Bool = false
-
-    /// Pixel size we're waiting for Compose to render at after the
-    /// session-start `setContentSize`. Cleared once a render with
-    /// matching dimensions arrives. Kept in pixels (not points) to
-    /// avoid converting on every render callback.
-    private var awaitingPostResizeRenderPx: NSSize?
+    // (Removed in iter48: the `isSessionSizeStable` /
+    // `sessionPendingAlphaShow` / `awaitingPostResizeRenderPx` alpha
+    // gate from iter43–44. With the Compose host NSView now sized to
+    // the captured screen and pinned to it via `setFrame` overrides,
+    // there is no longer a window-resize-induced stale-buffer flash to
+    // hide — alpha can rise as soon as `observeSwitcherVisibility`
+    // says the session is visible.)
 
     /// Cell-animation duration matching `SwitcherOverlay.kt`'s
     /// `tileMotion = tween(200ms)`, plus a small safety margin so the
@@ -137,12 +136,16 @@ final class SwitcherOverlayWindow: NSPanel {
         blur.alphaValue = 0   // session not active yet
         wrapper.addSubview(blur)
 
-        composeView.frame = wrapper.bounds
-        composeView.autoresizingMask = [.width, .height]
+        // composeView size + position are managed by
+        // captureSessionScreen + the setFrame override — it spans the
+        // captured screen, not the NSPanel's content area, so don't
+        // let AppKit auto-resize it with the window.
+        composeView.autoresizingMask = []
         wrapper.addSubview(composeView)
 
         contentView = wrapper
         blurView = blur
+        self.composeView = composeView
         log("[panel] blur backdrop installed wrapperBounds=\(wrapper.bounds)")
     }
 
@@ -176,12 +179,17 @@ final class SwitcherOverlayWindow: NSPanel {
         let s = screen.visibleFrame
         sessionScreenFrame = s
         firstContentSizeAfterSession = true
+        // Compose host spans the full session screen so its scene
+        // coordinate system covers everywhere the panel might end
+        // up. setFrame's override below pins this view's *screen*
+        // origin to s.origin regardless of where the NSPanel itself
+        // sits in window-server coords.
+        composeView?.frame = NSRect(origin: .zero, size: s.size)
         // Initial panel size = whatever the user-configured max-width
         // resolves to, capped at 90% of the screen visible area on
-        // each axis. Compose's first layout uses this as its parent
-        // constraint; if the natural single-row content ends up
-        // narrower, setContentSize shrinks the panel after the first
-        // measurement.
+        // each axis. Compose's first layout uses this width as its
+        // parent constraint for FlowRow's wrap; height is generous so
+        // any row count fits without clamping.
         let width = min(resolvedMaxWidth(on: s), s.size.width * 0.9)
         let height = s.size.height * 0.9
         let origin = NSPoint(
@@ -189,6 +197,27 @@ final class SwitcherOverlayWindow: NSPanel {
             y: s.origin.y + (s.size.height - height) / 2
         )
         setFrame(NSRect(origin: origin, size: NSSize(width: width, height: height)), display: false)
+    }
+
+    /// Reposition the Compose host NSView inside our wrapper so its
+    /// origin in screen coordinates stays anchored to
+    /// `sessionScreenFrame.origin`. Called from `setFrame` (override
+    /// below) on every NSPanel frame change. With this in place,
+    /// Compose's scene coordinates are screen-stable: when the NSPanel
+    /// resizes/recenters during a content change, the Compose buffer
+    /// doesn't visually drag along — fixes the brief left/right
+    /// shimmer the user reported on multi-row transitions.
+    private func updateComposeViewPosition() {
+        guard let scene = sessionScreenFrame, let cv = composeView else { return }
+        cv.frame.origin = NSPoint(
+            x: scene.origin.x - frame.origin.x,
+            y: scene.origin.y - frame.origin.y
+        )
+    }
+
+    override func setFrame(_ frameRect: NSRect, display flag: Bool) {
+        super.setFrame(frameRect, display: flag)
+        updateComposeViewPosition()
     }
 
     /// Read the user's max-width setting (`SwitcherSettings.maxWidthMode`
@@ -214,36 +243,7 @@ final class SwitcherOverlayWindow: NSPanel {
         pendingShrink?.cancel()
         pendingShrink = nil
         sessionScreenFrame = nil
-        isSessionSizeStable = false
-        sessionPendingAlphaShow = false
-        awaitingPostResizeRenderPx = nil
         firstContentSizeAfterSession = true
-    }
-
-    /// Called from observeSwitcherVisibility when Compose flips
-    /// `ui.visible` to true. If the session has settled at its
-    /// content-driven size (Compose has had a chance to redraw at
-    /// the post-resize scene size), reveal the panel immediately.
-    /// Otherwise, queue the request — `setContentSize`'s stability
-    /// callback will fire it once the size has settled.
-    func requestAlphaVisible() {
-        if isSessionSizeStable {
-            alphaValue = 1
-            ignoresMouseEvents = false
-        } else {
-            sessionPendingAlphaShow = true
-        }
-    }
-
-    /// Called from observeSwitcherVisibility when `ui.visible` flips
-    /// to false (session ended or visibility revoked). Always hides
-    /// the panel and re-enables click-through; clears any pending
-    /// "show when stable" request so a stale stability fire from a
-    /// previous session can't reveal the panel mid-teardown.
-    func requestAlphaHidden() {
-        sessionPendingAlphaShow = false
-        alphaValue = 0
-        ignoresMouseEvents = true
     }
 
     /// Resize the panel to the Compose-reported visible content size,
@@ -283,16 +283,6 @@ final class SwitcherOverlayWindow: NSPanel {
         if firstContentSizeAfterSession {
             firstContentSizeAfterSession = false
             applyFrameCentered(size: target, on: screen)
-            // Arm the alpha gate: lift it on the first Compose render
-            // whose canvas pixel size matches the panel's new size.
-            // Until then `requestAlphaVisible` queues the show so
-            // observeSwitcherVisibility's showDelay-end signal is
-            // honoured the moment Compose's buffer is in sync.
-            let scale = backingScaleFactor
-            awaitingPostResizeRenderPx = NSSize(
-                width: round(target.width * scale),
-                height: round(target.height * scale)
-            )
             return
         }
 
@@ -316,25 +306,6 @@ final class SwitcherOverlayWindow: NSPanel {
                 deadline: .now() + SwitcherOverlayWindow.shrinkDelay,
                 execute: work
             )
-        }
-    }
-
-    /// Called from `ComposeNSViewDelegate.onRenderCallback` on every
-    /// Compose render with the canvas pixel dimensions. If we're
-    /// armed (just resized to a target) and the render dimensions
-    /// match the panel's expected pixel size, mark the size as
-    /// stable and honour any pending alpha-show request from
-    /// observeSwitcherVisibility.
-    func onComposeRender(widthPx: Int, heightPx: Int) {
-        guard let expected = awaitingPostResizeRenderPx else { return }
-        if Int(expected.width) == widthPx && Int(expected.height) == heightPx {
-            awaitingPostResizeRenderPx = nil
-            isSessionSizeStable = true
-            if sessionPendingAlphaShow {
-                sessionPendingAlphaShow = false
-                alphaValue = 1
-                ignoresMouseEvents = false
-            }
         }
     }
 

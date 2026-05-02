@@ -207,19 +207,6 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         if let composeView = panel.contentView {
             panel.installBlurBackdrop(under: composeView)
         }
-        // Wire Compose's per-render callback to the panel's
-        // post-resize alpha gate. Compose reports the canvas pixel
-        // size on every render — when it matches the panel's
-        // expected post-`setContentSize` pixel size, the gate lifts
-        // and observeSwitcherVisibility's pending alpha-show fires.
-        // Pixels (not points) because that's what skia gives us;
-        // SwitcherOverlayWindow converts using `backingScaleFactor`.
-        overlayComposeDelegate?.onRenderCallback = { [weak panel] widthPx, heightPx in
-            panel?.onComposeRender(
-                widthPx: Int(widthPx.int32Value),
-                heightPx: Int(heightPx.int32Value)
-            )
-        }
         ComposeViewKt.observeSwitcherPanelSize(
             onChange: { [weak panel] w, h in
                 guard let panel = panel else { return }
@@ -305,19 +292,13 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         }
         ComposeViewKt.observeSwitcherVisibility { [weak self] visible in
             let panel = self?.overlayWindow
-            // The panel decides *when* to actually flip alpha. If the
-            // first content-driven resize has already settled, alpha=1
-            // happens immediately; otherwise the request is queued
-            // until size stabilises so the user doesn't see a stale
-            // Compose buffer cropped to the new (smaller) NSView
-            // bounds during the post-resize gap. ignoresMouseEvents
-            // is paired with alpha so click-through stays in sync
-            // with visibility.
-            if visible.boolValue {
-                panel?.requestAlphaVisible()
-            } else {
-                panel?.requestAlphaHidden()
-            }
+            // alpha=0 → ignoresMouseEvents=true (click-through during
+            // showDelay); alpha=1 → false (panel reactive). No more
+            // post-resize stability gate (iter43–44) since the
+            // Compose host is screen-pinned in iter48 and doesn't
+            // flash a stale buffer when the NSPanel resizes.
+            panel?.alphaValue = visible.boolValue ? 1 : 0
+            panel?.ignoresMouseEvents = !visible.boolValue
         }
         ComposeViewKt.observeInspectorVisible { [weak self] visible in
             self?.applyInspectorVisibility(visible.boolValue)

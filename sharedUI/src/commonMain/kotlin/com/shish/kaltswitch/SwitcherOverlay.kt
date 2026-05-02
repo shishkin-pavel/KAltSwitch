@@ -28,7 +28,10 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -53,6 +56,7 @@ import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.layout.layout
 import androidx.compose.ui.unit.Constraints
+import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
@@ -88,6 +92,20 @@ fun SwitcherOverlay(
     val focus = remember { FocusRequester() }
     LaunchedEffect(Unit) { focus.requestFocus() }
 
+    // The outer Box fills the *entire Compose scene*, which since iter48
+    // is sized to the captured screen's visibleFrame and pinned to that
+    // screen rect via Swift updating the Compose-host NSView's
+    // frame.origin on every NSPanel `setFrame`. That means Compose's
+    // coordinate system is screen-stable: the NSPanel can resize and
+    // reposition freely (animation, recentering, etc.) without dragging
+    // Compose content along — so the brief gap between AppKit moving
+    // the window's left edge and Compose rendering at the new
+    // panel-relative position no longer manifests as a visible left/right
+    // shimmer.
+    //
+    // No contentAlignment on this Box — the inner positioning Box
+    // handles its own placement via `align(TopCenter)` + a captured
+    // top-y offset (see below).
     Box(
         Modifier
             .fillMaxSize()
@@ -99,24 +117,65 @@ fun SwitcherOverlay(
             // the panel just appeared under a stationary mouse would yank
             // the keyboard-selected default cursor away.
             .onPointerEvent(PointerEventType.Move) { onPointerMoved() },
-        // TopCenter (not Center): when a mid-session change makes the
-        // panel grow taller (e.g. an app opens a window, adding a row),
-        // Swift's setContentSize keeps the window's *top* edge stable
-        // (`applyFrameKeepingTop`). Pairing that with TopCenter here
-        // keeps the *existing* rows visually pinned at the top, with
-        // new rows added/removed at the bottom — what the user expects
-        // when "the second row appears below the first".
-        contentAlignment = Alignment.TopCenter,
     ) {
-        // Outer LookaheadScope: gives SwitcherPanel's visible-Box
-        // `Modifier.layout` access to `IntrinsicMeasureScope.isLookingAhead`,
-        // which is how it distinguishes the once-per-content-change
-        // *target* size (reported to Swift via onPanelSize) from the
-        // per-frame *animated* size driven by animateContentSize on
-        // the same Box. Cell-level animateBounds uses a *different*,
-        // inner LookaheadScope wrapping FlowRow — see SwitcherPanel.
+        // Outer LookaheadScope: gives the wrapper Box's `Modifier.layout`
+        // access to `IntrinsicMeasureScope.isLookingAhead`, which is how
+        // it distinguishes the once-per-content-change *target* size
+        // (reported to Swift via onPanelSize) from the per-frame
+        // *animated* size from animateContentSize on the visible Box
+        // inside SwitcherPanel. Cell-level animateBounds uses a
+        // *different*, inner LookaheadScope wrapping FlowRow — see
+        // SwitcherPanel.
         LookaheadScope {
-            SwitcherPanel(ui, iconsByPid, onPointAt, onCommit, onPanelSize)
+            // Captured at the first lookahead measurement, this Y is
+            // where the panel's top edge sits in scene coordinates for
+            // the rest of the session. It is set so the panel is
+            // initially centered vertically on the captured screen
+            // (= the user-visible "session start: panel centered"
+            // behaviour), but stays *fixed* across mid-session
+            // content-size changes — the panel grows downward and
+            // shrinks upward toward this anchor, never re-centering.
+            // Compose's `Modifier.offset { … }` re-reads this state
+            // during placement only, so updating the value doesn't
+            // invalidate composition; it just re-places the wrapper.
+            var capturedTopY by remember { mutableStateOf<Int?>(null) }
+            Box(
+                Modifier
+                    .align(Alignment.TopCenter)
+                    .offset { IntOffset(0, capturedTopY ?: 0) }
+                    .layout { measurable, constraints ->
+                        // Override parent maxHeight so FlowRow can wrap
+                        // to extra rows without being clamped (same as
+                        // iter45). Width is preserved from parent so
+                        // the user's max-width setting still kicks in
+                        // via FlowRow's wrap behaviour.
+                        val sceneHeight = constraints.maxHeight
+                        val placeable = measurable.measure(
+                            constraints.copy(maxHeight = Constraints.Infinity)
+                        )
+                        // Only the *target* (lookahead) size goes to
+                        // Swift; per-frame animated sizes from
+                        // animateContentSize on the visible Box stay
+                        // local. On the very first lookahead, capture
+                        // the centered top-y so subsequent content-size
+                        // changes anchor to the same scene Y.
+                        if (isLookingAhead) {
+                            if (capturedTopY == null) {
+                                capturedTopY = ((sceneHeight - placeable.height) / 2)
+                                    .coerceAtLeast(0)
+                            }
+                            onPanelSize(
+                                placeable.width.toDp().value,
+                                placeable.height.toDp().value,
+                            )
+                        }
+                        layout(placeable.width, placeable.height) {
+                            placeable.place(0, 0)
+                        }
+                    }
+            ) {
+                SwitcherPanel(ui, iconsByPid, onPointAt, onCommit)
+            }
         }
     }
 }
@@ -219,7 +278,6 @@ private fun SwitcherPanel(
     iconsByPid: Map<Int, ByteArray>,
     onPointAt: (appIndex: Int, windowIndex: Int?) -> Unit,
     onCommit: () -> Unit,
-    onPanelSize: (Float, Float) -> Unit,
 ) {
     val state = ui.state
     val entries = state.snapshot.all
@@ -227,42 +285,14 @@ private fun SwitcherPanel(
 
     val withWindowsCount = state.snapshot.withWindows.size
 
+    // The lookahead-driven onPanelSize report and the unbounded-maxHeight
+    // override now live on the wrapper Box in SwitcherOverlay (so the
+    // captured top-y centring math has access to the pre-animation
+    // target size). Here we keep just the *visual* backdrop:
+    // animateContentSize gives a 200 ms expand/contract on logical
+    // size changes; clip + background + border draw the rounded plate.
     Box(
         Modifier
-            // Outermost layout modifier does two jobs:
-            //
-            //   1. **Override parent maxHeight** so a content change
-            //      that requires another row (e.g. a new app opens
-            //      mid-session, FlowRow wraps to row 2) isn't clamped
-            //      back to the previous panel height. Without this,
-            //      Compose's Box-default measure clamps inner content
-            //      to `parent.maxHeight`, so onPanelSize would report
-            //      the old (single-row) height forever and the new
-            //      cell would render outside the panel's visible area.
-            //
-            //   2. **Report the *target* (lookahead) size to Swift** —
-            //      not the per-frame animated size from
-            //      `animateContentSize` below. `IntrinsicMeasureScope.isLookingAhead`
-            //      is true exactly during the lookahead pass, which
-            //      runs once per logical content change. Swift uses
-            //      this single target size for its grow-instant /
-            //      shrink-after-animation NSPanel resize logic; the
-            //      visual expand/contract of the rounded backdrop
-            //      stays inside Compose, smoothed by
-            //      `animateContentSize` on the same Box.
-            .layout { measurable, constraints ->
-                val unbounded = constraints.copy(maxHeight = Constraints.Infinity)
-                val placeable = measurable.measure(unbounded)
-                if (isLookingAhead) {
-                    onPanelSize(placeable.width.toDp().value, placeable.height.toDp().value)
-                }
-                layout(placeable.width, placeable.height) { placeable.place(0, 0) }
-            }
-            // Visual size animation for the backdrop. Lookahead pass
-            // bypasses this (target size), approach pass interpolates
-            // (current animated size). Same 200 ms tween as cell
-            // animateBounds so the backdrop and the cells settling
-            // into their new positions move in lockstep.
             .animateContentSize(animationSpec = tween(durationMillis = 200, easing = FastOutSlowInEasing))
             .clip(RoundedCornerShape(16.dp))
             // Faint dark tint over the NSVisualEffectView blur Swift
