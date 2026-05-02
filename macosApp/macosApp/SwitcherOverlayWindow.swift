@@ -64,6 +64,27 @@ final class SwitcherOverlayWindow: NSPanel {
     /// when a new row appears below or vanishes from the bottom).
     private var firstContentSizeAfterSession: Bool = true
 
+    /// Stable-size alpha gate. Compose's first frame is drawn at the
+    /// session-start scene size (~90% of the screen, set by
+    /// `captureSessionScreen`). When `setContentSize` then resizes
+    /// the NSPanel, NSView's bounds change immediately but Compose's
+    /// draw buffer is still the old (large) frame — the next render
+    /// tick crops that buffer to the new (smaller) bounds, briefly
+    /// showing the top-left of the old layout offset from where the
+    /// final centered content will land. We hide that frame by
+    /// keeping alphaValue = 0 until the session size has stabilised
+    /// (~50 ms after the first `setContentSize`), at which point
+    /// observeSwitcherVisibility's pending request is honoured.
+    private var isSessionSizeStable: Bool = false
+    private var sessionPendingAlphaShow: Bool = false
+    private var sizeStabilityWork: DispatchWorkItem?
+
+    /// Wall-clock margin used to wait for Compose to redraw at the
+    /// post-resize scene size before we lift the alpha gate. 50 ms ≈
+    /// 3 frames @ 60 Hz, comfortably above the cost of one Compose
+    /// recompose+render pass on current Apple Silicon.
+    private static let sizeStabilityDelay: TimeInterval = 0.05
+
     /// Cell-animation duration matching `SwitcherOverlay.kt`'s
     /// `tileMotion = tween(200ms)`, plus a small safety margin so the
     /// last interpolation tick has rendered before the panel snaps.
@@ -170,7 +191,38 @@ final class SwitcherOverlayWindow: NSPanel {
     func clearSessionState() {
         pendingShrink?.cancel()
         pendingShrink = nil
+        sizeStabilityWork?.cancel()
+        sizeStabilityWork = nil
         sessionScreenFrame = nil
+        isSessionSizeStable = false
+        sessionPendingAlphaShow = false
+        firstContentSizeAfterSession = true
+    }
+
+    /// Called from observeSwitcherVisibility when Compose flips
+    /// `ui.visible` to true. If the session has settled at its
+    /// content-driven size (Compose has had a chance to redraw at
+    /// the post-resize scene size), reveal the panel immediately.
+    /// Otherwise, queue the request — `setContentSize`'s stability
+    /// callback will fire it once the size has settled.
+    func requestAlphaVisible() {
+        if isSessionSizeStable {
+            alphaValue = 1
+            ignoresMouseEvents = false
+        } else {
+            sessionPendingAlphaShow = true
+        }
+    }
+
+    /// Called from observeSwitcherVisibility when `ui.visible` flips
+    /// to false (session ended or visibility revoked). Always hides
+    /// the panel and re-enables click-through; clears any pending
+    /// "show when stable" request so a stale stability fire from a
+    /// previous session can't reveal the panel mid-teardown.
+    func requestAlphaHidden() {
+        sessionPendingAlphaShow = false
+        alphaValue = 0
+        ignoresMouseEvents = true
     }
 
     /// Resize the panel to the Compose-reported visible content size,
@@ -210,6 +262,7 @@ final class SwitcherOverlayWindow: NSPanel {
         if firstContentSizeAfterSession {
             firstContentSizeAfterSession = false
             applyFrameCentered(size: target, on: screen)
+            scheduleSizeStability()
             return
         }
 
@@ -234,6 +287,30 @@ final class SwitcherOverlayWindow: NSPanel {
                 execute: work
             )
         }
+    }
+
+    /// Wait one Compose recompose+render pass after the first
+    /// session-start resize, then mark the size as stable. If
+    /// observeSwitcherVisibility has already queued an alpha-show
+    /// request (showDelay shorter than this delay), honour it now so
+    /// the panel reveals on the next runloop tick.
+    private func scheduleSizeStability() {
+        sizeStabilityWork?.cancel()
+        let work = DispatchWorkItem { [weak self] in
+            guard let self = self else { return }
+            self.isSessionSizeStable = true
+            self.sizeStabilityWork = nil
+            if self.sessionPendingAlphaShow {
+                self.sessionPendingAlphaShow = false
+                self.alphaValue = 1
+                self.ignoresMouseEvents = false
+            }
+        }
+        sizeStabilityWork = work
+        DispatchQueue.main.asyncAfter(
+            deadline: .now() + SwitcherOverlayWindow.sizeStabilityDelay,
+            execute: work
+        )
     }
 
     private func applyFrameCentered(size: NSSize, on screen: NSRect) {

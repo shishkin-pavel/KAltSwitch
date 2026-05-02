@@ -292,12 +292,19 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         }
         ComposeViewKt.observeSwitcherVisibility { [weak self] visible in
             let panel = self?.overlayWindow
-            panel?.alphaValue = visible.boolValue ? 1 : 0
-            // Re-enable mouse events once the panel is visible at
-            // content size (showDelay end). The session-start path
-            // sets ignoresMouseEvents = true so clicks during showDelay
-            // pass through the still-invisible-but-large panel.
-            panel?.ignoresMouseEvents = !visible.boolValue
+            // The panel decides *when* to actually flip alpha. If the
+            // first content-driven resize has already settled, alpha=1
+            // happens immediately; otherwise the request is queued
+            // until size stabilises so the user doesn't see a stale
+            // Compose buffer cropped to the new (smaller) NSView
+            // bounds during the post-resize gap. ignoresMouseEvents
+            // is paired with alpha so click-through stays in sync
+            // with visibility.
+            if visible.boolValue {
+                panel?.requestAlphaVisible()
+            } else {
+                panel?.requestAlphaHidden()
+            }
         }
         ComposeViewKt.observeInspectorVisible { [weak self] visible in
             self?.applyInspectorVisibility(visible.boolValue)
