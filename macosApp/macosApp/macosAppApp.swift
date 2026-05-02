@@ -291,7 +291,13 @@ class AppDelegate: NSObject, NSApplicationDelegate {
             self?.setOverlayActive(active.boolValue)
         }
         ComposeViewKt.observeSwitcherVisibility { [weak self] visible in
-            self?.overlayWindow?.alphaValue = visible.boolValue ? 1 : 0
+            let panel = self?.overlayWindow
+            panel?.alphaValue = visible.boolValue ? 1 : 0
+            // Re-enable mouse events once the panel is visible at
+            // content size (showDelay end). The session-start path
+            // sets ignoresMouseEvents = true so clicks during showDelay
+            // pass through the still-invisible-but-large panel.
+            panel?.ignoresMouseEvents = !visible.boolValue
         }
         ComposeViewKt.observeInspectorVisible { [weak self] visible in
             self?.applyInspectorVisibility(visible.boolValue)
@@ -503,6 +509,17 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         guard let panel = overlayWindow else { return }
         if active {
             panel.alphaValue = 0
+            // Click-through during the showDelay window. The panel is
+            // sized to ~90% of the screen at session start (so Compose
+            // can lay out cells in a single natural-width row before
+            // shrinking) and is invisible (alphaValue = 0) until
+            // observeSwitcherVisibility fires `visible = true`. Without
+            // this the giant invisible panel would absorb every click
+            // during the showDelay — visible to the user as "the app
+            // I tried to click didn't react". `ignoresMouseEvents` is
+            // flipped back to false in observeSwitcherVisibility once
+            // the panel becomes visible at content size.
+            panel.ignoresMouseEvents = true
             panel.captureSessionScreen()
             panel.orderFrontRegardless()
             panel.makeKey()

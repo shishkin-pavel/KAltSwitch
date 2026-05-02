@@ -56,6 +56,14 @@ final class SwitcherOverlayWindow: NSPanel {
     /// reports cancel any in-flight shrink and reschedule.
     private var pendingShrink: DispatchWorkItem?
 
+    /// Set true by `captureSessionScreen`, cleared on the first
+    /// `setContentSize` call within a session. Distinguishes
+    /// session-start sizing (panel placed centered on the captured
+    /// screen) from mid-session sizing (panel resized while keeping
+    /// the *top* edge stable, so existing rows don't visually drift
+    /// when a new row appears below or vanishes from the bottom).
+    private var firstContentSizeAfterSession: Bool = true
+
     /// Cell-animation duration matching `SwitcherOverlay.kt`'s
     /// `tileMotion = tween(200ms)`, plus a small safety margin so the
     /// last interpolation tick has rendered before the panel snaps.
@@ -129,11 +137,15 @@ final class SwitcherOverlayWindow: NSPanel {
     /// panel to a generous fraction of that screen so the first
     /// Compose composition has room to lay out cells in their natural
     /// single-row arrangement. Without the pre-size, Compose's first
-    /// `BoxWithConstraints`-style layout would inherit whatever
-    /// (potentially small) width the panel ended up at after the
-    /// previous session, and FlowRow would wrap prematurely.
-    /// Subsequent `setContentSize` calls shrink the panel to the
-    /// actual content width.
+    /// layout would inherit whatever (potentially small) width the
+    /// panel ended up at after the previous session, and FlowRow
+    /// would wrap prematurely. Subsequent `setContentSize` calls
+    /// shrink the panel to the actual content width.
+    ///
+    /// Also resets `firstContentSizeAfterSession` so the *next*
+    /// `setContentSize` call centers the new panel on the captured
+    /// screen, while later calls during the same session anchor the
+    /// top edge instead.
     func captureSessionScreen() {
         let mouse = NSEvent.mouseLocation
         let screen = NSScreen.screens.first(where: { NSMouseInRect(mouse, $0.frame, false) })
@@ -142,8 +154,9 @@ final class SwitcherOverlayWindow: NSPanel {
         guard let screen = screen else { return }
         let s = screen.visibleFrame
         sessionScreenFrame = s
+        firstContentSizeAfterSession = true
         let width = s.size.width * 0.9
-        let height = min(640, s.size.height * 0.7)
+        let height = s.size.height * 0.9
         let origin = NSPoint(
             x: s.origin.x + (s.size.width - width) / 2,
             y: s.origin.y + (s.size.height - height) / 2
@@ -189,13 +202,14 @@ final class SwitcherOverlayWindow: NSPanel {
         pendingShrink?.cancel()
         pendingShrink = nil
 
-        // showDelay or first layout of a fresh session: blur is still
-        // invisible, no animateBounds is in flight inside Compose, so
-        // there's nothing to keep the panel large for. Snap straight
-        // to target.
-        let blurVisible = (blurView?.alphaValue ?? 0) > 0.5
-        if !blurVisible {
-            applyFrame(size: target, on: screen)
+        // First call after session start (Compose's first layout) —
+        // place the panel centered on the captured screen at the
+        // freshly-measured content size. Subsequent calls during the
+        // same session anchor the top edge instead so existing rows
+        // don't slide around when a new row is added/removed below.
+        if firstContentSizeAfterSession {
+            firstContentSizeAfterSession = false
+            applyFrameCentered(size: target, on: screen)
             return
         }
 
@@ -205,13 +219,13 @@ final class SwitcherOverlayWindow: NSPanel {
         )
 
         if envelope != current {
-            applyFrame(size: envelope, on: screen)
+            applyFrameKeepingTop(size: envelope)
         }
 
         if target != envelope {
             let work = DispatchWorkItem { [weak self] in
-                guard let self = self, let s = self.sessionScreenFrame else { return }
-                self.applyFrame(size: target, on: s)
+                guard let self = self else { return }
+                self.applyFrameKeepingTop(size: target)
                 self.pendingShrink = nil
             }
             pendingShrink = work
@@ -222,12 +236,27 @@ final class SwitcherOverlayWindow: NSPanel {
         }
     }
 
-    private func applyFrame(size: NSSize, on screen: NSRect) {
+    private func applyFrameCentered(size: NSSize, on screen: NSRect) {
         let origin = NSPoint(
             x: screen.origin.x + (screen.size.width - size.width) / 2,
             y: screen.origin.y + (screen.size.height - size.height) / 2
         )
         setFrame(NSRect(origin: origin, size: size), display: false)
+    }
+
+    /// Resize the panel keeping its *top* edge (and horizontal centre
+    /// axis) stable. Used for mid-session content-size changes — when
+    /// an extra row appears/disappears the existing rows shouldn't
+    /// visually jump; the panel grows downward / shrinks from the
+    /// bottom.
+    private func applyFrameKeepingTop(size: NSSize) {
+        let oldCenterX = frame.origin.x + frame.size.width / 2
+        let oldTopY = frame.origin.y + frame.size.height
+        let newOrigin = NSPoint(
+            x: oldCenterX - size.width / 2,
+            y: oldTopY - size.height
+        )
+        setFrame(NSRect(origin: newOrigin, size: size), display: false)
     }
 
     private func fallbackScreenFrame() -> NSRect? {

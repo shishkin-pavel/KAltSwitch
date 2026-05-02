@@ -98,7 +98,14 @@ fun SwitcherOverlay(
             // the panel just appeared under a stationary mouse would yank
             // the keyboard-selected default cursor away.
             .onPointerEvent(PointerEventType.Move) { onPointerMoved() },
-        contentAlignment = Alignment.Center,
+        // TopCenter (not Center): when a mid-session change makes the
+        // panel grow taller (e.g. an app opens a window, adding a row),
+        // Swift's setContentSize keeps the window's *top* edge stable
+        // (`applyFrameKeepingTop`). Pairing that with TopCenter here
+        // keeps the *existing* rows visually pinned at the top, with
+        // new rows added/removed at the bottom — what the user expects
+        // when "the second row appears below the first".
+        contentAlignment = Alignment.TopCenter,
     ) {
         SwitcherPanel(ui, iconsByPid, onPointAt, onCommit, onPanelSize)
     }
@@ -211,23 +218,26 @@ private fun SwitcherPanel(
     val withWindowsCount = state.snapshot.withWindows.size
     val density = LocalDensity.current
 
-    Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
-        Box(
-            Modifier
-                // No widthIn cap here on purpose. The outer Compose
-                // root fills the NSPanel's contentView, so this Box's
-                // parent constraint == the panel's current width. At
-                // session start Swift sizes the panel to ~90% of the
-                // screen so this Box has room to lay out cells in
-                // their natural single-row arrangement; FlowRow's
-                // measured size is what Swift then shrinks the panel
-                // to via setContentSize. Subsequent recompositions
-                // see parent maxWidth == content width → stable, no
-                // further wrap. A constant cap (e.g. 800.dp) breaks
-                // this — the panel would never get a chance to
-                // measure wider than the cap, and on big screens
-                // users with >5 apps would see premature row wrap.
-                .clip(RoundedCornerShape(16.dp))
+    Box(
+        // No fillMaxSize: this Box hugs its content (the inner panel),
+        // so SwitcherOverlay's outer Box can position it via its
+        // TopCenter contentAlignment. With a fillMaxSize centering
+        // wrapper here, alignment on the outer Box is moot — child
+        // would always span the full panel and "centering" or
+        // "top-aligning" would refer to a self-filling region.
+        //
+        // No widthIn cap either. At session start Swift sizes the
+        // NSPanel to ~90% of the screen so this Box has room to lay
+        // out cells in their natural single-row arrangement;
+        // FlowRow's measured size is what Swift then shrinks the
+        // NSPanel to via setContentSize. Subsequent recompositions
+        // see parent maxWidth == content width → stable, no further
+        // wrap. A constant cap (e.g. 800.dp) breaks this — the panel
+        // would never get a chance to measure wider than the cap,
+        // and on big screens users with >5 apps would see premature
+        // row wrap.
+        Modifier
+            .clip(RoundedCornerShape(16.dp))
                 // Faint dark tint over the NSVisualEffectView blur Swift
                 // installs underneath. Low alpha so the blurred backdrop
                 // dominates; doubles as a fallback when the user has
@@ -343,7 +353,6 @@ private fun SwitcherPanel(
             }
             }
         }
-    }
 }
 
 @OptIn(ExperimentalComposeUiApi::class)
