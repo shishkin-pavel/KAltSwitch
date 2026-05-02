@@ -181,12 +181,14 @@ fun AttachSwitcherOverlay(window: NSWindow): ComposeNSViewDelegate = ComposeNSVi
         val icons by store.iconsByPid.collectAsState()
         val accentColor by store.accentColor.collectAsState()
         val systemAccentRgb by store.systemAccentRgb.collectAsState()
+        val switcherSettings by store.switcherSettings.collectAsState()
         val current = ui
         if (current != null && current.visible) {
             ProvideAccent(resolveAccent(accentColor, systemAccentRgb)) {
                 SwitcherOverlay(
                     ui = current,
                     iconsByPid = icons,
+                    switcherSettings = switcherSettings,
                     onNavigate = { switcherController.onNavigate(it) },
                     onEsc = { switcherController.onEsc() },
                     onShortcut = { switcherController.onShortcut(it) },

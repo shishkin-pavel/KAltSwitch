@@ -61,6 +61,8 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import com.shish.kaltswitch.config.MaxSizeMode
+import com.shish.kaltswitch.config.SwitcherSettings
 import com.shish.kaltswitch.icon.rememberAppIcon
 import com.shish.kaltswitch.model.SwitcherEntry
 import com.shish.kaltswitch.model.SwitcherEvent
@@ -81,6 +83,7 @@ import com.shish.kaltswitch.switcher.SwitcherUiState
 fun SwitcherOverlay(
     ui: SwitcherUiState,
     iconsByPid: Map<Int, ByteArray>,
+    switcherSettings: SwitcherSettings,
     onNavigate: (SwitcherEvent) -> Unit,
     onEsc: () -> Unit,
     onShortcut: (SwitcherEntry) -> Unit,
@@ -144,14 +147,32 @@ fun SwitcherOverlay(
                     .align(Alignment.TopCenter)
                     .offset { IntOffset(0, capturedTopY ?: 0) }
                     .layout { measurable, constraints ->
+                        // Resolve user's max-width setting against the
+                        // current scene width (= screen width since
+                        // iter48). Pre-iter48 the cap was effectively
+                        // applied via the NSPanel size, which bounded
+                        // FlowRow's parent constraint; now that the
+                        // Compose host spans the full screen, we have
+                        // to enforce the cap here on the wrapper.
+                        val sceneWidth = constraints.maxWidth
+                        val sceneHeight = constraints.maxHeight
+                        val capPx = if (switcherSettings.maxWidthMode == MaxSizeMode.Percent) {
+                            (sceneWidth * switcherSettings.maxWidthPercent).toInt()
+                        } else {
+                            switcherSettings.maxWidthDp.toFloat().dp.toPx().toInt()
+                        }
+                        val effectiveMaxWidth = capPx.coerceIn(0, sceneWidth)
                         // Override parent maxHeight so FlowRow can wrap
                         // to extra rows without being clamped (same as
-                        // iter45). Width is preserved from parent so
-                        // the user's max-width setting still kicks in
-                        // via FlowRow's wrap behaviour.
-                        val sceneHeight = constraints.maxHeight
+                        // iter45). MaxWidth is the user-configured cap,
+                        // so FlowRow wraps within the user's preferred
+                        // width and onPanelSize reports the cap-respecting
+                        // measured size to Swift.
                         val placeable = measurable.measure(
-                            constraints.copy(maxHeight = Constraints.Infinity)
+                            constraints.copy(
+                                maxWidth = effectiveMaxWidth,
+                                maxHeight = Constraints.Infinity,
+                            )
                         )
                         // Only the *target* (lookahead) size goes to
                         // Swift; per-frame animated sizes from
