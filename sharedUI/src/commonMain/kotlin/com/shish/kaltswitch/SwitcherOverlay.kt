@@ -2,6 +2,7 @@ package com.shish.kaltswitch
 
 import androidx.compose.animation.BoundsTransform
 import androidx.compose.animation.animateBounds
+import androidx.compose.animation.animateContentSize
 import androidx.compose.animation.core.FastOutSlowInEasing
 import androidx.compose.animation.core.tween
 import androidx.compose.ui.layout.LookaheadScope
@@ -50,8 +51,8 @@ import androidx.compose.ui.input.pointer.onPointerEvent
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.ui.layout.ContentScale
-import androidx.compose.ui.layout.onSizeChanged
-import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.layout.layout
+import androidx.compose.ui.unit.Constraints
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
@@ -107,7 +108,15 @@ fun SwitcherOverlay(
         // when "the second row appears below the first".
         contentAlignment = Alignment.TopCenter,
     ) {
-        SwitcherPanel(ui, iconsByPid, onPointAt, onCommit, onPanelSize)
+        // Single LookaheadScope wrapping the whole panel. SwitcherPanel
+        // uses it both to discriminate the lookahead vs approach pass
+        // (target size goes to Swift via onPanelSize during lookahead;
+        // approach pass carries Compose's animateContentSize visual
+        // animation), and to provide cell-level animateBounds with a
+        // scope that survives reorders / bucket transitions.
+        LookaheadScope {
+            SwitcherPanel(this, ui, iconsByPid, onPointAt, onCommit, onPanelSize)
+        }
     }
 }
 
@@ -205,6 +214,7 @@ private val DemoteBackdropColor = Color(0x33000000)
 @OptIn(ExperimentalLayoutApi::class)
 @Composable
 private fun SwitcherPanel(
+    lookaheadScope: LookaheadScope,
     ui: SwitcherUiState,
     iconsByPid: Map<Int, ByteArray>,
     onPointAt: (appIndex: Int, windowIndex: Int?) -> Unit,
@@ -216,50 +226,54 @@ private fun SwitcherPanel(
     if (entries.isEmpty()) return
 
     val withWindowsCount = state.snapshot.withWindows.size
-    val density = LocalDensity.current
 
     Box(
-        // No fillMaxSize: this Box hugs its content (the inner panel),
-        // so SwitcherOverlay's outer Box can position it via its
-        // TopCenter contentAlignment. With a fillMaxSize centering
-        // wrapper here, alignment on the outer Box is moot — child
-        // would always span the full panel and "centering" or
-        // "top-aligning" would refer to a self-filling region.
-        //
-        // No widthIn cap either. At session start Swift sizes the
-        // NSPanel to ~90% of the screen so this Box has room to lay
-        // out cells in their natural single-row arrangement;
-        // FlowRow's measured size is what Swift then shrinks the
-        // NSPanel to via setContentSize. Subsequent recompositions
-        // see parent maxWidth == content width → stable, no further
-        // wrap. A constant cap (e.g. 800.dp) breaks this — the panel
-        // would never get a chance to measure wider than the cap,
-        // and on big screens users with >5 apps would see premature
-        // row wrap.
         Modifier
-            .clip(RoundedCornerShape(16.dp))
-                // Faint dark tint over the NSVisualEffectView blur Swift
-                // installs underneath. Low alpha so the blurred backdrop
-                // dominates; doubles as a fallback when the user has
-                // "Reduce transparency" enabled in Accessibility (which
-                // turns NSVisualEffectView into a solid-colour fill).
-                .background(Color(0x661B1B1F))
-                .border(1.dp, Color(0x33FFFFFF), RoundedCornerShape(16.dp))
-                // Push the box's measured size out to Swift on every
-                // layout-driven change. With animateContentSize removed
-                // throughout this composable, this fires once per actual
-                // content change (apps add/remove, filter change) with
-                // the *target* size — Swift uses that to resize the
-                // NSPanel itself; the visual transition between old and
-                // new layout is carried by the `animateBounds` modifier
-                // on each AppCell within the LookaheadScope below.
-                .onSizeChanged { size ->
-                    with(density) {
-                        onPanelSize(size.width.toDp().value, size.height.toDp().value)
-                    }
+            // Outermost layout modifier does two jobs:
+            //
+            //   1. **Override parent maxHeight** so a content change
+            //      that requires another row (e.g. a new app opens
+            //      mid-session, FlowRow wraps to row 2) isn't clamped
+            //      back to the previous panel height. Without this,
+            //      Compose's Box-default measure clamps inner content
+            //      to `parent.maxHeight`, so onPanelSize would report
+            //      the old (single-row) height forever and the new
+            //      cell would render outside the panel's visible area.
+            //
+            //   2. **Report the *target* (lookahead) size to Swift** —
+            //      not the per-frame animated size from
+            //      `animateContentSize` below. `IntrinsicMeasureScope.isLookingAhead`
+            //      is true exactly during the lookahead pass, which
+            //      runs once per logical content change. Swift uses
+            //      this single target size for its grow-instant /
+            //      shrink-after-animation NSPanel resize logic; the
+            //      visual expand/contract of the rounded backdrop
+            //      stays inside Compose, smoothed by
+            //      `animateContentSize` on the same Box.
+            .layout { measurable, constraints ->
+                val unbounded = constraints.copy(maxHeight = Constraints.Infinity)
+                val placeable = measurable.measure(unbounded)
+                if (isLookingAhead) {
+                    onPanelSize(placeable.width.toDp().value, placeable.height.toDp().value)
                 }
-                .padding(horizontal = 16.dp, vertical = 12.dp),
-        ) {
+                layout(placeable.width, placeable.height) { placeable.place(0, 0) }
+            }
+            // Visual size animation for the backdrop. Lookahead pass
+            // bypasses this (target size), approach pass interpolates
+            // (current animated size). Same 200 ms tween as cell
+            // animateBounds so the backdrop and the cells settling
+            // into their new positions move in lockstep.
+            .animateContentSize(animationSpec = tween(durationMillis = 200, easing = FastOutSlowInEasing))
+            .clip(RoundedCornerShape(16.dp))
+            // Faint dark tint over the NSVisualEffectView blur Swift
+            // installs underneath. Low alpha so the blurred backdrop
+            // dominates; doubles as a fallback when the user has
+            // "Reduce transparency" enabled in Accessibility (which
+            // turns NSVisualEffectView into a solid-colour fill).
+            .background(Color(0x661B1B1F))
+            .border(1.dp, Color(0x33FFFFFF), RoundedCornerShape(16.dp))
+            .padding(horizontal = 16.dp, vertical = 12.dp),
+    ) {
             // Split entries into the show bucket (rendered as direct
             // children of the outer FlowRow) and the demote bucket
             // (wrapped in a single grey-backdrop Box). Wrapping all
@@ -272,15 +286,13 @@ private fun SwitcherPanel(
             val demoteEntries = if (withWindowsCount < entries.size) {
                 entries.subList(withWindowsCount, entries.size)
             } else emptyList()
-            // LookaheadScope + Modifier.animateBounds on each AppCell makes
-            // tile *movement* (positional reorder, neighbour shifts when a
-            // sibling appears/disappears, show ↔ demote bucket transitions
-            // when filters change live) slide instead of snap. Without
-            // lookahead, FlowRow's standard layout pass commits final
-            // positions immediately and animateContentSize alone handles
-            // only size changes. With lookahead the cell's "before" and
-            // "after" bounds are both known and the modifier interpolates.
-            LookaheadScope {
+            // Modifier.animateBounds on each AppCell makes tile
+            // *movement* (positional reorder, neighbour shifts when a
+            // sibling appears/disappears, show ↔ demote bucket
+            // transitions when filters change live) slide instead of
+            // snap. Uses the LookaheadScope wrapping the whole
+            // SwitcherPanel — same scope SwitcherPanel's outer Box
+            // uses to discriminate lookahead vs approach pass.
             FlowRow(
                 horizontalArrangement = Arrangement.spacedBy(6.dp, Alignment.CenterHorizontally),
                 verticalArrangement = Arrangement.spacedBy(8.dp),
@@ -293,7 +305,7 @@ private fun SwitcherPanel(
                     androidx.compose.runtime.key(entry.app.pid) {
                         AppCell(
                             modifier = Modifier.animateBounds(
-                                lookaheadScope = this@LookaheadScope,
+                                lookaheadScope = lookaheadScope,
                                 boundsTransform = tileMotion,
                             ),
                             name = entry.app.name,
@@ -328,7 +340,7 @@ private fun SwitcherPanel(
                                 androidx.compose.runtime.key(entry.app.pid) {
                                     AppCell(
                                         modifier = Modifier.animateBounds(
-                                            lookaheadScope = this@LookaheadScope,
+                                            lookaheadScope = lookaheadScope,
                                             boundsTransform = tileMotion,
                                         ),
                                         name = entry.app.name,
@@ -350,7 +362,6 @@ private fun SwitcherPanel(
                         }
                     }
                 }
-            }
             }
         }
 }
