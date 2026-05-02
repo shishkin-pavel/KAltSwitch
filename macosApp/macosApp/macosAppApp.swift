@@ -207,6 +207,19 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         if let composeView = panel.contentView {
             panel.installBlurBackdrop(under: composeView)
         }
+        // Wire Compose's per-render callback to the panel's
+        // post-resize alpha gate. Compose reports the canvas pixel
+        // size on every render — when it matches the panel's
+        // expected post-`setContentSize` pixel size, the gate lifts
+        // and observeSwitcherVisibility's pending alpha-show fires.
+        // Pixels (not points) because that's what skia gives us;
+        // SwitcherOverlayWindow converts using `backingScaleFactor`.
+        overlayComposeDelegate?.onRenderCallback = { [weak panel] widthPx, heightPx in
+            panel?.onComposeRender(
+                widthPx: Int(widthPx.int32Value),
+                heightPx: Int(heightPx.int32Value)
+            )
+        }
         ComposeViewKt.observeSwitcherPanelSize(
             onChange: { [weak panel] w, h in
                 guard let panel = panel else { return }
