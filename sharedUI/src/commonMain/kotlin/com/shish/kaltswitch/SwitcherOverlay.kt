@@ -108,14 +108,15 @@ fun SwitcherOverlay(
         // when "the second row appears below the first".
         contentAlignment = Alignment.TopCenter,
     ) {
-        // Single LookaheadScope wrapping the whole panel. SwitcherPanel
-        // uses it both to discriminate the lookahead vs approach pass
-        // (target size goes to Swift via onPanelSize during lookahead;
-        // approach pass carries Compose's animateContentSize visual
-        // animation), and to provide cell-level animateBounds with a
-        // scope that survives reorders / bucket transitions.
+        // Outer LookaheadScope: gives SwitcherPanel's visible-Box
+        // `Modifier.layout` access to `IntrinsicMeasureScope.isLookingAhead`,
+        // which is how it distinguishes the once-per-content-change
+        // *target* size (reported to Swift via onPanelSize) from the
+        // per-frame *animated* size driven by animateContentSize on
+        // the same Box. Cell-level animateBounds uses a *different*,
+        // inner LookaheadScope wrapping FlowRow — see SwitcherPanel.
         LookaheadScope {
-            SwitcherPanel(this, ui, iconsByPid, onPointAt, onCommit, onPanelSize)
+            SwitcherPanel(ui, iconsByPid, onPointAt, onCommit, onPanelSize)
         }
     }
 }
@@ -214,7 +215,6 @@ private val DemoteBackdropColor = Color(0x33000000)
 @OptIn(ExperimentalLayoutApi::class)
 @Composable
 private fun SwitcherPanel(
-    lookaheadScope: LookaheadScope,
     ui: SwitcherUiState,
     iconsByPid: Map<Int, ByteArray>,
     onPointAt: (appIndex: Int, windowIndex: Int?) -> Unit,
@@ -286,13 +286,28 @@ private fun SwitcherPanel(
             val demoteEntries = if (withWindowsCount < entries.size) {
                 entries.subList(withWindowsCount, entries.size)
             } else emptyList()
-            // Modifier.animateBounds on each AppCell makes tile
-            // *movement* (positional reorder, neighbour shifts when a
-            // sibling appears/disappears, show ↔ demote bucket
-            // transitions when filters change live) slide instead of
-            // snap. Uses the LookaheadScope wrapping the whole
-            // SwitcherPanel — same scope SwitcherPanel's outer Box
-            // uses to discriminate lookahead vs approach pass.
+            // Inner LookaheadScope tracks cell bounds *relative to
+            // FlowRow*. This is deliberately separate from the outer
+            // LookaheadScope (around SwitcherPanel) used by the
+            // visible Box's `Modifier.layout` for size reporting. Why
+            // two scopes:
+            //
+            // The outer scope's coordinate system is rooted at the
+            // SwitcherOverlay outer Box (fillMaxSize NSPanel). When
+            // Compose's two-pass session-start measurement happens —
+            // first at the ~90%-screen panel size, then at the
+            // shrunken content size after Swift's setContentSize —
+            // the visible Box's TopCenter-aligned position within
+            // the outer Box shifts horizontally (the centering offset
+            // changes as the outer Box shrinks). Cells using the
+            // outer scope would inherit that shift and animate
+            // sliding right-to-left for ~200 ms on every session
+            // open. Pinning cell bounds to *inner* coordinates (= a
+            // FlowRow-rooted scope) keeps cell positions invariant
+            // across this two-pass dance, so animateBounds only
+            // animates the cell motion we actually want — reorders
+            // and bucket transitions mid-session.
+            LookaheadScope {
             FlowRow(
                 horizontalArrangement = Arrangement.spacedBy(6.dp, Alignment.CenterHorizontally),
                 verticalArrangement = Arrangement.spacedBy(8.dp),
@@ -305,7 +320,7 @@ private fun SwitcherPanel(
                     androidx.compose.runtime.key(entry.app.pid) {
                         AppCell(
                             modifier = Modifier.animateBounds(
-                                lookaheadScope = lookaheadScope,
+                                lookaheadScope = this@LookaheadScope,
                                 boundsTransform = tileMotion,
                             ),
                             name = entry.app.name,
@@ -340,7 +355,7 @@ private fun SwitcherPanel(
                                 androidx.compose.runtime.key(entry.app.pid) {
                                     AppCell(
                                         modifier = Modifier.animateBounds(
-                                            lookaheadScope = lookaheadScope,
+                                            lookaheadScope = this@LookaheadScope,
                                             boundsTransform = tileMotion,
                                         ),
                                         name = entry.app.name,
@@ -362,6 +377,7 @@ private fun SwitcherPanel(
                         }
                     }
                 }
+            }
             }
         }
 }
