@@ -37,6 +37,15 @@ data class WindowFrame(
 )
 
 /**
+ * Selector for how a max-size value is interpreted: as a fraction of the
+ * containing screen's `visibleFrame` ([Percent]) or as an absolute pixel/point
+ * count ([Dp]). Stored alongside both candidate values so toggling between
+ * modes preserves whatever was last entered for each.
+ */
+@Serializable
+enum class MaxSizeMode { Percent, Dp }
+
+/**
  * Switcher behaviour knobs. Surfaced in the inspector's Settings panel and
  * read live by [com.shish.kaltswitch.switcher.SwitcherController].
  *
@@ -59,6 +68,16 @@ data class SwitcherSettings(
     val repeatInitialDelayMs: Long = 400L,
     /** Step interval once auto-advance is engaged. */
     val repeatIntervalMs: Long = 120L,
+    /** Whether [maxWidthPercent] or [maxWidthDp] is the active cap. Both
+     *  values are kept so toggling the mode doesn't lose the user's
+     *  previous fine-tuning. */
+    val maxWidthMode: MaxSizeMode = MaxSizeMode.Percent,
+    /** Fraction (0..1) of the session screen's `visibleFrame.width` used
+     *  as the panel's max width when [maxWidthMode] = [MaxSizeMode.Percent]. */
+    val maxWidthPercent: Double = 0.9,
+    /** Absolute width in points (= dp on macOS) used as the panel's max
+     *  width when [maxWidthMode] = [MaxSizeMode.Dp]. */
+    val maxWidthDp: Double = 1200.0,
 )
 
 /**
@@ -66,13 +85,17 @@ data class SwitcherSettings(
  * config or a buggy settings UI can't poison the switcher's runtime path.
  * `delay(...)` allows zero (returns immediately), so most fields are simply
  * coerced non-negative — but `repeatIntervalMs == 0` would spin a tight
- * coroutine loop, so we keep that one ≥ 1 ms.
+ * coroutine loop, so we keep that one ≥ 1 ms. Max-width values are clamped
+ * to ranges that the settings sliders also enforce — keeps a hand-edited
+ * config from producing a tiny or absurdly wide panel.
  */
 fun SwitcherSettings.sanitized(): SwitcherSettings = copy(
     showDelayMs = showDelayMs.coerceAtLeast(0L),
     previewDelayMs = previewDelayMs.coerceAtLeast(0L),
     repeatInitialDelayMs = repeatInitialDelayMs.coerceAtLeast(0L),
     repeatIntervalMs = repeatIntervalMs.coerceAtLeast(1L),
+    maxWidthPercent = maxWidthPercent.coerceIn(0.3, 1.0),
+    maxWidthDp = maxWidthDp.coerceIn(400.0, 3000.0),
 )
 
 /**

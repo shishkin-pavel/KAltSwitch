@@ -176,13 +176,35 @@ final class SwitcherOverlayWindow: NSPanel {
         let s = screen.visibleFrame
         sessionScreenFrame = s
         firstContentSizeAfterSession = true
-        let width = s.size.width * 0.9
+        // Initial panel size = whatever the user-configured max-width
+        // resolves to, capped at 90% of the screen visible area on
+        // each axis. Compose's first layout uses this as its parent
+        // constraint; if the natural single-row content ends up
+        // narrower, setContentSize shrinks the panel after the first
+        // measurement.
+        let width = min(resolvedMaxWidth(on: s), s.size.width * 0.9)
         let height = s.size.height * 0.9
         let origin = NSPoint(
             x: s.origin.x + (s.size.width - width) / 2,
             y: s.origin.y + (s.size.height - height) / 2
         )
         setFrame(NSRect(origin: origin, size: NSSize(width: width, height: height)), display: false)
+    }
+
+    /// Read the user's max-width setting (`SwitcherSettings.maxWidthMode`
+    /// + the matching value) and resolve it against the given screen
+    /// frame to a concrete width in points. Caller cap-clamps as
+    /// needed (e.g. `captureSessionScreen` also caps to 90% of screen
+    /// regardless of setting). Falls back to 90% screen if the
+    /// settings flow can't be read.
+    func resolvedMaxWidth(on screen: NSRect) -> CGFloat {
+        let settings = ComposeViewKt.store.switcherSettings.value as? SwitcherSettings
+        guard let s = settings else { return screen.size.width * 0.9 }
+        return if s.maxWidthMode == MaxSizeMode.percent {
+            CGFloat(s.maxWidthPercent) * screen.size.width
+        } else {
+            CGFloat(s.maxWidthDp)
+        }
     }
 
     /// Reset session-screen state and cancel any pending shrink.

@@ -42,6 +42,7 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.shish.kaltswitch.config.AccentColorChoice
+import com.shish.kaltswitch.config.MaxSizeMode
 import com.shish.kaltswitch.config.SwitcherSettings
 import com.shish.kaltswitch.model.AppActivationPolicy
 import com.shish.kaltswitch.model.AppView
@@ -420,6 +421,18 @@ private fun SettingsPanel(
             range = 30f..500f,
             onChange = { onChange(settings.copy(repeatIntervalMs = it)) },
         )
+        MaxWidthSetting(
+            mode = settings.maxWidthMode,
+            percent = settings.maxWidthPercent,
+            dp = settings.maxWidthDp,
+            onChange = { mode, percent, dp ->
+                onChange(settings.copy(
+                    maxWidthMode = mode,
+                    maxWidthPercent = percent,
+                    maxWidthDp = dp,
+                ))
+            },
+        )
         ToggleRow(
             label = "Show menubar icon",
             checked = showMenubarIcon,
@@ -545,6 +558,69 @@ private fun ToggleRow(
                 checkedTrackColor = AccentColor,
                 checkedThumbColor = Color.Black,
             ),
+        )
+    }
+}
+
+/**
+ * Max-panel-width row: a value-tagged slider plus a "use absolute pixels"
+ * toggle. Both [percent] and [dp] are kept in the underlying settings so
+ * flipping the toggle preserves whatever the user dialled in for each
+ * unit. Slider ranges match `SwitcherSettings.sanitized`'s clamps so a
+ * user can't drive the value into an unusable region from the UI.
+ */
+@Composable
+private fun MaxWidthSetting(
+    mode: MaxSizeMode,
+    percent: Double,
+    dp: Double,
+    onChange: (mode: MaxSizeMode, percent: Double, dp: Double) -> Unit,
+) {
+    val sliderColors = SliderDefaults.colors(
+        thumbColor = AccentColor,
+        activeTrackColor = AccentColor,
+        inactiveTrackColor = Color(0x33FFFFFF),
+    )
+    Column(verticalArrangement = Arrangement.spacedBy(0.dp)) {
+        Row(
+            Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.SpaceBetween,
+        ) {
+            Text(
+                "Max panel width",
+                color = Color(0xFFE0E0E0),
+                style = MaterialTheme.typography.labelSmall,
+            )
+            Text(
+                if (mode == MaxSizeMode.Percent) "${(percent * 100).toInt()} %" else "${dp.toInt()} px",
+                color = AccentColor,
+                fontWeight = FontWeight.Medium,
+                style = MaterialTheme.typography.labelSmall,
+            )
+        }
+        if (mode == MaxSizeMode.Percent) {
+            Slider(
+                value = (percent * 100).toFloat().coerceIn(30f, 100f),
+                onValueChange = { onChange(mode, (it / 100.0).coerceIn(0.3, 1.0), dp) },
+                valueRange = 30f..100f,
+                colors = sliderColors,
+                modifier = Modifier.height(20.dp),
+            )
+        } else {
+            Slider(
+                value = dp.toFloat().coerceIn(400f, 3000f),
+                onValueChange = { onChange(mode, percent, it.toDouble().coerceIn(400.0, 3000.0)) },
+                valueRange = 400f..3000f,
+                colors = sliderColors,
+                modifier = Modifier.height(20.dp),
+            )
+        }
+        ToggleRow(
+            label = "Use absolute pixel value",
+            checked = mode == MaxSizeMode.Dp,
+            onCheckedChange = { usePixels ->
+                onChange(if (usePixels) MaxSizeMode.Dp else MaxSizeMode.Percent, percent, dp)
+            },
         )
     }
 }
