@@ -196,9 +196,30 @@ class ComposeNSViewDelegate(
     @OptIn(ExperimentalForeignApi::class)
     private val NSEvent.offset: DpOffset
         get() {
-            val position = locationInWindow.useContents { DpOffset(x = x.dp, y = y.dp) }
-            val height = view.frame.useContents { size.height.dp }
-            return DpOffset(x = position.x, y = height - position.y)
+            // `locationInWindow` is in window-content (= wrapper)
+            // coords. Pre-iter48 the Compose host NSView WAS the
+            // contentView, so its frame.origin was (0, 0) and
+            // window-coords == view-local-coords; the original code
+            // got away with using the raw locationInWindow.
+            //
+            // Since iter48 the Compose host is a subview of a wrapper
+            // with a *non-zero* frame.origin — its frame spans the
+            // whole captured screen and is repositioned within the
+            // wrapper on every NSPanel `setFrame` so the scene
+            // coordinate system stays pinned to the screen rect.
+            // That means we have to convert window coords to view-local
+            // Cocoa coords (subtract view.frame.origin) before flipping
+            // Y for Compose's y-down. Without the subtraction Compose
+            // sees pointer events at the wrong scene position — clicks
+            // and hovers miss every cell.
+            val winX = locationInWindow.useContents { x }
+            val winY = locationInWindow.useContents { y }
+            val viewOriginX = view.frame.useContents { origin.x }
+            val viewOriginY = view.frame.useContents { origin.y }
+            val viewHeight = view.frame.useContents { size.height }
+            val xInView = winX - viewOriginX
+            val yInViewCocoa = winY - viewOriginY
+            return DpOffset(x = xInView.dp, y = (viewHeight - yInViewCocoa).dp)
         }
 }
 
