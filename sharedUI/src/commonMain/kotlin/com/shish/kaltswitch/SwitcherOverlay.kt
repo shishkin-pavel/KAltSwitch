@@ -29,6 +29,7 @@ import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.movableContentOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
@@ -359,69 +360,94 @@ private fun SwitcherPanel(
             // animates the cell motion we actually want — reorders
             // and bucket transitions mid-session.
             LookaheadScope {
-            FlowRow(
-                horizontalArrangement = Arrangement.spacedBy(6.dp, Alignment.CenterHorizontally),
-                verticalArrangement = Arrangement.spacedBy(8.dp),
-            ) {
-                val tileMotion = BoundsTransform { _, _ ->
-                    tween(durationMillis = 200, easing = FastOutSlowInEasing)
-                }
-                showEntries.forEachIndexed { showIndex, entry ->
-                    val appIndex = showIndex
-                    androidx.compose.runtime.key(entry.app.pid) {
-                        AppCell(
-                            modifier = Modifier.animateBounds(
-                                lookaheadScope = this@LookaheadScope,
-                                boundsTransform = tileMotion,
-                            ),
-                            name = entry.app.name,
-                            pid = entry.app.pid,
-                            iconBytes = iconsByPid[entry.app.pid],
-                            isHidden = entry.app.isHidden,
-                            isDemoted = false,
-                            windows = entry.windows,
-                            shownWindowCount = entry.shownWindowCount,
-                            isSelected = appIndex == state.cursor.appIndex,
-                            selectedWindowIndex = if (appIndex == state.cursor.appIndex) state.cursor.windowIndex else -1,
-                            onHoverApp = { onPointAt(appIndex, null) },
-                            onHoverWindow = { wi -> onPointAt(appIndex, wi) },
-                            onClickApp = { onPointAt(appIndex, null); onCommit() },
-                            onClickWindow = { wi -> onPointAt(appIndex, wi); onCommit() },
-                        )
+                val tileMotion = remember {
+                    BoundsTransform { _, _ ->
+                        tween(durationMillis = 200, easing = FastOutSlowInEasing)
                     }
                 }
-                if (demoteEntries.isNotEmpty()) {
-                    Box(
-                        modifier = Modifier
-                            .clip(RoundedCornerShape(10.dp))
-                            .background(DemoteBackdropColor)
-                            .padding(horizontal = 4.dp, vertical = 4.dp),
-                    ) {
-                        FlowRow(
-                            horizontalArrangement = Arrangement.spacedBy(6.dp, Alignment.CenterHorizontally),
-                            verticalArrangement = Arrangement.spacedBy(6.dp),
+                // One movable cell per pid. Without this the cell composable
+                // is torn down at the show-bucket call site and rebuilt at
+                // the demote-bucket call site (or vice versa) when the
+                // filter rules promote/demote an app mid-session — the
+                // composable parents are different (outer FlowRow vs the
+                // inner FlowRow inside the demote backdrop Box), so a
+                // plain `key(pid)` can't preserve identity across that
+                // boundary. animateBounds tracks position state on the
+                // cell's Modifier.Node, which dies with the cell instance,
+                // so a fresh instance has no "from" bounds and the bucket
+                // transition lands instantly. movableContentOf moves the
+                // entire layout subtree between call sites so the
+                // animateBounds node — and its remembered "from" bounds —
+                // travels with the cell, producing a real fly animation.
+                val cellsByPid = remember { mutableMapOf<Int, @Composable (AppCellArgs) -> Unit>() }
+                val livePids = entries.mapTo(HashSet()) { it.app.pid }
+                cellsByPid.keys.retainAll(livePids)
+                for (pid in livePids) {
+                    cellsByPid.getOrPut(pid) {
+                        movableContentOf<AppCellArgs> { args ->
+                            AppCell(
+                                modifier = Modifier.animateBounds(
+                                    lookaheadScope = this@LookaheadScope,
+                                    boundsTransform = tileMotion,
+                                ),
+                                name = args.name,
+                                pid = args.pid,
+                                iconBytes = args.iconBytes,
+                                isHidden = args.isHidden,
+                                isDemoted = args.isDemoted,
+                                windows = args.windows,
+                                shownWindowCount = args.shownWindowCount,
+                                isSelected = args.isSelected,
+                                selectedWindowIndex = args.selectedWindowIndex,
+                                onHoverApp = args.onHoverApp,
+                                onHoverWindow = args.onHoverWindow,
+                                onClickApp = args.onClickApp,
+                                onClickWindow = args.onClickWindow,
+                            )
+                        }
+                    }
+                }
+                FlowRow(
+                    horizontalArrangement = Arrangement.spacedBy(6.dp, Alignment.CenterHorizontally),
+                    verticalArrangement = Arrangement.spacedBy(8.dp),
+                ) {
+                    showEntries.forEachIndexed { showIndex, entry ->
+                        cellsByPid.getValue(entry.app.pid)(
+                            cellArgs(
+                                entry = entry,
+                                iconBytes = iconsByPid[entry.app.pid],
+                                isDemoted = false,
+                                appIndex = showIndex,
+                                cursorAppIndex = state.cursor.appIndex,
+                                cursorWindowIndex = state.cursor.windowIndex,
+                                onPointAt = onPointAt,
+                                onCommit = onCommit,
+                            )
+                        )
+                    }
+                    if (demoteEntries.isNotEmpty()) {
+                        Box(
+                            modifier = Modifier
+                                .clip(RoundedCornerShape(10.dp))
+                                .background(DemoteBackdropColor)
+                                .padding(horizontal = 4.dp, vertical = 4.dp),
                         ) {
-                            demoteEntries.forEachIndexed { demoteIndex, entry ->
-                                val appIndex = withWindowsCount + demoteIndex
-                                androidx.compose.runtime.key(entry.app.pid) {
-                                    AppCell(
-                                        modifier = Modifier.animateBounds(
-                                            lookaheadScope = this@LookaheadScope,
-                                            boundsTransform = tileMotion,
-                                        ),
-                                        name = entry.app.name,
-                                        pid = entry.app.pid,
-                                        iconBytes = iconsByPid[entry.app.pid],
-                                        isHidden = entry.app.isHidden,
-                                        isDemoted = true,
-                                        windows = entry.windows,
-                                        shownWindowCount = entry.shownWindowCount,
-                                        isSelected = appIndex == state.cursor.appIndex,
-                                        selectedWindowIndex = if (appIndex == state.cursor.appIndex) state.cursor.windowIndex else -1,
-                                        onHoverApp = { onPointAt(appIndex, null) },
-                                        onHoverWindow = { wi -> onPointAt(appIndex, wi) },
-                                        onClickApp = { onPointAt(appIndex, null); onCommit() },
-                                        onClickWindow = { wi -> onPointAt(appIndex, wi); onCommit() },
+                            FlowRow(
+                                horizontalArrangement = Arrangement.spacedBy(6.dp, Alignment.CenterHorizontally),
+                                verticalArrangement = Arrangement.spacedBy(6.dp),
+                            ) {
+                                demoteEntries.forEachIndexed { demoteIndex, entry ->
+                                    cellsByPid.getValue(entry.app.pid)(
+                                        cellArgs(
+                                            entry = entry,
+                                            iconBytes = iconsByPid[entry.app.pid],
+                                            isDemoted = true,
+                                            appIndex = withWindowsCount + demoteIndex,
+                                            cursorAppIndex = state.cursor.appIndex,
+                                            cursorWindowIndex = state.cursor.windowIndex,
+                                            onPointAt = onPointAt,
+                                            onCommit = onCommit,
+                                        )
                                     )
                                 }
                             }
@@ -429,8 +455,51 @@ private fun SwitcherPanel(
                     }
                 }
             }
-            }
         }
+}
+
+private data class AppCellArgs(
+    val name: String,
+    val pid: Int,
+    val iconBytes: ByteArray?,
+    val isHidden: Boolean,
+    val isDemoted: Boolean,
+    val windows: List<com.shish.kaltswitch.model.Window>,
+    val shownWindowCount: Int,
+    val isSelected: Boolean,
+    val selectedWindowIndex: Int,
+    val onHoverApp: () -> Unit,
+    val onHoverWindow: (Int) -> Unit,
+    val onClickApp: () -> Unit,
+    val onClickWindow: (Int) -> Unit,
+)
+
+private fun cellArgs(
+    entry: com.shish.kaltswitch.model.AppEntry,
+    iconBytes: ByteArray?,
+    isDemoted: Boolean,
+    appIndex: Int,
+    cursorAppIndex: Int,
+    cursorWindowIndex: Int,
+    onPointAt: (appIndex: Int, windowIndex: Int?) -> Unit,
+    onCommit: () -> Unit,
+): AppCellArgs {
+    val isSelected = appIndex == cursorAppIndex
+    return AppCellArgs(
+        name = entry.app.name,
+        pid = entry.app.pid,
+        iconBytes = iconBytes,
+        isHidden = entry.app.isHidden,
+        isDemoted = isDemoted,
+        windows = entry.windows,
+        shownWindowCount = entry.shownWindowCount,
+        isSelected = isSelected,
+        selectedWindowIndex = if (isSelected) cursorWindowIndex else -1,
+        onHoverApp = { onPointAt(appIndex, null) },
+        onHoverWindow = { wi -> onPointAt(appIndex, wi) },
+        onClickApp = { onPointAt(appIndex, null); onCommit() },
+        onClickWindow = { wi -> onPointAt(appIndex, wi); onCommit() },
+    )
 }
 
 @OptIn(ExperimentalComposeUiApi::class)
@@ -534,6 +603,35 @@ private fun AppCell(
  * `windows` list — the split is purely visual; the controller still
  * navigates `windows[i]`.
  */
+private data class WindowRowArgs(
+    val title: String,
+    val isActive: Boolean,
+    val isMinimized: Boolean,
+    val isFullscreen: Boolean,
+    val isDemoted: Boolean,
+    val onHover: () -> Unit,
+    val onClick: () -> Unit,
+)
+
+private fun windowRowArgs(
+    w: com.shish.kaltswitch.model.Window,
+    appName: String,
+    fullIndex: Int,
+    isAppSelected: Boolean,
+    selectedWindowIndex: Int,
+    isDemoted: Boolean,
+    onHoverWindow: (Int) -> Unit,
+    onClickWindow: (Int) -> Unit,
+): WindowRowArgs = WindowRowArgs(
+    title = effectiveWindowTitle(w.title, appName),
+    isActive = isAppSelected && fullIndex == selectedWindowIndex,
+    isMinimized = w.isMinimized,
+    isFullscreen = w.isFullscreen,
+    isDemoted = isDemoted,
+    onHover = { onHoverWindow(fullIndex) },
+    onClick = { onClickWindow(fullIndex) },
+)
+
 @OptIn(ExperimentalComposeUiApi::class)
 @Composable
 private fun WindowList(
@@ -547,50 +645,102 @@ private fun WindowList(
 ) {
     val showWindows = if (shownWindowCount <= 0) emptyList() else windows.take(shownWindowCount)
     val demoteWindows = if (shownWindowCount >= windows.size) emptyList() else windows.drop(shownWindowCount)
-    Column(
-        Modifier.fillMaxWidth(),
-        verticalArrangement = Arrangement.spacedBy(2.dp),
-    ) {
-        if (showWindows.isNotEmpty()) {
-            Column(
-                Modifier.fillMaxWidth(),
-                verticalArrangement = Arrangement.spacedBy(1.dp),
-            ) {
-                showWindows.forEachIndexed { i, w ->
-                    androidx.compose.runtime.key(w.id) {
-                        WindowTitleRow(
-                            title = effectiveWindowTitle(w.title, appName),
-                            isActive = isAppSelected && i == selectedWindowIndex,
-                            isMinimized = w.isMinimized,
-                            isFullscreen = w.isFullscreen,
-                            isDemoted = false,
-                            onHover = { onHoverWindow(i) },
-                            onClick = { onClickWindow(i) },
+    // Cell-local LookaheadScope: window-row animateBounds tracks
+    // positions in coordinates rooted at THIS WindowList, not the
+    // outer FlowRow scope used by AppCell. That isolation is
+    // load-bearing — when the cell itself moves between active and
+    // demote buckets via its per-pid movableContent (see
+    // SwitcherPanel), the cell's contents (= this WindowList) ride
+    // along as a unit. If window rows shared the FlowRow-level
+    // scope, each row would also see the cell-level move as a
+    // bounds delta and fire its own animation on top of the cell's,
+    // producing visual stacking.
+    LookaheadScope {
+        val rowMotion = remember {
+            BoundsTransform { _, _ ->
+                tween(durationMillis = 200, easing = FastOutSlowInEasing)
+            }
+        }
+        // Per-windowId movable, mirroring the per-pid movable on
+        // cells. A window switching between this app's show and
+        // demote sub-buckets is the same identity-across-different-
+        // parent problem: showWindows lives in the leading Column,
+        // demoteWindows lives in the grey-backdrop Column. Without
+        // movableContent, a row reclassified mid-session is torn
+        // down at the old call site and rebuilt at the new — its
+        // animateBounds Modifier.Node dies, so the bucket transition
+        // lands instantly. movableContentOf moves the row's layout
+        // subtree (and the animateBounds state) between Column
+        // parents, animating the move within this cell.
+        val rowsByWid = remember { mutableMapOf<WindowId, @Composable (WindowRowArgs) -> Unit>() }
+        val liveWids = windows.mapTo(HashSet()) { it.id }
+        rowsByWid.keys.retainAll(liveWids)
+        for (wid in liveWids) {
+            rowsByWid.getOrPut(wid) {
+                movableContentOf<WindowRowArgs> { args ->
+                    WindowTitleRow(
+                        modifier = Modifier.animateBounds(
+                            lookaheadScope = this@LookaheadScope,
+                            boundsTransform = rowMotion,
+                        ),
+                        title = args.title,
+                        isActive = args.isActive,
+                        isMinimized = args.isMinimized,
+                        isFullscreen = args.isFullscreen,
+                        isDemoted = args.isDemoted,
+                        onHover = args.onHover,
+                        onClick = args.onClick,
+                    )
+                }
+            }
+        }
+        Column(
+            Modifier.fillMaxWidth(),
+            verticalArrangement = Arrangement.spacedBy(2.dp),
+        ) {
+            if (showWindows.isNotEmpty()) {
+                Column(
+                    Modifier.fillMaxWidth(),
+                    verticalArrangement = Arrangement.spacedBy(1.dp),
+                ) {
+                    showWindows.forEachIndexed { i, w ->
+                        rowsByWid.getValue(w.id)(
+                            windowRowArgs(
+                                w = w,
+                                appName = appName,
+                                fullIndex = i,
+                                isAppSelected = isAppSelected,
+                                selectedWindowIndex = selectedWindowIndex,
+                                isDemoted = false,
+                                onHoverWindow = onHoverWindow,
+                                onClickWindow = onClickWindow,
+                            )
                         )
                     }
                 }
             }
-        }
-        if (demoteWindows.isNotEmpty()) {
-            Column(
-                Modifier
-                    .fillMaxWidth()
-                    .clip(RoundedCornerShape(4.dp))
-                    .background(DemoteBackdropColor)
-                    .padding(horizontal = 2.dp, vertical = 2.dp),
-                verticalArrangement = Arrangement.spacedBy(1.dp),
-            ) {
-                demoteWindows.forEachIndexed { i, w ->
-                    val fullIndex = i + shownWindowCount
-                    androidx.compose.runtime.key(w.id) {
-                        WindowTitleRow(
-                            title = effectiveWindowTitle(w.title, appName),
-                            isActive = isAppSelected && fullIndex == selectedWindowIndex,
-                            isMinimized = w.isMinimized,
-                            isFullscreen = w.isFullscreen,
-                            isDemoted = true,
-                            onHover = { onHoverWindow(fullIndex) },
-                            onClick = { onClickWindow(fullIndex) },
+            if (demoteWindows.isNotEmpty()) {
+                Column(
+                    Modifier
+                        .fillMaxWidth()
+                        .clip(RoundedCornerShape(4.dp))
+                        .background(DemoteBackdropColor)
+                        .padding(horizontal = 2.dp, vertical = 2.dp),
+                    verticalArrangement = Arrangement.spacedBy(1.dp),
+                ) {
+                    demoteWindows.forEachIndexed { i, w ->
+                        val fullIndex = i + shownWindowCount
+                        rowsByWid.getValue(w.id)(
+                            windowRowArgs(
+                                w = w,
+                                appName = appName,
+                                fullIndex = fullIndex,
+                                isAppSelected = isAppSelected,
+                                selectedWindowIndex = selectedWindowIndex,
+                                isDemoted = true,
+                                onHoverWindow = onHoverWindow,
+                                onClickWindow = onClickWindow,
+                            )
                         )
                     }
                 }
@@ -648,6 +798,7 @@ private fun AppIconBox(pid: Int, iconBytes: ByteArray?, name: String, isDemoted:
 @OptIn(ExperimentalComposeUiApi::class)
 @Composable
 private fun WindowTitleRow(
+    modifier: Modifier = Modifier,
     title: String,
     isActive: Boolean,
     isMinimized: Boolean,
@@ -665,7 +816,7 @@ private fun WindowTitleRow(
         else -> Color(0xFFBBBBBB)
     }
     Row(
-        Modifier
+        modifier
             .fillMaxWidth()
             .clip(RoundedCornerShape(4.dp))
             .background(bg)
