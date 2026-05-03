@@ -118,8 +118,8 @@ class WorldStore(initial: World = World(ActivationLog(), emptyMap(), emptyMap())
     }
 
     /** Compose-reported size of the visible switcher panel (in dp).
-     *  Swift uses it to position an NSVisualEffectView under the panel for
-     *  the blur backdrop. Null when there is no active session. */
+     *  Swift uses it to resize the NSPanel to match the visible content
+     *  rect on every layout pass. Null when there is no active session. */
     private val _switcherPanelSize = MutableStateFlow<Pair<Double, Double>?>(null)
     val switcherPanelSize: StateFlow<Pair<Double, Double>?> = _switcherPanelSize.asStateFlow()
 

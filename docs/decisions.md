@@ -554,7 +554,18 @@ disappeared at the end of the row"). The policy is encoded in
 
 ---
 
-## 15. Real desktop blur (NSVisualEffectView) over pure-Compose overlay
+## 15. Real desktop blur (NSVisualEffectView) over pure-Compose overlay — *superseded*
+
+**Superseded.** Blur was eventually removed; the overlay is now pure
+Compose with a solid translucent plate. The static `NSVisualEffectView`
+worked, but once the panel started growing/shrinking with Compose's
+`animateContentSize` we couldn't keep the blur surface visually in sync
+without rendering bugs. Three sync approaches were tried and rejected
+— see `docs/blur-attempts.md` for the catalogue and a sketch of paths
+back to live blur if it's worth revisiting. The original decision
+stands as the right call *for its time*; the trigger is no longer the
+"architectural-simplicity" argument from the revisit note below but
+the animated-resize incompatibility.
 
 **Question.** The switcher overlay panel hosts a Compose UI on top of an
 `NSVisualEffectView` blur backdrop sized via the existing
@@ -601,4 +612,67 @@ different design language.
 **Confidence.** High that A is the right call now; B is a clean
 alternative if the architectural-simplicity argument ever beats the
 real-blur aesthetic.
+
+---
+
+## 16. Reinstall the `CGEventTap` on AX-trust transition (false → true)
+
+**Question.** `HotkeyController.installFlagsChangedTap` creates a
+`CGEvent.tapCreate(.cgSessionEventTap, …)` to detect cmd-release as the
+commit signal for the switcher session. The tap requires AX permission.
+On first launch the user usually has NOT granted AX yet; they grant it
+after the app prompts. Our existing `start()` is idempotent
+(`if eventTap == nil { installFlagsChangedTap() }`), and we re-call it
+from `AppRegistry.onAxTrustChanged(true)`. Is that idempotent re-call
+enough, or do we need to *force* a teardown + reinstall of the tap?
+
+**Decision.** Force teardown + reinstall via a dedicated
+`reinstallFlagsChangedTap()` method, called from
+`onAxTrustChanged(true)`.
+
+**Reasons.**
+
+* **Empirical finding** (verified by side-by-side log comparison of
+  three launches):
+  * Launch A — started without AX, granted AX later, hit our flagsChanged
+    bug: `[tap] install OK ax=false` at startup (the tap *did* install
+    — `tapCreate` returned non-nil even at AX=false), but **zero
+    `kCGEventFlagsChanged` callbacks ever fire on this tap, including
+    after AX is granted**. The tap stays alive (it still receives
+    `kCGEventTapDisabledByUserInput` callbacks roughly per cmd-up
+    elsewhere), but TCC permanently filters the flagsChanged stream. No
+    cmd-release path → switcher session opens and hangs until the user
+    presses Esc.
+  * Launch B — started with AX already granted, no bug: `[tap] install
+    OK ax=true` and every flagsChanged delivers normally.
+  * Launch C — started without AX, granted AX, **with reinstall on the
+    trust transition**: a fresh `tapCreate` runs at AX=true, and from
+    that point flagsChanged delivers normally. Bug is gone without
+    process relaunch.
+* macOS therefore appears to gate `kCGEventFlagsChanged` delivery on
+  the AX state captured *at `tapCreate` time*, not on the live
+  `AXIsProcessTrusted()` at event-delivery time. Calling `tapCreate`
+  again is the only way to re-evaluate.
+* The idempotent `start()` (`if eventTap == nil`) was the trap — it
+  treats "tap exists" as "tap works", and after the AX=false install we
+  have a tap that exists but doesn't deliver. We need a *different*
+  control path that explicitly disposes and recreates regardless of
+  current state.
+* Without this, the only recovery from "first-launch AX grant" was a
+  full process relaunch — a poor first-run experience that's silently
+  required, with no UI cue.
+
+**Confidence.** High. Reproduced the failure and the fix at the
+flagsChanged-callback level via per-tap log instrumentation (see
+`[diag-tap] flagsChanged …` in `HotkeyController.handleTapEvent`).
+
+**Revisit-trigger.** If a future macOS version starts gating tap
+*creation* itself (returning nil from `tapCreate` without AX, instead
+of returning a black-holed handle), the install path will need to
+distinguish "denied" from "ok" — currently `[tap] install OK ax=false`
+is informational only, since the returned tap may or may not deliver
+events depending on TCC state. Also revisit if `onAxTrustChanged` ever
+starts firing on transitions other than false→true (e.g., true→true on
+spurious AX checks); the current `reinstallFlagsChangedTap` is
+unconditional, which would needlessly drop a working tap.
 

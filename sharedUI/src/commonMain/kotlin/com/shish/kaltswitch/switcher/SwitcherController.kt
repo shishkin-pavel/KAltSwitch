@@ -154,6 +154,7 @@ class SwitcherController(
      */
     fun onShortcut(entry: SwitcherEntry, reverse: Boolean = false) {
         val combo = entry to reverse
+        log("[diag-ctl] onShortcut ENTER entry=$entry reverse=$reverse currentSession=${_ui.value != null} held=$heldShortcut")
         if (heldShortcut == combo) {
             log("[ctl] shortcut entry=$entry reverse=$reverse SKIPPED (auto-repeat)")
             return  // OS auto-repeat — pressJob drives navigation.
@@ -316,7 +317,11 @@ class SwitcherController(
     }
 
     fun onModifierReleased() {
-        val cur = _ui.value ?: return
+        val cur = _ui.value
+        if (cur == null) {
+            log("[diag-ctl] onModifierReleased NO-OP (no session)")
+            return
+        }
         log("[ctl] onModifierReleased cursor=${cur.state.cursor}")
         commit(cur)
     }
@@ -369,7 +374,6 @@ class SwitcherController(
         val state = openSwitcher(snapshot, entry)
         val appOrder = snapshot.all.map { it.app.pid to it.app.name }
         log("[ctl] openSession entry=$entry defaultCursor=${state.cursor} apps=$appOrder")
-        _ui.value = SwitcherUiState(state, visible = false, previewedWindowId = null)
         // Hover events that fire purely because the panel just appeared
         // under a stationary mouse must not move the cursor — see
         // [mouseInteracted]. Reset on each session-open so the gate kicks
@@ -378,11 +382,21 @@ class SwitcherController(
         store.setSwitcherActive(true)
 
         showJob?.cancel()
-        showJob = scope.launch {
-            delay(showDelayMs)
-            val cur = _ui.value ?: return@launch
-            _ui.value = cur.copy(visible = true)
+        val delayMs = showDelayMs.coerceAtLeast(0L)
+        if (delayMs == 0L) {
+            // Skip the pending-then-visible dance entirely: no coroutine,
+            // no `delay(0)` that yields a frame for nothing. Open visible
+            // immediately and arm preview synchronously.
+            _ui.value = SwitcherUiState(state, visible = true, previewedWindowId = null)
             schedulePreview()
+        } else {
+            _ui.value = SwitcherUiState(state, visible = false, previewedWindowId = null)
+            showJob = scope.launch {
+                delay(delayMs)
+                val cur = _ui.value ?: return@launch
+                _ui.value = cur.copy(visible = true)
+                schedulePreview()
+            }
         }
 
         // Live-update the session's snapshot from `store` for the duration of
@@ -491,8 +505,10 @@ class SwitcherController(
         heldShortcut = null
         _ui.value = null
         store.setSwitcherActive(false)
-        // Stale size would let the blur backdrop linger past the session;
-        // clearing it tells Swift to hide the NSVisualEffectView.
+        // Force the next session's first onPanelSize emission to look
+        // distinct from this session's last value — otherwise
+        // distinctUntilChanged in observeSwitcherPanelSize might suppress
+        // it and Swift wouldn't re-apply setContentSize.
         store.clearSwitcherPanelSize()
     }
 }

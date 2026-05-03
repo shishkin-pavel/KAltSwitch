@@ -104,9 +104,9 @@ fun observeLaunchAtLogin(onChange: (Boolean) -> Unit) {
         .launchIn(bridgeScope)
 }
 
-/** Compose-reported visible-panel size in dp, used by Swift to size the
- *  NSVisualEffectView that draws the blur backdrop. `null` means there's
- *  no active session — Swift hides the blur view. */
+/** Compose-reported visible-panel size in dp, used by Swift to resize
+ *  the `NSPanel` to track the visible content rect on every layout pass.
+ *  `null` means there's no active session. */
 fun observeSwitcherPanelSize(onChange: (Double, Double) -> Unit, onCleared: () -> Unit) {
     store.switcherPanelSize
         .onEach { size ->
@@ -183,7 +183,22 @@ fun AttachSwitcherOverlay(window: NSWindow): ComposeNSViewDelegate = ComposeNSVi
         val systemAccentRgb by store.systemAccentRgb.collectAsState()
         val switcherSettings by store.switcherSettings.collectAsState()
         val current = ui
-        if (current != null && current.visible) {
+        // Render whenever there's a session — even during showDelay
+        // (`current.visible == false`). The Swift panel's alphaValue
+        // is what actually hides the overlay during showDelay (it's
+        // 0 until observeSwitcherVisibility says visible=true).
+        // Rendering during showDelay matters for two reasons:
+        //   * by the time alpha flips to 1, Compose has already
+        //     composed + laid out + rendered the cells, so the metal
+        //     layer holds the final frame and the reveal is
+        //     instantaneous — gating rendering would leave the layer
+        //     empty for one frame after alpha=1 and produce a brief
+        //     blank flash;
+        //   * `onPanelSize` fires from layout, so the Swift panel
+        //     reaches the natural-content size during showDelay too,
+        //     instead of snapping from `lastUsedSize` to the right
+        //     size only after reveal.
+        if (current != null) {
             ProvideAccent(resolveAccent(accentColor, systemAccentRgb)) {
                 SwitcherOverlay(
                     ui = current,

@@ -55,6 +55,33 @@ final class HotkeyController {
         if eventTap == nil { installFlagsChangedTap() }
     }
 
+    /// Tear down the existing flagsChanged tap and create a fresh one.
+    /// Used from the AX-trust-changed path: macOS gates `kCGEventFlagsChanged`
+    /// delivery on the AX state captured at `CGEvent.tapCreate` time, not on
+    /// the live state at event-delivery time. A tap created while
+    /// `AXIsProcessTrusted() == false` stays *black-holed* for flagsChanged
+    /// even after AX is later granted (the tap stays alive — it still
+    /// receives `kCGEventTapDisabledByUserInput` callbacks — but TCC
+    /// permanently filters the flagsChanged stream). The idempotent
+    /// `start()` (which guards on `eventTap == nil`) would therefore leave
+    /// us with a permanently dead tap until process relaunch. See
+    /// docs/decisions.md §16.
+    func reinstallFlagsChangedTap() {
+        log("[tap] reinstall START existing=\(eventTap != nil)")
+        if let tap = eventTap {
+            CGEvent.tapEnable(tap: tap, enable: false)
+            if let src = runLoopSource, let loop = tapThread?.runLoop {
+                CFRunLoopRemoveSource(loop, src, .commonModes)
+            }
+            eventTap = nil
+            runLoopSource = nil
+        }
+        tapThread?.stop()
+        tapThread = nil
+        installFlagsChangedTap()
+        log("[tap] reinstall END eventTap=\(eventTap != nil)")
+    }
+
     func stop() {
         for ref in hotKeyRefs { UnregisterEventHotKey(ref) }
         hotKeyRefs.removeAll()
@@ -155,6 +182,7 @@ final class HotkeyController {
         }
         log("[hk] press id=\(id) entry=\(entry) reverse=\(reverse)")
         DispatchQueue.main.async { [weak self] in
+            log("[diag-hk] onShortcut running on main entry=\(entry) reverse=\(reverse)")
             self?.controller.onShortcut(entry: entry, reverse: reverse)
         }
     }
@@ -175,6 +203,8 @@ final class HotkeyController {
     private func installFlagsChangedTap() {
         let mask = (1 << CGEventType.flagsChanged.rawValue)
         let selfPtr = Unmanaged.passUnretained(self).toOpaque()
+        let axTrusted = AXIsProcessTrusted()
+        log("[tap] install attempt ax=\(axTrusted)")
         guard let tap = CGEvent.tapCreate(
             tap: .cgSessionEventTap,
             place: .headInsertEventTap,
@@ -183,9 +213,11 @@ final class HotkeyController {
             callback: flagsChangedCallback,
             userInfo: selfPtr
         ) else {
+            log("[tap] install FAIL ax=\(axTrusted)")
             NSLog("KAltSwitch: failed to create flagsChanged event tap (AX permission?)")
             return
         }
+        log("[tap] install OK ax=\(axTrusted)")
         let src = CFMachPortCreateRunLoopSource(nil, tap, 0)
 
         // Off-main: if the main run loop stalls (Compose layout, AX call) the
@@ -204,7 +236,7 @@ final class HotkeyController {
 
     fileprivate func handleTapEvent(type: CGEventType, event: CGEvent) {
         if type == .tapDisabledByUserInput || type == .tapDisabledByTimeout {
-            // Re-enable; this is a known watchdog quirk and not a fatal error.
+            log("[tap] disabled type=\(type.rawValue) — re-enabling")
             if let tap = eventTap {
                 CGEvent.tapEnable(tap: tap, enable: true)
             }
@@ -212,10 +244,13 @@ final class HotkeyController {
         }
         if type == .flagsChanged {
             let cmdHeld = event.flags.contains(.maskCommand)
+            log("[diag-tap] flagsChanged cmdHeld=\(cmdHeld) lastCmdHeld=\(lastCmdHeld)")
             guard cmdHeld != lastCmdHeld else { return }
             lastCmdHeld = cmdHeld
             if !cmdHeld {
+                log("[diag-tap] dispatching onModifierReleased to main")
                 DispatchQueue.main.async { [weak self] in
+                    log("[diag-tap] onModifierReleased running on main")
                     self?.controller.onModifierReleased()
                 }
             }

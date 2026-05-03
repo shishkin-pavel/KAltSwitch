@@ -283,7 +283,7 @@ private val FullscreenBadgeColor = Color(0xFF28C940)    // macOS green traffic-l
 /**
  * Backdrop tint for *demoted* apps and windows — apps the inspector's
  * filter rules sent to the secondary bucket, plus the trailing windows of
- * a partially-demoted app. A faint *black* tint over the panel's blurred
+ * a partially-demoted app. A faint *black* tint over the panel's
  * background reads as a recessed/sunken plate (vs the previous 0x1FFFFFFF
  * "raised" feel which had poor text contrast). Adjacent demoted cells'
  * backdrops touch (via FlowRow `spacedBy(0.dp)` + outer-clip-then-bg
@@ -316,12 +316,12 @@ private fun SwitcherPanel(
         Modifier
             .animateContentSize(animationSpec = tween(durationMillis = 200, easing = FastOutSlowInEasing))
             .clip(RoundedCornerShape(16.dp))
-            // Faint dark tint over the NSVisualEffectView blur Swift
-            // installs underneath. Low alpha so the blurred backdrop
-            // dominates; doubles as a fallback when the user has
-            // "Reduce transparency" enabled in Accessibility (which
-            // turns NSVisualEffectView into a solid-colour fill).
-            .background(Color(0x661B1B1F))
+            // Opaque dark plate. Originally a low-alpha tint over an
+            // NSVisualEffectView blur; the blur was removed because
+            // we couldn't keep an `NSVisualEffectView` visually in
+            // sync with the dynamic panel-resize animation without
+            // rendering bugs (see docs/blur-attempts.md).
+            .background(Color(0xFF1B1B1F))
             .border(1.dp, Color(0x33FFFFFF), RoundedCornerShape(16.dp))
             .padding(horizontal = 16.dp, vertical = 12.dp),
     ) {
@@ -617,7 +617,7 @@ private fun AppIconBox(pid: Int, iconBytes: ByteArray?, name: String, isDemoted:
             // app identification, especially in a row of unfamiliar apps;
             // bumping size is the cheapest readability win.
             .size(80.dp),
-        // No background — sits directly on the panel's blur. The Color(0x22FFFFFF)
+        // No background — sits directly on the panel plate. The Color(0x22FFFFFF)
         // backplate the previous version had created a subtle "icon tray"
         // effect that diluted the icon's own design (especially for icons
         // with their own circular backgrounds, like Safari).

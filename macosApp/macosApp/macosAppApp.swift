@@ -186,8 +186,15 @@ class AppDelegate: NSObject, NSApplicationDelegate {
 
         // The CGEventTap inside HotkeyController needs AX permission. If the
         // user grants it after launch, re-run start() so the tap installs.
+        // Plus: the tap created at AX=false stays black-holed for
+        // `kCGEventFlagsChanged` even after AX is granted (TCC seems to gate
+        // delivery on the trust state at tap-create time, not at
+        // event-delivery time). Force a teardown + reinstall so the new tap
+        // is created under AX=true.
         registry.onAxTrustChanged = { [weak self] trusted in
-            if trusted { self?.hotkeyController?.start() }
+            guard trusted else { return }
+            self?.hotkeyController?.start()
+            self?.hotkeyController?.reinstallFlagsChangedTap()
         }
 
         // Switcher overlay panel. Built eagerly so showing has zero startup cost.
@@ -202,20 +209,16 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         overlayComposeDelegate = ComposeViewKt.AttachSwitcherOverlay(window: panel)
 
         // ComposeNSViewDelegate set the panel's contentView to the Compose
-        // NSView. Re-parent it so an NSVisualEffectView sits underneath —
-        // that's the blur backdrop. Sized later via observeSwitcherPanelSize.
+        // NSView. Re-parent it into our wrapper so we can manage frame +
+        // position separately from the panel's contentView lifecycle.
         if let composeView = panel.contentView {
-            panel.installBlurBackdrop(under: composeView)
+            panel.installComposeView(composeView)
         }
         ComposeViewKt.observeSwitcherPanelSize(
             onChange: { [weak panel] w, h in
-                guard let panel = panel else { return }
-                panel.setContentSize(widthPts: CGFloat(w.doubleValue), heightPts: CGFloat(h.doubleValue))
-                panel.setBlurVisible(true)
+                panel?.setContentSize(widthPts: CGFloat(w.doubleValue), heightPts: CGFloat(h.doubleValue))
             },
-            onCleared: { [weak panel] in
-                panel?.setBlurVisible(false)
-            },
+            onCleared: { /* no-op: panel visibility is driven by alphaValue toggles in observeSwitcherVisibility */ },
         )
 
         panel.onCommandReleased = { [weak controller] in
@@ -288,17 +291,15 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         frameObservers.append(resignObs)
 
         ComposeViewKt.observeSwitcherSession { [weak self] active in
+            log("[diag-bridge] observeSwitcherSession callback active=\(active.boolValue)")
             self?.setOverlayActive(active.boolValue)
         }
         ComposeViewKt.observeSwitcherVisibility { [weak self] visible in
-            let panel = self?.overlayWindow
-            // alpha=0 → ignoresMouseEvents=true (click-through during
-            // showDelay); alpha=1 → false (panel reactive). No more
-            // post-resize stability gate (iter43–44) since the
-            // Compose host is screen-pinned in iter48 and doesn't
-            // flash a stale buffer when the NSPanel resizes.
-            panel?.alphaValue = visible.boolValue ? 1 : 0
-            panel?.ignoresMouseEvents = !visible.boolValue
+            if visible.boolValue {
+                self?.overlayWindow?.requestAlphaVisible()
+            } else {
+                self?.overlayWindow?.requestAlphaHidden()
+            }
         }
         ComposeViewKt.observeInspectorVisible { [weak self] visible in
             self?.applyInspectorVisibility(visible.boolValue)
@@ -508,22 +509,28 @@ class AppDelegate: NSObject, NSApplicationDelegate {
 
     private func setOverlayActive(_ active: Bool) {
         guard let panel = overlayWindow else { return }
+        log("[diag-swift] setOverlayActive(\(active)) panelIsKey=\(panel.isKeyWindow) panelIsVisible=\(panel.isVisible)")
         if active {
             panel.alphaValue = 0
             // Click-through during the showDelay window. The panel is
-            // sized to ~90% of the screen at session start (so Compose
-            // can lay out cells in a single natural-width row before
-            // shrinking) and is invisible (alphaValue = 0) until
-            // observeSwitcherVisibility fires `visible = true`. Without
-            // this the giant invisible panel would absorb every click
-            // during the showDelay — visible to the user as "the app
-            // I tried to click didn't react". `ignoresMouseEvents` is
-            // flipped back to false in observeSwitcherVisibility once
-            // the panel becomes visible at content size.
+            // sized to the previous session's settled size (or 90% of
+            // screen on first launch — see `lastUsedSize` in
+            // SwitcherOverlayWindow) so Compose's first layout has
+            // room to produce a natural-width row before
+            // `setContentSize` shrinks the panel; it stays invisible
+            // (alphaValue = 0) until observeSwitcherVisibility fires
+            // `visible = true`. Without `ignoresMouseEvents = true`
+            // the larger-than-visible invisible panel would absorb
+            // every click during the showDelay — visible to the user
+            // as "the app I tried to click didn't react".
+            // `ignoresMouseEvents` is flipped back to false in
+            // observeSwitcherVisibility once the panel becomes
+            // visible at content size.
             panel.ignoresMouseEvents = true
             panel.captureSessionScreen()
             panel.orderFrontRegardless()
             panel.makeKey()
+            log("[diag-swift] setOverlayActive(true) post-makeKey panelIsKey=\(panel.isKeyWindow)")
         } else {
             panel.orderOut(nil)
             panel.clearSessionState()

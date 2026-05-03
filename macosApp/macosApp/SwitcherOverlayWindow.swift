@@ -11,9 +11,10 @@ import ComposeAppMac
 /// being key from t=0 is how we detect a quick cmd-tap-and-release without
 /// needing an AX-gated `CGEventTap`.
 ///
-/// During the `showDelay` window the panel is sized large but kept at
-/// `alphaValue = 0` so it's both invisible and shadow-less. The Kotlin
-/// `observeSwitcherVisibility` flow flips alpha to 1 once the delay has elapsed.
+/// During the `showDelay` window the panel is kept at `alphaValue = 0`
+/// so it's both invisible and shadow-less while Compose lays out and
+/// drives `setContentSize`. The Kotlin `observeSwitcherVisibility` flow
+/// flips alpha to 1 once the delay has elapsed.
 final class SwitcherOverlayWindow: NSPanel {
     /// Called when a `.flagsChanged` event observed via `sendEvent` reports
     /// that command is no longer held. The AppDelegate wires this to
@@ -36,15 +37,8 @@ final class SwitcherOverlayWindow: NSPanel {
     /// Compose's `onPreviewKeyEvent` path.
     var onAction: ((SwitcherAction) -> Void)?
 
-    /// NSVisualEffectView placed behind the Compose-rendered rounded
-    /// panel. Since iter40 the panel itself is sized to the visible
-    /// content via `setContentSize`, so the blur fills the entire
-    /// content view via autoresizing — no separate frame math. Toggled
-    /// to alpha=0 between sessions via `setBlurVisible`.
-    private(set) var blurView: NSVisualEffectView?
-
     /// The Compose-host NSView (set up by `ComposeNSViewDelegate`,
-    /// re-parented into our wrapper by `installBlurBackdrop`). Since
+    /// re-parented into our wrapper by `installComposeView`). Since
     /// iter48 it is sized to the *captured screen's visibleFrame* and
     /// repositioned within the wrapper on every `setFrame` so its
     /// origin in screen coordinates stays pinned to that screen rect.
@@ -68,26 +62,34 @@ final class SwitcherOverlayWindow: NSPanel {
     /// reports cancel any in-flight shrink and reschedule.
     private var pendingShrink: DispatchWorkItem?
 
-    /// Set true by `captureSessionScreen`, cleared on the first
-    /// `setContentSize` call within a session. Distinguishes
-    /// session-start sizing (panel placed centered on the captured
-    /// screen) from mid-session sizing (panel resized while keeping
-    /// the *top* edge stable, so existing rows don't visually drift
-    /// when a new row appears below or vanishes from the bottom).
-    private var firstContentSizeAfterSession: Bool = true
-
-    // (Removed in iter48: the `isSessionSizeStable` /
-    // `sessionPendingAlphaShow` / `awaitingPostResizeRenderPx` alpha
-    // gate from iter43–44. With the Compose host NSView now sized to
-    // the captured screen and pinned to it via `setFrame` overrides,
-    // there is no longer a window-resize-induced stale-buffer flash to
-    // hide — alpha can rise as soon as `observeSwitcherVisibility`
-    // says the session is visible.)
+    /// Window top-Y (in screen coordinates) captured on the first
+    /// `setContentSize` call of a session. Computed as though the
+    /// panel were vertically centred on `sessionScreenFrame` at that
+    /// freshly-measured content size; every subsequent placement
+    /// during the same session keeps this top edge stable so existing
+    /// rows don't visually drift when a new row appears below or
+    /// vanishes from the bottom. `nil` between sessions.
+    private var capturedTopY: CGFloat?
 
     /// Cell-animation duration matching `SwitcherOverlay.kt`'s
     /// `tileMotion = tween(200ms)`, plus a small safety margin so the
     /// last interpolation tick has rendered before the panel snaps.
     private static let shrinkDelay: TimeInterval = 0.22
+
+    /// Size the panel was last set to during this process run. Used
+    /// as the initial frame in the next session's
+    /// `captureSessionScreen` so consecutive opens of the switcher
+    /// re-use the previously settled size. Updated by the
+    /// `setFrame` override below on every frame change. Persists
+    /// for the SwitcherOverlayWindow instance's lifetime (= the app
+    /// process) — not written to disk. Initial value: 90 % × 90 %
+    /// of `NSScreen.main`'s visible frame at app launch.
+    private var lastUsedSize: NSSize = {
+        let s = NSScreen.main?.visibleFrame.size
+            ?? NSScreen.screens.first?.visibleFrame.size
+            ?? NSSize(width: 1280, height: 800)
+        return NSSize(width: s.width * 0.9, height: s.height * 0.9)
+    }()
 
     init() {
         super.init(
@@ -111,48 +113,27 @@ final class SwitcherOverlayWindow: NSPanel {
         collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary, .transient]
     }
 
-    /// Install the blur backdrop. Called once after the Compose contentView
-    /// is attached: we re-parent the Compose NSView into a wrapper that
-    /// has an [NSVisualEffectView] underneath. The blur fills the wrapper
-    /// via autoresizing — since iter40 the panel itself is sized to the
-    /// visible content, so panel-bounds == visible-rect.
+    /// Install the panel's content hierarchy. Called once after the
+    /// Compose contentView is attached: we re-parent the Compose
+    /// NSView into a plain wrapper that autoresizes with the panel.
+    /// Compose's own `.background(Color(0xFF1B1B1F))` + `.border(...)`
+    /// inside the visible Box draws the panel's backdrop.
     ///
-    /// Rounded corners go via `maskImage` (a 9-slice rounded rect) instead
-    /// of `layer.cornerRadius + masksToBounds`. The `cornerRadius` route
-    /// breaks NSVisualEffectView's blending on some macOS versions —
-    /// behaviour ranges from "no blur, just solid colour" to "rectangular
-    /// blur with rounded shadow". `maskImage` is the documented API and
-    /// works consistently from 10.10 onwards.
-    func installBlurBackdrop(under composeView: NSView) {
+    /// Compose host (composeView) is screen-sized (set in
+    /// `captureSessionScreen`) with `autoresizingMask = []`; the
+    /// `setFrame` override repositions it on every NSPanel frame
+    /// change so its screen origin stays pinned to the session
+    /// screen's `visibleFrame.origin`.
+    func installComposeView(_ composeView: NSView) {
         let wrapper = NSView(frame: contentView?.bounds ?? composeView.bounds)
         wrapper.autoresizingMask = [.width, .height]
 
-        let blur = NSVisualEffectView(frame: wrapper.bounds)
-        blur.autoresizingMask = [.width, .height]
-        blur.material = .hudWindow
-        blur.blendingMode = .behindWindow
-        blur.state = .active
-        blur.maskImage = SwitcherOverlayWindow.roundedMaskImage(radius: 16)
-        blur.alphaValue = 0   // session not active yet
-        wrapper.addSubview(blur)
-
-        // composeView size + position are managed by
-        // captureSessionScreen + the setFrame override — it spans the
-        // captured screen, not the NSPanel's content area, so don't
-        // let AppKit auto-resize it with the window.
         composeView.autoresizingMask = []
         wrapper.addSubview(composeView)
 
         contentView = wrapper
-        blurView = blur
         self.composeView = composeView
-        log("[panel] blur backdrop installed wrapperBounds=\(wrapper.bounds)")
-    }
-
-    /// Show/hide the blur backdrop. Since the panel is sized to the
-    /// visible content, "hide" is just alpha=0 — no frame math.
-    func setBlurVisible(_ visible: Bool) {
-        blurView?.alphaValue = visible ? 1 : 0
+        log("[panel] compose view installed wrapperBounds=\(wrapper.bounds)")
     }
 
     /// Cache the screen the cursor is on at session start so subsequent
@@ -166,10 +147,9 @@ final class SwitcherOverlayWindow: NSPanel {
     /// would wrap prematurely. Subsequent `setContentSize` calls
     /// shrink the panel to the actual content width.
     ///
-    /// Also resets `firstContentSizeAfterSession` so the *next*
-    /// `setContentSize` call centers the new panel on the captured
-    /// screen, while later calls during the same session anchor the
-    /// top edge instead.
+    /// Resets `capturedTopY` so the next `setContentSize` will sample
+    /// it from the screen-centred placement at the freshly-measured
+    /// first content size.
     func captureSessionScreen() {
         let mouse = NSEvent.mouseLocation
         let screen = NSScreen.screens.first(where: { NSMouseInRect(mouse, $0.frame, false) })
@@ -178,25 +158,26 @@ final class SwitcherOverlayWindow: NSPanel {
         guard let screen = screen else { return }
         let s = screen.visibleFrame
         sessionScreenFrame = s
-        firstContentSizeAfterSession = true
+        capturedTopY = nil
         // Compose host spans the full session screen so its scene
         // coordinate system covers everywhere the panel might end
         // up. setFrame's override below pins this view's *screen*
         // origin to s.origin regardless of where the NSPanel itself
         // sits in window-server coords.
         composeView?.frame = NSRect(origin: .zero, size: s.size)
-        // Initial panel size = whatever the user-configured max-width
-        // resolves to, capped at 90% of the screen visible area on
-        // each axis. Compose's first layout uses this width as its
-        // parent constraint for FlowRow's wrap; height is generous so
-        // any row count fits without clamping.
-        let width = min(resolvedMaxWidth(on: s), s.size.width * 0.9)
-        let height = s.size.height * 0.9
+        // Re-use the panel size from the previous session — every
+        // setFrame writes lastUsedSize, and on first launch it's
+        // initialized to 0.9 × NSScreen.main. The initial frame is
+        // invisible anyway (alpha=0 during showDelay) and gets
+        // replaced by the first onPanelSize from Compose, but
+        // matching the previous size means consecutive opens start
+        // from the right shape — no transient flash on the path to
+        // the cached natural width.
         let origin = NSPoint(
-            x: s.origin.x + (s.size.width - width) / 2,
-            y: s.origin.y + (s.size.height - height) / 2
+            x: s.origin.x + (s.size.width - lastUsedSize.width) / 2,
+            y: s.origin.y + (s.size.height - lastUsedSize.height) / 2
         )
-        setFrame(NSRect(origin: origin, size: NSSize(width: width, height: height)), display: false)
+        setFrame(NSRect(origin: origin, size: lastUsedSize), display: false)
     }
 
     /// Reposition the Compose host NSView inside our wrapper so its
@@ -217,23 +198,8 @@ final class SwitcherOverlayWindow: NSPanel {
 
     override func setFrame(_ frameRect: NSRect, display flag: Bool) {
         super.setFrame(frameRect, display: flag)
+        lastUsedSize = frameRect.size
         updateComposeViewPosition()
-    }
-
-    /// Read the user's max-width setting (`SwitcherSettings.maxWidthMode`
-    /// + the matching value) and resolve it against the given screen
-    /// frame to a concrete width in points. Caller cap-clamps as
-    /// needed (e.g. `captureSessionScreen` also caps to 90% of screen
-    /// regardless of setting). Falls back to 90% screen if the
-    /// settings flow can't be read.
-    func resolvedMaxWidth(on screen: NSRect) -> CGFloat {
-        let settings = ComposeViewKt.store.switcherSettings.value as? SwitcherSettings
-        guard let s = settings else { return screen.size.width * 0.9 }
-        return if s.maxWidthMode == MaxSizeMode.percent {
-            CGFloat(s.maxWidthPercent) * screen.size.width
-        } else {
-            CGFloat(s.maxWidthDp)
-        }
     }
 
     /// Reset session-screen state and cancel any pending shrink.
@@ -243,7 +209,25 @@ final class SwitcherOverlayWindow: NSPanel {
         pendingShrink?.cancel()
         pendingShrink = nil
         sessionScreenFrame = nil
-        firstContentSizeAfterSession = true
+        capturedTopY = nil
+    }
+
+    /// Called from observeSwitcherVisibility when Compose flips
+    /// `ui.visible` to true (i.e. showDelay has elapsed). Reveals
+    /// the panel and stops swallowing mouse events. Until Compose's
+    /// first render lands the metal layer holds the previous (empty)
+    /// frame, so alpha=1 before that render is a transparent panel —
+    /// no visible artefact to gate on.
+    func requestAlphaVisible() {
+        alphaValue = 1
+        ignoresMouseEvents = false
+    }
+
+    /// Called from observeSwitcherVisibility when `ui.visible` flips
+    /// to false (session ended). Hides + re-enables click-through.
+    func requestAlphaHidden() {
+        alphaValue = 0
+        ignoresMouseEvents = true
     }
 
     /// Resize the panel to the Compose-reported visible content size,
@@ -261,13 +245,13 @@ final class SwitcherOverlayWindow: NSPanel {
     ///
     /// Successive shrinks reschedule the pending work item, so a fast
     /// burst of layout changes still ends with one final resize at
-    /// the right size. During `showDelay` (panel alpha=0, blur alpha=0)
-    /// we skip the delay and resize immediately — the user can't see
-    /// the transition, and Compose has no in-flight `animateBounds`
-    /// on the very first layout.
+    /// the right size. During `showDelay` (panel alpha=0) we skip
+    /// the delay and resize immediately — the user can't see the
+    /// transition, and Compose has no in-flight `animateBounds` on
+    /// the very first layout.
     func setContentSize(widthPts: CGFloat, heightPts: CGFloat) {
         guard widthPts > 0, heightPts > 0 else { return }
-        guard let screen = sessionScreenFrame ?? fallbackScreenFrame() else { return }
+        guard let screen = sessionScreenFrame else { return }
 
         let target = NSSize(width: widthPts, height: heightPts)
         let current = frame.size
@@ -275,14 +259,14 @@ final class SwitcherOverlayWindow: NSPanel {
         pendingShrink?.cancel()
         pendingShrink = nil
 
-        // First call after session start (Compose's first layout) —
-        // place the panel centered on the captured screen at the
-        // freshly-measured content size. Subsequent calls during the
-        // same session anchor the top edge instead so existing rows
-        // don't slide around when a new row is added/removed below.
-        if firstContentSizeAfterSession {
-            firstContentSizeAfterSession = false
-            applyFrameCentered(size: target, on: screen)
+        // First call after session start (Compose's first layout):
+        // sample `capturedTopY` from the screen-centred placement at
+        // the freshly-measured content size, then jump straight to it.
+        // No envelope dance — there are no in-flight cells to protect
+        // on the very first layout.
+        if capturedTopY == nil {
+            capturedTopY = screen.origin.y + (screen.size.height + target.height) / 2
+            applyFrame(size: target)
             return
         }
 
@@ -292,13 +276,13 @@ final class SwitcherOverlayWindow: NSPanel {
         )
 
         if envelope != current {
-            applyFrameKeepingTop(size: envelope)
+            applyFrame(size: envelope)
         }
 
         if target != envelope {
             let work = DispatchWorkItem { [weak self] in
                 guard let self = self else { return }
-                self.applyFrameKeepingTop(size: target)
+                self.applyFrame(size: target)
                 self.pendingShrink = nil
             }
             pendingShrink = work
@@ -309,49 +293,19 @@ final class SwitcherOverlayWindow: NSPanel {
         }
     }
 
-    private func applyFrameCentered(size: NSSize, on screen: NSRect) {
-        let origin = NSPoint(
-            x: screen.origin.x + (screen.size.width - size.width) / 2,
-            y: screen.origin.y + (screen.size.height - size.height) / 2
-        )
-        setFrame(NSRect(origin: origin, size: size), display: false)
-    }
-
-    /// Resize the panel keeping its *top* edge (and horizontal centre
-    /// axis) stable. Used for mid-session content-size changes — when
-    /// an extra row appears/disappears the existing rows shouldn't
-    /// visually jump; the panel grows downward / shrinks from the
-    /// bottom.
-    private func applyFrameKeepingTop(size: NSSize) {
-        let oldCenterX = frame.origin.x + frame.size.width / 2
-        let oldTopY = frame.origin.y + frame.size.height
+    /// Place the panel at `size`, horizontally centred on the captured
+    /// session screen and with its top edge anchored at `capturedTopY`.
+    /// Both anchors are constant for the lifetime of the session, so
+    /// growing/shrinking expands and contracts the panel only along
+    /// its bottom edge — existing rows keep their on-screen position.
+    private func applyFrame(size: NSSize) {
+        guard let screen = sessionScreenFrame, let topY = capturedTopY else { return }
+        let centerX = screen.origin.x + screen.size.width / 2
         let newOrigin = NSPoint(
-            x: oldCenterX - size.width / 2,
-            y: oldTopY - size.height
+            x: centerX - size.width / 2,
+            y: topY - size.height
         )
         setFrame(NSRect(origin: newOrigin, size: size), display: false)
-    }
-
-    private func fallbackScreenFrame() -> NSRect? {
-        let mouse = NSEvent.mouseLocation
-        return (NSScreen.screens.first(where: { NSMouseInRect(mouse, $0.frame, false) })
-            ?? NSScreen.main
-            ?? NSScreen.screens.first)?.visibleFrame
-    }
-
-    /// 9-slice rounded-rect mask image for [NSVisualEffectView.maskImage].
-    /// `capInsets` matching `radius` keeps the corners crisp regardless of
-    /// the view's runtime size.
-    private static func roundedMaskImage(radius: CGFloat) -> NSImage {
-        let edge = radius * 2 + 1
-        let img = NSImage(size: NSSize(width: edge, height: edge), flipped: false) { rect in
-            NSColor.black.setFill()
-            NSBezierPath(roundedRect: rect, xRadius: radius, yRadius: radius).fill()
-            return true
-        }
-        img.capInsets = NSEdgeInsets(top: radius, left: radius, bottom: radius, right: radius)
-        img.resizingMode = .stretch
-        return img
     }
 
     override var canBecomeKey: Bool { true }
@@ -414,6 +368,7 @@ final class SwitcherOverlayWindow: NSPanel {
     override func sendEvent(_ event: NSEvent) {
         if event.type == .flagsChanged {
             let cmdHeld = event.modifierFlags.contains(.command)
+            log("[diag-panel] sendEvent flagsChanged cmdHeld=\(cmdHeld) isKey=\(isKeyWindow) isVisible=\(isVisible)")
             if !cmdHeld {
                 log("[panel] cmd released")
                 onCommandReleased?()

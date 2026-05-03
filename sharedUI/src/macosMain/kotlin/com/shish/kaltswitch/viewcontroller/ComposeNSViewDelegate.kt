@@ -78,26 +78,12 @@ class ComposeNSViewDelegate(
         invalidate = skiaLayer::needRender,
     )
 
-    /**
-     * Fires after every Compose render with the canvas pixel
-     * dimensions (`width`, `height` are in *pixels*, not points —
-     * they reflect the NSView's current bounds × backingScaleFactor
-     * at render time). Swift uses this on the switcher overlay to
-     * gate the panel's `alphaValue` on a Compose render that matches
-     * the post-`setContentSize` NSView size — without it the
-     * showDelay-end alpha=1 can land before Compose has redrawn at
-     * the new scene size, briefly exposing the previous (large)
-     * render buffer cropped to the new bounds.
-     */
-    @Suppress("Unused") var onRenderCallback: ((Int, Int) -> Unit)? = null
-
     private val renderDelegate = object : SkikoRenderDelegate {
         override fun onRender(canvas: Canvas, width: Int, height: Int, nanoTime: Long) {
             val sizeInPx = IntSize(width, height)
             _windowInfo.containerSize = sizeInPx
             scene.size = sizeInPx
             scene.render(canvas.asComposeCanvas(), nanoTime)
-            onRenderCallback?.invoke(width, height)
         }
     }
 
