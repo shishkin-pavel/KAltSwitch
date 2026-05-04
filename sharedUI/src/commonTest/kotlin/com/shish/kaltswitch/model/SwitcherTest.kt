@@ -254,7 +254,7 @@ class SwitcherTest {
         assertEquals(1, state.selectedAppPid)
 
         val refreshed = state.refreshedWith(SwitcherSnapshot.Empty)
-        assertEquals(-1, refreshed.selectedAppPid)
+        assertEquals(null, refreshed.selectedAppPid)
         assertEquals(null, refreshed.selectedWindowId)
     }
 

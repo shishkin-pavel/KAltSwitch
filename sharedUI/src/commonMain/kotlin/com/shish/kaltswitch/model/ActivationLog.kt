@@ -7,7 +7,7 @@ package com.shish.kaltswitch.model
  * have no feature that asks "how long ago was X activated". If/when we do, add
  * a clock then. */
 data class ActivationEvent(
-    val pid: Int,
+    val pid: Pid,
     val windowId: WindowId?,
 )
 
@@ -43,31 +43,31 @@ data class ActivationLog(val events: List<ActivationEvent> = emptyList()) {
 
     /** Drop every event for [pid]. Used when the app terminates so a future
      *  reused pid cannot inherit stale recency. */
-    fun withoutPid(pid: Int): ActivationLog =
+    fun withoutPid(pid: Pid): ActivationLog =
         copy(events = events.filterNot { it.pid == pid })
 
     /** Drop every window-level event for ([pid], [windowId]). Used when a
      *  specific window goes away. App-level events for the pid are kept. */
-    fun withoutWindow(pid: Int, windowId: WindowId): ActivationLog =
+    fun withoutWindow(pid: Pid, windowId: WindowId): ActivationLog =
         copy(events = events.filterNot { it.pid == pid && it.windowId == windowId })
 
     /** Keep app-level events for [pid] but drop every window-level event whose
      *  id isn't in [liveWindowIds]. Used by snapshot refreshes that report the
      *  full live window set in one go. */
-    fun withoutMissingWindows(pid: Int, liveWindowIds: Set<WindowId>): ActivationLog =
+    fun withoutMissingWindows(pid: Pid, liveWindowIds: Set<WindowId>): ActivationLog =
         copy(events = events.filterNot {
             it.pid == pid && it.windowId != null && it.windowId !in liveWindowIds
         })
 
     /** Pids ordered newest-first by their most-recent activation. */
-    fun appOrder(): List<Int> {
-        val seen = LinkedHashSet<Int>()
+    fun appOrder(): List<Pid> {
+        val seen = LinkedHashSet<Pid>()
         for (e in events) seen.add(e.pid)
         return seen.toList()
     }
 
     /** Window ids of [pid] ordered newest-first. App-level events (`windowId == null`) are skipped. */
-    fun windowOrder(pid: Int): List<WindowId> {
+    fun windowOrder(pid: Pid): List<WindowId> {
         val seen = LinkedHashSet<WindowId>()
         for (e in events) {
             if (e.pid != pid) continue

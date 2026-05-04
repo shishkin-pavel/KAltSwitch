@@ -53,19 +53,21 @@ data class SwitcherCursor(val appIndex: Int, val windowIndex: Int)
  * [refreshedWith] for the fallback rules when the selected target itself
  * disappears.
  *
- * `selectedAppPid == -1` represents "no selection" (empty snapshot, transient).
+ * `selectedAppPid == null` represents "no selection" (empty snapshot, transient).
  * `selectedWindowId == null` represents an app-level cell (windowless app, or
  * an app whose AX window list is unknown).
  */
 data class SwitcherState(
     val snapshot: SwitcherSnapshot,
     val entry: SwitcherEntry,
-    val selectedAppPid: Int,
+    val selectedAppPid: Pid?,
     val selectedWindowId: WindowId?,
 ) {
     val selectedAppEntry: AppEntry?
-        get() = if (selectedAppPid < 0) null
-        else snapshot.all.firstOrNull { it.app.pid == selectedAppPid }
+        get() {
+            val pid = selectedAppPid ?: return null
+            return snapshot.all.firstOrNull { it.app.pid == pid }
+        }
 
     val selectedWindow: Window?
         get() {
@@ -82,7 +84,8 @@ data class SwitcherState(
      */
     val cursor: SwitcherCursor
         get() {
-            val appIndex = snapshot.all.indexOfFirst { it.app.pid == selectedAppPid }
+            val pid = selectedAppPid ?: return SwitcherCursor(0, 0)
+            val appIndex = snapshot.all.indexOfFirst { it.app.pid == pid }
             if (appIndex < 0) return SwitcherCursor(0, 0)
             val app = snapshot.all[appIndex]
             val windowIndex = if (selectedWindowId == null) 0
@@ -146,10 +149,10 @@ fun openSwitcher(snapshot: SwitcherSnapshot, entry: SwitcherEntry): SwitcherStat
 }
 
 /** Resolve `(appIndex, windowIndex)` to (pid, windowId?) against this snapshot.
- *  Returns `(-1, null)` when the snapshot is empty so an empty switcher session
+ *  Returns `(null, null)` when the snapshot is empty so an empty switcher session
  *  has a well-defined "no selection" identity. */
-internal fun SwitcherSnapshot.identityAt(cursor: SwitcherCursor): Pair<Int, WindowId?> {
-    val app = all.getOrNull(cursor.appIndex) ?: return -1 to null
+internal fun SwitcherSnapshot.identityAt(cursor: SwitcherCursor): Pair<Pid?, WindowId?> {
+    val app = all.getOrNull(cursor.appIndex) ?: return null to null
     val wid = app.windows.getOrNull(cursor.windowIndex)?.id
     return app.app.pid to wid
 }
@@ -234,10 +237,11 @@ fun SwitcherState.refreshedWith(newSnapshot: SwitcherSnapshot): SwitcherState {
 
     val newAll = newSnapshot.all
     if (newAll.isEmpty()) {
-        return copy(snapshot = newSnapshot, selectedAppPid = -1, selectedWindowId = null)
+        return copy(snapshot = newSnapshot, selectedAppPid = null, selectedWindowId = null)
     }
 
-    val newApp = newAll.firstOrNull { it.app.pid == selectedAppPid }
+    val pid = selectedAppPid
+    val newApp = pid?.let { p -> newAll.firstOrNull { it.app.pid == p } }
     if (newApp != null) {
         // Selected app survived. Either window is still alive, or pick a
         // neighbour from the OLD app's window order.
@@ -251,19 +255,17 @@ fun SwitcherState.refreshedWith(newSnapshot: SwitcherSnapshot): SwitcherState {
             return copy(snapshot = newSnapshot)
         }
         val replacementWid = pickWindowNeighbour(
-            oldApp = snapshot.all.firstOrNull { it.app.pid == selectedAppPid },
+            oldApp = snapshot.all.firstOrNull { it.app.pid == pid },
             newApp = newApp,
             disappearedWid = selectedWindowId,
         )
         return copy(snapshot = newSnapshot, selectedWindowId = replacementWid)
     }
 
-    // Selected app gone. Walk the OLD app order looking for a survivor.
-    val replacementApp = pickAppNeighbour(
-        oldAll = snapshot.all,
-        newAll = newAll,
-        disappearedPid = selectedAppPid,
-    ) ?: newAll.first()
+    // Selected app gone (or unset). Walk the OLD app order looking for a survivor.
+    val replacementApp = pid?.let {
+        pickAppNeighbour(oldAll = snapshot.all, newAll = newAll, disappearedPid = it)
+    } ?: newAll.first()
     return copy(
         snapshot = newSnapshot,
         selectedAppPid = replacementApp.app.pid,
@@ -296,7 +298,7 @@ private fun pickWindowNeighbour(
 private fun pickAppNeighbour(
     oldAll: List<AppEntry>,
     newAll: List<AppEntry>,
-    disappearedPid: Int,
+    disappearedPid: Pid,
 ): AppEntry? {
     val oldIndex = oldAll.indexOfFirst { it.app.pid == disappearedPid }
     if (oldIndex < 0) return null

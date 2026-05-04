@@ -3,12 +3,12 @@ package com.shish.kaltswitch.model
 /** Live system state — what we know about running apps and their windows right now. */
 data class World(
     val log: ActivationLog,
-    val runningApps: Map<Int, App>,
+    val runningApps: Map<Pid, App>,
     /** `null` (key absent) = AX info not yet known for this pid; empty list = knowingly windowless. */
-    val windowsByPid: Map<Int, List<Window>>,
+    val windowsByPid: Map<Pid, List<Window>>,
 ) {
     /** Returns ordered windows, or `null` if AX info is unknown for this pid. */
-    fun orderedWindows(pid: Int): List<Window>? {
+    fun orderedWindows(pid: Pid): List<Window>? {
         val available = windowsByPid[pid] ?: return null
         if (available.isEmpty()) return emptyList()
         val byId = available.associateBy { it.id }
@@ -60,7 +60,7 @@ data class SwitcherSnapshot(
 }
 
 fun World.snapshot(): SwitcherSnapshot {
-    val placedPids = HashSet<Int>()
+    val placedPids = HashSet<Pid>()
     val withWindows = ArrayList<AppEntry>()
 
     // 1. Activation-recency-ordered apps. Apps whose AX info is unknown (null) get an

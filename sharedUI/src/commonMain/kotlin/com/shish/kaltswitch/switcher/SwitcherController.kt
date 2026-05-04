@@ -3,6 +3,7 @@ package com.shish.kaltswitch.switcher
 import com.shish.kaltswitch.log.log
 import com.shish.kaltswitch.model.ActionScope
 import com.shish.kaltswitch.model.NavScope
+import com.shish.kaltswitch.model.Pid
 import com.shish.kaltswitch.model.SwitcherAction
 import com.shish.kaltswitch.model.SwitcherCursor
 import com.shish.kaltswitch.model.SwitcherEntry
@@ -69,8 +70,8 @@ class SwitcherController(
      *  docs/window-state-attributes.md §8. The full code path stays compiled
      *  and tested; the inspector exposes a toggle so users can opt in. */
     private val previewEnabled: Boolean get() = store.switcherSettings.value.previewEnabled
-    var onRaiseWindow: ((pid: Int, windowId: WindowId) -> Unit)? = null
-    var onCommitActivation: ((pid: Int, windowId: WindowId?) -> Unit)? = null
+    var onRaiseWindow: ((pid: Pid, windowId: WindowId) -> Unit)? = null
+    var onCommitActivation: ((pid: Pid, windowId: WindowId?) -> Unit)? = null
 
     /**
      * Wired by the platform layer to side-effect APIs:
@@ -84,7 +85,7 @@ class SwitcherController(
      * the live-snapshot collector picks it up, and the cursor moves to a
      * neighbour automatically — see [SwitcherState.refreshedWith].
      */
-    var onPerformAction: ((action: SwitcherAction, pid: Int, windowId: WindowId?) -> Unit)? = null
+    var onPerformAction: ((action: SwitcherAction, pid: Pid, windowId: WindowId?) -> Unit)? = null
 
     private val _ui = MutableStateFlow<SwitcherUiState?>(null)
     val ui: StateFlow<SwitcherUiState?> = _ui.asStateFlow()

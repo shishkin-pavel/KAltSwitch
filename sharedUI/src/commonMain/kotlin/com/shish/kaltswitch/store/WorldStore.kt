@@ -9,6 +9,7 @@ import com.shish.kaltswitch.model.ActivationLog
 import com.shish.kaltswitch.model.App
 import com.shish.kaltswitch.model.AppActivationPolicy
 import com.shish.kaltswitch.model.FilteringRules
+import com.shish.kaltswitch.model.Pid
 import com.shish.kaltswitch.model.Window
 import com.shish.kaltswitch.model.WindowId
 import com.shish.kaltswitch.model.World
@@ -33,8 +34,8 @@ class WorldStore(initial: World = World(ActivationLog(), emptyMap(), emptyMap())
     private val _axTrusted = MutableStateFlow(true)
     val axTrusted: StateFlow<Boolean> = _axTrusted.asStateFlow()
 
-    private val _activeAppPid = MutableStateFlow<Int?>(null)
-    val activeAppPid: StateFlow<Int?> = _activeAppPid.asStateFlow()
+    private val _activeAppPid = MutableStateFlow<Pid?>(null)
+    val activeAppPid: StateFlow<Pid?> = _activeAppPid.asStateFlow()
 
     private val _activeWindowId = MutableStateFlow<WindowId?>(null)
     val activeWindowId: StateFlow<WindowId?> = _activeWindowId.asStateFlow()
@@ -143,10 +144,10 @@ class WorldStore(initial: World = World(ActivationLog(), emptyMap(), emptyMap())
 
     /** Per-pid PNG-encoded application icons. Populated by Swift from
      *  `NSRunningApplication.icon` and consumed by the Compose overlay. */
-    private val _iconsByPid = MutableStateFlow<Map<Int, ByteArray>>(emptyMap())
-    val iconsByPid: StateFlow<Map<Int, ByteArray>> = _iconsByPid.asStateFlow()
+    private val _iconsByPid = MutableStateFlow<Map<Pid, ByteArray>>(emptyMap())
+    val iconsByPid: StateFlow<Map<Pid, ByteArray>> = _iconsByPid.asStateFlow()
 
-    fun setAppIconPng(pid: Int, png: ByteArray) {
+    fun setAppIconPng(pid: Pid, png: ByteArray) {
         _iconsByPid.update { it + (pid to png) }
     }
 
@@ -187,7 +188,7 @@ class WorldStore(initial: World = World(ActivationLog(), emptyMap(), emptyMap())
         _axTrusted.value = trusted
     }
 
-    private fun setActive(pid: Int?, windowId: WindowId?) {
+    private fun setActive(pid: Pid?, windowId: WindowId?) {
         _activeAppPid.value = pid
         _activeWindowId.value = windowId
     }
@@ -202,7 +203,7 @@ class WorldStore(initial: World = World(ActivationLog(), emptyMap(), emptyMap())
      *  they pointed at it — pids are runtime ids that macOS may reuse, and
      *  leaving stale entries would let a future unrelated launch inherit the
      *  recency of the dead one. */
-    fun removeApp(pid: Int) {
+    fun removeApp(pid: Pid) {
         _state.update {
             it.copy(
                 runningApps = it.runningApps - pid,
@@ -221,7 +222,7 @@ class WorldStore(initial: World = World(ActivationLog(), emptyMap(), emptyMap())
      *  (AX window ids are tied to native element lifetimes and can be reused);
      *  app-level events for the pid are kept. Clears [activeWindowId] if the
      *  pointed-at window has disappeared. */
-    fun setWindows(pid: Int, windows: List<Window>) {
+    fun setWindows(pid: Pid, windows: List<Window>) {
         val liveIds: Set<WindowId> = collectAllWindowIds(windows)
         _state.update {
             it.copy(
@@ -275,7 +276,7 @@ class WorldStore(initial: World = World(ActivationLog(), emptyMap(), emptyMap())
      * windows" — that becomes an app-level event in the log, with the active
      * window pointer cleared until a more specific event arrives.
      */
-    fun recordActivation(pid: Int, windowId: WindowId?) {
+    fun recordActivation(pid: Pid, windowId: WindowId?) {
         if (_switcherActive.value) return
         _state.update {
             it.copy(log = it.log.record(ActivationEvent(pid, windowId)))
@@ -356,7 +357,7 @@ class WorldStore(initial: World = World(ActivationLog(), emptyMap(), emptyMap())
      */
     @Suppress("LongParameterList")
     fun upsertAppFields(
-        pid: Int,
+        pid: Pid,
         bundleId: String?,
         name: String,
         activationPolicyRaw: Long,
