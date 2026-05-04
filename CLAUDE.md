@@ -8,6 +8,12 @@ While iterating on a feature branch:
 * Use **fixup commits** with a short, specific subject — `git commit -m "fixup: <one-line what changed>"` (or `git commit --fixup=<sha>`).
 * Build + test after each fixup, same as a normal commit.
 
+### Don't re-run build/tests when there are no source changes
+
+The build/test gate is for catching regressions from code changes. Git operations that leave the working tree byte-identical to a state that already passed — `git reset --soft`, switching to a tree-equal commit, applying an already-applied stash, ff-merging a verified branch — don't change what the compiler sees. Skip the verify step in those cases; the previous green run still holds. Re-running anyway burns time and adds nothing.
+
+The trigger for the gate is "did source files change since the last green run?", not "is a commit about to happen?".
+
 When the feature is verified complete:
 
 * **Squash all the iter / fixup commits into a single commit** with a comprehensive message describing the architectural change.
