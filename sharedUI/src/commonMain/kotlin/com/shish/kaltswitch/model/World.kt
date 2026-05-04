@@ -63,27 +63,35 @@ fun World.snapshot(): SwitcherSnapshot {
     val placedPids = HashSet<Pid>()
     val withWindows = ArrayList<AppEntry>()
 
-    // 1. Activation-recency-ordered apps. Apps whose AX info is unknown (null) get an
-    //    empty-windows AppEntry but still go in front of the separator.
-    for (pid in log.appOrder()) {
+    // 1. Activation-recency-ordered apps. Includes both windowed AND known-
+    //    windowless apps, as long as the pid has an entry in appOrder — the
+    //    user just used the app, recency wins over the has-windows split.
+    //    AX-unknown apps (windowsByPid[pid] == null) also land here with an
+    //    empty windows list. The split-on-windows used to live in this loop
+    //    too and routed every windowless-but-recently-active app to step 3
+    //    (alphabetical), which sent apps the user was just using to the tail
+    //    of the switcher — exactly the wrong direction.
+    for (pid in log.appOrder) {
         if (pid in placedPids) continue
         val app = runningApps[pid] ?: continue
         val windows = orderedWindows(pid) ?: emptyList()
-        if (windowsByPid[pid]?.isEmpty() == true) continue   // known windowless → step 3
         placedPids.add(pid)
         withWindows.add(AppEntry(app, windows))
     }
 
-    // 2. Running apps not in the log yet (just-launched).
+    // 2. Running apps not in the log yet (just-launched, never focused). A
+    //    just-launched windowed app belongs in front of the separator with a
+    //    deterministic position; a just-launched windowless app has no
+    //    recency to anchor on, so it joins step 3's alphabetical list.
     for ((pid, app) in runningApps) {
         if (pid in placedPids) continue
-        if (windowsByPid[pid]?.isEmpty() == true) continue   // known windowless → step 3
+        if (windowsByPid[pid]?.isEmpty() == true) continue   // never-activated windowless → step 3
         val windows = orderedWindows(pid) ?: emptyList()
         placedPids.add(pid)
         withWindows.add(AppEntry(app, windows))
     }
 
-    // 3. Apps known to have zero windows. Alphabetical for visual stability.
+    // 3. Never-activated windowless apps. Alphabetical for visual stability.
     val windowless = runningApps.values
         .asSequence()
         .filter { it.pid !in placedPids }

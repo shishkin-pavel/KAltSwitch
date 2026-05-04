@@ -132,16 +132,6 @@ class WorldStore(initial: World = World(ActivationLog(), emptyMap(), emptyMap())
         _switcherPanelSize.value = null
     }
 
-    /** True while a switcher session is open or just closed. AX/Workspace activation
-     *  events arriving in this window are dropped — they describe our own preview-raise
-     *  / commit echo, not user-driven activity, and would otherwise corrupt the log. */
-    private val _switcherActive = MutableStateFlow(false)
-    val switcherActive: StateFlow<Boolean> = _switcherActive.asStateFlow()
-
-    fun setSwitcherActive(active: Boolean) {
-        _switcherActive.value = active
-    }
-
     /** Per-pid PNG-encoded application icons. Populated by Swift from
      *  `NSRunningApplication.icon` and consumed by the Compose overlay. */
     private val _iconsByPid = MutableStateFlow<Map<Pid, ByteArray>>(emptyMap())
@@ -267,21 +257,42 @@ class WorldStore(initial: World = World(ActivationLog(), emptyMap(), emptyMap())
      * so the inspector's row order (driven by the log) and active-row highlight
      * (driven by the pointers) can never disagree.
      *
-     * Dropped while a switcher session is live so our own preview-raise / commit
-     * AX echo doesn't pollute either side. The commit's AX echo arrives
-     * *after* the session ends (we clear `switcherActive` synchronously when
-     * `_ui.value` flips to null), so it lands naturally in the log.
+     * Used to be gated by a `_switcherActive` flag while a session was live so
+     * our own preview-raise / commit AX echo wouldn't pollute the log. Both
+     * concerns went away with the timestamp-based recency model and the
+     * preview-raise wiring being disabled: the commit's explicit record
+     * coincides with the AX echo (deduped by [ActivationLog.record] bumping
+     * the same pid to the front idempotently), and side-effect echoes from
+     * cmd+M / cmd+W et al. are now treated as legitimate signals — they
+     * reflect what macOS actually focused, which is what the switcher should
+     * surface next time.
      *
      * `windowId == null` means "we know an app got focus but not which of its
      * windows" — that becomes an app-level event in the log, with the active
      * window pointer cleared until a more specific event arrives.
      */
     fun recordActivation(pid: Pid, windowId: WindowId?) {
-        if (_switcherActive.value) return
         _state.update {
             it.copy(log = it.log.record(ActivationEvent(pid, windowId)))
         }
         setActive(pid = pid, windowId = windowId)
+    }
+
+    /**
+     * Window-only counterpart of [recordActivation]. Bumps the per-app
+     * window order without promoting the app in [appOrder] and without
+     * shifting the active-app/window pointers.
+     *
+     * Used by switcher actions that change a window's *state* (cmd+M
+     * minimize / restore) but don't mean "I want this app now". The user
+     * is still browsing inside the switcher — releasing cmd to commit is
+     * the path that promotes the app via the regular [recordActivation].
+     * See `[ActivationLog.recordWindow]`.
+     */
+    fun recordWindowActivation(pid: Pid, windowId: WindowId) {
+        _state.update {
+            it.copy(log = it.log.recordWindow(pid, windowId))
+        }
     }
 
     /** Clear the active-app/window pointers without touching the log. Used when

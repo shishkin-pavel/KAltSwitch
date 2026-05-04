@@ -22,9 +22,6 @@ import kotlin.test.assertNull
  *    in the same call. UI invariants depend on the inspector's row order
  *    (driven by the log) never disagreeing with the active-row highlight
  *    (driven by the pointers).
- *  - While `switcherActive == true`, `recordActivation` drops events
- *    silently — they describe our own preview-raise / commit AX echo,
- *    not user intent.
  *  - `clearActive` zeros the pointers but leaves the log untouched.
  *
  * Each test is small and one-shot; together they pin the contract so
@@ -36,7 +33,7 @@ class WorldStoreTest {
     fun recordActivation_updatesLogAndActivePointers_atomically() {
         val store = WorldStore()
         store.recordActivation(pid = 10, windowId = 100)
-        assertEquals(listOf(10), store.state.value.log.appOrder())
+        assertEquals(listOf(10), store.state.value.log.appOrder)
         assertEquals(10, store.activeAppPid.value)
         assertEquals(100L, store.activeWindowId.value)
     }
@@ -54,26 +51,6 @@ class WorldStoreTest {
     }
 
     @Test
-    fun recordActivation_isDroppedWhileSwitcherActive() {
-        val store = WorldStore()
-        store.recordActivation(pid = 10, windowId = 100)
-
-        store.setSwitcherActive(true)
-        store.recordActivation(pid = 20, windowId = 200)  // dropped
-        store.recordActivation(pid = 30, windowId = null) // dropped
-        assertEquals(listOf(10), store.state.value.log.appOrder())
-        assertEquals(10, store.activeAppPid.value)
-        assertEquals(100L, store.activeWindowId.value)
-
-        // Once the gate clears, events flow again.
-        store.setSwitcherActive(false)
-        store.recordActivation(pid = 20, windowId = 200)
-        assertEquals(listOf(20, 10), store.state.value.log.appOrder())
-        assertEquals(20, store.activeAppPid.value)
-        assertEquals(200L, store.activeWindowId.value)
-    }
-
-    @Test
     fun clearActive_zeroesPointers_withoutTouchingLog() {
         val store = WorldStore()
         store.recordActivation(pid = 10, windowId = 100)
@@ -83,7 +60,7 @@ class WorldStoreTest {
         assertNull(store.activeAppPid.value)
         assertNull(store.activeWindowId.value)
         // Log untouched.
-        assertEquals(listOf(20, 10), store.state.value.log.appOrder())
+        assertEquals(listOf(20, 10), store.state.value.log.appOrder)
     }
 
     @Test
@@ -134,7 +111,7 @@ class WorldStoreTest {
         store.removeApp(pid = 10)
 
         // History no longer mentions pid 10 — a future reused pid 10 starts fresh.
-        assertEquals(listOf(20), store.state.value.log.appOrder())
+        assertEquals(listOf(20), store.state.value.log.appOrder)
         assertEquals(emptyList(), store.state.value.log.windowOrder(pid = 10))
         // Active pointers were pointing at the removed pid → cleared.
         assertNull(store.activeAppPid.value)
@@ -154,7 +131,7 @@ class WorldStoreTest {
         // Window 100 is gone from history, 101 + the app-level event remain.
         assertEquals(listOf(101L), store.state.value.log.windowOrder(pid = 10))
         // App-level event preserved (windowId == null is not a window id).
-        assertEquals(listOf(10), store.state.value.log.appOrder())
+        assertEquals(listOf(10), store.state.value.log.appOrder)
     }
 
     @Test

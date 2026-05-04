@@ -284,7 +284,7 @@ final class AppRegistry {
         guard let nsApp = note.userInfo?[NSWorkspace.applicationUserInfoKey] as? NSRunningApplication else { return }
         // syncActiveStateFromSystem records the activation through the unified
         // recordActivation API, updating both the log (row order) and the active
-        // pointers (highlight) under the same switcherActive gate.
+        // pointers (highlight) atomically.
         syncActiveStateFromSystem(store: store)
         // Re-poll the app's metadata so a runtime activationPolicy promotion
         // (Bitwarden et al. flip .accessory → .regular when their main window

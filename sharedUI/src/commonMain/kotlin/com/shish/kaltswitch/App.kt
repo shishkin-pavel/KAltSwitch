@@ -392,23 +392,26 @@ private fun SettingsPanel(
             range = 0f..200f,
             onChange = { onChange(settings.copy(showDelayMs = it)) },
         )
-        // Preview group: toggle on top, the delay slider only renders
-        // when the toggle is on, indented to read as a child setting.
-        ToggleRow(
-            label = "Preview-raise on hover",
-            checked = settings.previewEnabled,
-            onCheckedChange = { onChange(settings.copy(previewEnabled = it)) },
-        )
-        if (settings.previewEnabled) {
-            Box(Modifier.padding(start = 16.dp)) {
-                DelaySlider(
-                    label = "Preview delay",
-                    valueMs = settings.previewDelayMs,
-                    range = 50f..1000f,
-                    onChange = { onChange(settings.copy(previewDelayMs = it)) },
-                )
-            }
-        }
+        // Preview group: toggle + delay slider. Disabled controller-side
+        // (see SwitcherController.schedulePreview) so the UI is hidden but
+        // the underlying SwitcherSettings fields stay so persisted
+        // configs round-trip cleanly. Reviving preview = uncomment this
+        // block plus the call sites + Swift wiring.
+        // ToggleRow(
+        //     label = "Preview-raise on hover",
+        //     checked = settings.previewEnabled,
+        //     onCheckedChange = { onChange(settings.copy(previewEnabled = it)) },
+        // )
+        // if (settings.previewEnabled) {
+        //     Box(Modifier.padding(start = 16.dp)) {
+        //         DelaySlider(
+        //             label = "Preview delay",
+        //             valueMs = settings.previewDelayMs,
+        //             range = 50f..1000f,
+        //             onChange = { onChange(settings.copy(previewDelayMs = it)) },
+        //         )
+        //     }
+        // }
         DelaySlider(
             label = "Auto-advance after",
             valueMs = settings.repeatInitialDelayMs,

@@ -27,6 +27,7 @@ import kotlinx.coroutines.test.advanceTimeBy
 import kotlinx.coroutines.test.advanceUntilIdle
 import kotlinx.coroutines.test.runCurrent
 import kotlinx.coroutines.test.runTest
+import kotlin.test.Ignore
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertNotNull
@@ -67,7 +68,6 @@ class SwitcherControllerTest {
         val pending = ctl.ui.value
         assertNotNull(pending)
         assertEquals(false, pending.visible)
-        assertEquals(true, store.switcherActive.value)
 
         advanceTimeBy(15)
         assertEquals(false, ctl.ui.value?.visible)
@@ -126,6 +126,7 @@ class SwitcherControllerTest {
         assertEquals(0, commits.size, "Esc must not activate anything")
     }
 
+    @Ignore  // preview wiring disabled at the controller level — see SwitcherController.schedulePreview
     @Test
     fun previewRaise_firesAfterPreviewDelay_onlyWhenVisible() = runTest {
         val store = seededStore()
@@ -142,6 +143,7 @@ class SwitcherControllerTest {
         assertEquals(listOf(2 to 21L), raises)
     }
 
+    @Ignore  // preview wiring disabled at the controller level — see SwitcherController.schedulePreview
     @Test
     fun navigation_resetsPreviewTimer() = runTest {
         val store = seededStore()
@@ -254,29 +256,6 @@ class SwitcherControllerTest {
         // onShortcut is a fresh press, not auto-repeat.
         ctl.onShortcut(SwitcherEntry.App, reverse = true)  // PrevApp → 0
         assertEquals(0, ctl.ui.value?.state?.cursor?.appIndex)
-    }
-
-    @Test
-    fun switcherActive_isTrueDuringSession_clearsImmediatelyOnCommit() = runTest {
-        val store = seededStore()
-        val ctl = SwitcherController(store, scope = backgroundScope)
-        ctl.onShortcut(SwitcherEntry.App)
-        assertEquals(true, store.switcherActive.value)
-        advanceTimeBy(30)
-        ctl.onModifierReleased()
-        // No debounce — flag clears synchronously so the commit's AX echo can
-        // land in the log without being dropped.
-        assertEquals(false, store.switcherActive.value)
-    }
-
-    @Test
-    fun switcherActive_clearsImmediatelyOnEsc() = runTest {
-        val store = seededStore()
-        val ctl = SwitcherController(store, scope = backgroundScope)
-        ctl.onShortcut(SwitcherEntry.App)
-        advanceTimeBy(30)
-        ctl.onEsc()
-        assertEquals(false, store.switcherActive.value)
     }
 
     @Test
@@ -481,17 +460,6 @@ class SwitcherControllerTest {
         assertEquals(1, ctl.ui.value?.state?.cursor?.appIndex)
     }
 
-    @Test
-    fun store_recordActivation_isDroppedWhileSwitcherActive() = runTest {
-        val store = seededStore()
-        val ctl = SwitcherController(store, scope = backgroundScope)
-        ctl.onShortcut(SwitcherEntry.App)
-
-        val before = store.state.value.log.events.size
-        store.recordActivation(pid = 1, windowId = 11)
-        assertEquals(before, store.state.value.log.events.size)
-    }
-
     // ---- onAction dispatch -------------------------------------------------
 
     @Test
@@ -514,6 +482,36 @@ class SwitcherControllerTest {
             ),
             actions,
         )
+    }
+
+    @Test
+    fun action_toggleMinimize_recordsWindowOnly_doesNotPromoteAppInAppOrder() = runTest {
+        // Regression-with-twist: cmd+M during a switcher session has to bump
+        // its target window to the head of the per-app window order (so a
+        // restored window is where the user's attention goes), but it must
+        // NOT promote the app itself in appOrder — the user is still
+        // browsing inside the switcher, hasn't released cmd, hasn't said
+        // "I want this app now". Promoting the app would demote whatever
+        // app the user originally came from.
+        val store = seededStore()
+        val ctl = SwitcherController(store, scope = backgroundScope)
+        ctl.onShortcut(SwitcherEntry.App)  // default cursor: IDE/21
+        advanceTimeBy(50)
+        // Navigate to IDE's second-newest window so the action's target is
+        // NOT already at the head of windowOrder.
+        ctl.onNavigate(SwitcherEvent.NextWindow)
+        // App order before action: Safari (1) most recent, IDE (2) second.
+        assertEquals(listOf(1, 2), store.state.value.log.appOrder)
+        // IDE per-window order: [21, 22] (21 most-recent per seededStore).
+        assertEquals(listOf(21L, 22L), store.state.value.log.windowOrder(2))
+
+        ctl.onAction(SwitcherAction.ToggleMinimize)
+
+        // Window order: 22 jumps to head — the user just acted on it.
+        assertEquals(listOf(22L, 21L), store.state.value.log.windowOrder(2))
+        // App order: untouched. Safari is still the user's primary app
+        // because they haven't actually committed to switching.
+        assertEquals(listOf(1, 2), store.state.value.log.appOrder)
     }
 
     @Test
@@ -608,7 +606,7 @@ class SwitcherControllerTest {
         assertEquals(2, store.activeAppPid.value)
         assertEquals(22L, store.activeWindowId.value)
         // App with pid=2 should be at the head of the order now.
-        assertEquals(2, store.state.value.log.appOrder().first())
+        assertEquals(2, store.state.value.log.appOrder.first())
     }
 
     // ---- Live snapshot: structural changes during a session --------------

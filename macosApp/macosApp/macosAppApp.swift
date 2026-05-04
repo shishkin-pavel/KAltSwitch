@@ -135,10 +135,14 @@ class AppDelegate: NSObject, NSApplicationDelegate {
 
         // Wire the Kotlin switcher controller's AX-side actions to AppRegistry.
         let controller = ComposeViewKt.switcherController
-        controller.onRaiseWindow = { [weak registry] pid, windowId in
-            registry?.raise(pid: pid_t(truncatingIfNeeded: pid.int32Value),
-                            windowId: windowId.int64Value)
-        }
+        // Preview-raise on cursor change is currently disabled controller-side
+        // (see SwitcherController.schedulePreview). The Swift wiring stays in
+        // place commented out so reviving preview is a one-line change here
+        // plus uncommenting the call sites in SwitcherController.
+        // controller.onRaiseWindow = { [weak registry] pid, windowId in
+        //     registry?.raise(pid: pid_t(truncatingIfNeeded: pid.int32Value),
+        //                     windowId: windowId.int64Value)
+        // }
         controller.onCommitActivation = { [weak self, weak registry] pid, windowId in
             // Hide the overlay BEFORE asking macOS to activate the target app.
             // The StateFlow observer that orderOuts the panel is dispatched

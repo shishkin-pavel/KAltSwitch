@@ -360,6 +360,24 @@ class SwitcherController(
                 }
                 log("[ctl] action=$action pid=${app.pid} wid=${window.id}")
                 onPerformAction?.invoke(action, app.pid, window.id)
+                // Window-only recency bump for cmd+M. The AX side effect of
+                // cmd+M restore (kAXMinimized=false) does not refocus the
+                // window during a switcher session — the panel is key-
+                // window, the target app is in the background, macOS
+                // suppresses the focus shift. Without an explicit record,
+                // the just-restored window stays wherever it was in the
+                // per-app window order. We record it here, but only on
+                // [WorldStore.recordWindowActivation] (window-only) — not
+                // the full [recordActivation] — because cmd+M is a
+                // window-state interaction inside an open switcher session,
+                // not an "I want this app now" signal. Promoting the app
+                // in [appOrder] would mean: minimizing window A demotes
+                // your real attention target (the app you came from)
+                // because A's app jumped ahead. Releasing cmd to commit
+                // is the path that promotes the app via [recordActivation].
+                if (action == SwitcherAction.ToggleMinimize) {
+                    store.recordWindowActivation(app.pid, window.id)
+                }
             }
         }
     }
@@ -380,23 +398,22 @@ class SwitcherController(
         // [mouseInteracted]. Reset on each session-open so the gate kicks
         // in fresh every time.
         mouseInteracted = false
-        store.setSwitcherActive(true)
 
         showJob?.cancel()
         val delayMs = showDelayMs.coerceAtLeast(0L)
         if (delayMs == 0L) {
             // Skip the pending-then-visible dance entirely: no coroutine,
             // no `delay(0)` that yields a frame for nothing. Open visible
-            // immediately and arm preview synchronously.
+            // immediately.
             _ui.value = SwitcherUiState(state, visible = true, previewedWindowId = null)
-            schedulePreview()
+            // schedulePreview()  // preview disabled — see [schedulePreview] comment
         } else {
             _ui.value = SwitcherUiState(state, visible = false, previewedWindowId = null)
             showJob = scope.launch {
                 delay(delayMs)
                 val cur = _ui.value ?: return@launch
                 _ui.value = cur.copy(visible = true)
-                schedulePreview()
+                // schedulePreview()  // preview disabled — see [schedulePreview] comment
             }
         }
 
@@ -414,7 +431,7 @@ class SwitcherController(
         if (nextState == cur.state) return
         // Cursor moved → previous preview-raise is no longer relevant.
         _ui.value = cur.copy(state = nextState, previewedWindowId = null)
-        schedulePreview()
+        // schedulePreview()  // preview disabled
     }
 
     /**
@@ -444,7 +461,7 @@ class SwitcherController(
                     refreshed.selectedAppPid != cur.state.selectedAppPid ||
                             refreshed.selectedWindowId != cur.state.selectedWindowId
                 _ui.value = cur.copy(state = refreshed, previewedWindowId = null)
-                if (selectionChanged) schedulePreview()
+                // if (selectionChanged) schedulePreview()  // preview disabled
                 if (selectionChanged) {
                     log("[ctl] snapshot refresh moved cursor to " +
                             "pid=${refreshed.selectedAppPid} wid=${refreshed.selectedWindowId}")
@@ -453,6 +470,19 @@ class SwitcherController(
         }
     }
 
+    /**
+     * Preview-raise on cursor change. Disabled — call sites are commented
+     * out, the body kept for when we revisit. The real reason it stays
+     * present in the source is that it was the original justification for
+     * the `_switcherActive` gate: a session-time AX echo from our own
+     * AXRaise pollutes the activation log if not gated. With preview off,
+     * that echo source is gone, the gate is gone, and we accept other
+     * session-time AX echoes (cmd+M's focus-shift to the next window,
+     * external focus theft) as legitimate signals — they reflect what
+     * macOS actually focused, which is what the switcher should surface
+     * next time.
+     */
+    @Suppress("unused")
     private fun schedulePreview() {
         previewJob?.cancel()
         previewJob = null
@@ -490,10 +520,12 @@ class SwitcherController(
         closeSession()
     }
 
-    /** Tear down everything that constitutes a "live session": UI state, pending
-     *  timers, and the [WorldStore.switcherActive] gate. After this returns,
-     *  AX/NSWorkspace activation events flow into the store again — which is
-     *  exactly what we want for the commit's own echo. */
+    /** Tear down everything that constitutes a "live session": UI state and
+     *  pending timers. AX/NSWorkspace activation events flow into the store
+     *  unconditionally now (no `_switcherActive` gate) — every echo, including
+     *  ones from our own commit and from session-time side effects (cmd+M
+     *  shifting focus to a sibling), is treated as a legitimate recency
+     *  signal. */
     private fun closeSession() {
         log("[ctl] closeSession")
         showJob?.cancel(); showJob = null
@@ -505,7 +537,6 @@ class SwitcherController(
         // after commit/cancel and the user would see no advance.
         heldShortcut = null
         _ui.value = null
-        store.setSwitcherActive(false)
         // Force the next session's first onPanelSize emission to look
         // distinct from this session's last value — otherwise
         // distinctUntilChanged in observeSwitcherPanelSize might suppress

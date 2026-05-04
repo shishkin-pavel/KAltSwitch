@@ -72,6 +72,45 @@ class WorldSnapshotTest {
     }
 
     @Test
+    fun snapshot_keepsRecentlyActivatedWindowlessAppInRecencyOrder() {
+        // Regression: an app that was just focused but has no live windows
+        // (Finder after closing every window, Bitwarden flipping to
+        // accessory, etc.) used to be routed to step 3 — alphabetical bucket
+        // — even though its pid sat at the head of appOrder. The user saw a
+        // just-used app fall to the tail of the switcher.
+        val log = ActivationLog()
+            .record(ActivationEvent(safari.pid, safariA.id))
+            .record(ActivationEvent(launchpad.pid, null))   // app-level activation, windowless
+        val world = World(
+            log = log,
+            runningApps = mapOf(safari.pid to safari, launchpad.pid to launchpad),
+            windowsByPid = mapOf(safari.pid to listOf(safariA), launchpad.pid to emptyList()),
+        )
+        val snap = world.snapshot()
+        // Launchpad just got an app-level activation → it belongs at the
+        // head of withWindows (recency), even though it has no windows.
+        // Safari sits behind it because Launchpad is more recent.
+        assertEquals(listOf("Launchpad", "Safari"), snap.withWindows.map { it.app.name })
+        assertEquals(emptyList(), snap.windowless.map { it.app.name })
+    }
+
+    @Test
+    fun snapshot_neverActivatedWindowlessAppGoesAlphabetically() {
+        // Counterpart of the above: an app that has never been focused and
+        // has no windows has no recency to anchor on, so it lands in step 3
+        // (alphabetical bucket).
+        val log = ActivationLog().record(ActivationEvent(safari.pid, safariA.id))
+        val world = World(
+            log = log,
+            runningApps = mapOf(safari.pid to safari, launchpad.pid to launchpad),
+            windowsByPid = mapOf(safari.pid to listOf(safariA), launchpad.pid to emptyList()),
+        )
+        val snap = world.snapshot()
+        assertEquals(listOf("Safari"), snap.withWindows.map { it.app.name })
+        assertEquals(listOf("Launchpad"), snap.windowless.map { it.app.name })
+    }
+
+    @Test
     fun snapshot_dropsAppsThatDiedSinceTheirLastActivation() {
         val log = ActivationLog()
             .record(ActivationEvent(pid = 999, windowId = 9999))  // unknown pid
