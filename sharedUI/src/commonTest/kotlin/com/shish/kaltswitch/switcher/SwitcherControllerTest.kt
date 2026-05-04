@@ -126,6 +126,63 @@ class SwitcherControllerTest {
         assertEquals(0, commits.size, "Esc must not activate anything")
     }
 
+    @Test
+    fun esc_raisesCurrentlyFocusedWindow_toRealignZOrder() = runTest {
+        // After cmd+M restore inside a session, the de-minimised window
+        // ends up above the user's actual focus in z-order. On cancel we
+        // ask the platform to raise the currently-focused window (read
+        // from the store's active pointers — Swift keeps these in sync via
+        // syncActiveStateFromSystem) so visual matches focus.
+        val store = seededStore()
+        // Seed an active focus: Safari (pid=1) / window 11.
+        store.recordActivation(pid = 1, windowId = 11)
+        val raises = mutableListOf<Pair<Int, Long>>()
+        val ctl = SwitcherController(store, scope = backgroundScope)
+            .also { it.onRaiseFocusedWindow = { pid, wid -> raises += pid to wid } }
+
+        ctl.onShortcut(SwitcherEntry.App)
+        advanceTimeBy(50)
+        ctl.onEsc()
+        advanceUntilIdle()
+
+        assertEquals(listOf(1 to 11L), raises)
+    }
+
+    @Test
+    fun esc_doesNotRaise_whenStoreHasNoFocusedWindow() = runTest {
+        val store = seededStore()
+        // No recordActivation call; activeAppPid / activeWindowId remain null.
+        val raises = mutableListOf<Pair<Int, Long>>()
+        val ctl = SwitcherController(store, scope = backgroundScope)
+            .also { it.onRaiseFocusedWindow = { pid, wid -> raises += pid to wid } }
+
+        ctl.onShortcut(SwitcherEntry.App)
+        advanceTimeBy(50)
+        ctl.onEsc()
+        advanceUntilIdle()
+
+        assertEquals(0, raises.size)
+    }
+
+    @Test
+    fun commit_doesNotInvokeRaiseFocusedWindow() = runTest {
+        // Commit has its own raise+activate path through onCommitActivation.
+        // Firing onRaiseFocusedWindow as well would be redundant and could
+        // race with the commit-side raise of a different window.
+        val store = seededStore()
+        store.recordActivation(pid = 1, windowId = 11)
+        val raises = mutableListOf<Pair<Int, Long>>()
+        val ctl = SwitcherController(store, scope = backgroundScope)
+            .also { it.onRaiseFocusedWindow = { pid, wid -> raises += pid to wid } }
+
+        ctl.onShortcut(SwitcherEntry.App)
+        advanceTimeBy(50)
+        ctl.onModifierReleased()  // commit
+        advanceUntilIdle()
+
+        assertEquals(0, raises.size)
+    }
+
     @Ignore  // preview wiring disabled at the controller level — see SwitcherController.schedulePreview
     @Test
     fun previewRaise_firesAfterPreviewDelay_onlyWhenVisible() = runTest {

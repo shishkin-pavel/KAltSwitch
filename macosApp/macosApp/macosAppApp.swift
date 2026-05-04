@@ -156,6 +156,17 @@ class AppDelegate: NSObject, NSApplicationDelegate {
             registry?.commit(pid: pid_t(truncatingIfNeeded: pid.int32Value),
                              windowId: windowId?.int64Value)
         }
+        // Esc / cancel: realign z-order with focus. cmd+M restore during
+        // the cancelled session pops a de-minimised window above the
+        // user's actual focus target — once the panel goes away focus
+        // reverts to the pre-session window but the de-minimised window
+        // keeps top z-order, visually obscuring the focused one.
+        // kAXRaiseAction on the currently-focused window puts visual back
+        // on top of focus without changing focus.
+        controller.onRaiseFocusedWindow = { [weak registry] pid, windowId in
+            registry?.raise(pid: pid_t(truncatingIfNeeded: pid.int32Value),
+                            windowId: windowId.int64Value)
+        }
         // Single-key actions (Q/W/M/H/F) fired from the Compose overlay
         // while the session is open. The session stays open after each
         // action; the world mutates and the live snapshot collector

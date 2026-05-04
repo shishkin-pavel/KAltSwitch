@@ -87,6 +87,28 @@ class SwitcherController(
      */
     var onPerformAction: ((action: SwitcherAction, pid: Pid, windowId: WindowId?) -> Unit)? = null
 
+    /**
+     * Wired by the platform layer to a "raise this window in z-order
+     * without changing focus" call (`kAXRaiseAction` is the canonical
+     * choice). Fires on session **cancel only** (Esc / equivalent), with
+     * whatever the store currently considers the focused window — that's
+     * `(activeAppPid.value, activeWindowId.value)`, both kept in sync by
+     * Swift's syncActiveStateFromSystem.
+     *
+     * The need: cmd+M restore inside the switcher unminimises a window in
+     * a background app. macOS pops the now-restored window to the top of
+     * the global z-order even though the user's actual focus stays where
+     * it was (the panel is the key window; the underlying focused window
+     * doesn't change). Once the switcher closes, focus reverts to the
+     * pre-session window, but visually that window is now obscured by
+     * the de-minimised one. Raising the focused window on cancel
+     * realigns z-order with focus.
+     *
+     * Not fired on commit: the commit path's [onCommitActivation] already
+     * does a full focus + raise + activate dance for the picked target.
+     */
+    var onRaiseFocusedWindow: ((pid: Pid, windowId: WindowId) -> Unit)? = null
+
     private val _ui = MutableStateFlow<SwitcherUiState?>(null)
     val ui: StateFlow<SwitcherUiState?> = _ui.asStateFlow()
 
@@ -517,7 +539,22 @@ class SwitcherController(
     }
 
     private fun cancel() {
+        // Capture before closeSession — closeSession is local to the
+        // controller and doesn't touch the store's active pointers, but
+        // reading first keeps the order obvious and makes future moves of
+        // pointer-clearing into closeSession safe.
+        val focusedPid = store.activeAppPid.value
+        val focusedWid = store.activeWindowId.value
         closeSession()
+        // Realign z-order with focus. cmd+M restore during the cancelled
+        // session may have popped a now-de-minimised window above the
+        // user's actual focus target — when the panel goes away, focus
+        // reverts to the pre-session window but visually the de-minimised
+        // one obscures it. Raising the still-focused window puts the
+        // visual back on top of the focus.
+        if (focusedPid != null && focusedWid != null) {
+            onRaiseFocusedWindow?.invoke(focusedPid, focusedWid)
+        }
     }
 
     /** Tear down everything that constitutes a "live session": UI state and
