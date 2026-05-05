@@ -85,6 +85,7 @@ fun SwitcherOverlay(
     ui: SwitcherUiState,
     iconsByPid: Map<Int, ByteArray>,
     switcherSettings: SwitcherSettings,
+    axTrusted: Boolean,
     onNavigate: (SwitcherEvent) -> Unit,
     onEsc: () -> Unit,
     onShortcut: (SwitcherEntry) -> Unit,
@@ -92,6 +93,7 @@ fun SwitcherOverlay(
     onPointerMoved: () -> Unit,
     onPanelSize: (Float, Float) -> Unit,
     onCommit: () -> Unit,
+    onGrantAxClick: () -> Unit,
 ) {
     val focus = remember { FocusRequester() }
     LaunchedEffect(Unit) { focus.requestFocus() }
@@ -196,7 +198,7 @@ fun SwitcherOverlay(
                         }
                     }
             ) {
-                SwitcherPanel(ui, iconsByPid, onPointAt, onCommit)
+                SwitcherPanel(ui, iconsByPid, axTrusted, onPointAt, onCommit, onGrantAxClick)
             }
         }
     }
@@ -293,17 +295,22 @@ private val FullscreenBadgeColor = Color(0xFF28C940)    // macOS green traffic-l
  */
 private val DemoteBackdropColor = Color(0x33000000)
 
-@OptIn(ExperimentalLayoutApi::class)
+@OptIn(ExperimentalLayoutApi::class, ExperimentalComposeUiApi::class)
 @Composable
 private fun SwitcherPanel(
     ui: SwitcherUiState,
     iconsByPid: Map<Int, ByteArray>,
+    axTrusted: Boolean,
     onPointAt: (appIndex: Int, windowIndex: Int?) -> Unit,
     onCommit: () -> Unit,
+    onGrantAxClick: () -> Unit,
 ) {
     val state = ui.state
     val entries = state.snapshot.all
-    if (entries.isEmpty()) return
+    // Without AX trust the FlowRow may legitimately be empty (NSWorkspace
+    // still lists apps but window data is hidden); we still want the panel
+    // to render so the banner is visible.
+    if (entries.isEmpty() && axTrusted) return
 
     val withWindowsCount = state.snapshot.withWindows.size
 
@@ -326,6 +333,13 @@ private fun SwitcherPanel(
             .border(1.dp, Color(0x33FFFFFF), RoundedCornerShape(16.dp))
             .padding(horizontal = 16.dp, vertical = 12.dp),
     ) {
+        Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+            if (!axTrusted) {
+                AxPermissionBanner(
+                    onGrantClick = onGrantAxClick,
+                    modifier = Modifier.align(Alignment.CenterHorizontally),
+                )
+            }
             // Split entries into the show bucket (rendered as direct
             // children of the outer FlowRow) and the demote bucket
             // (wrapped in a single grey-backdrop Box). Wrapping all
@@ -456,6 +470,67 @@ private fun SwitcherPanel(
                 }
             }
         }
+    }
+}
+
+/**
+ * Warning banner rendered above the app row when the process is not AX-trusted.
+ * Without AX, we can only enumerate apps via NSWorkspace — windows, focus and
+ * raise/close actions are unavailable, so the switcher is degraded. The banner
+ * leads with the action (a macOS push-button "Enable Accessibility permissions")
+ * followed by a short rationale; clicking the button delegates to
+ * `requestAxPermission()` which triggers the system prompt and deep-links to
+ * Settings → Privacy → Accessibility.
+ */
+@OptIn(ExperimentalComposeUiApi::class)
+@Composable
+private fun AxPermissionBanner(onGrantClick: () -> Unit, modifier: Modifier = Modifier) {
+    Row(
+        modifier
+            .clip(RoundedCornerShape(8.dp))
+            .background(Color(0xFF3A2C0A))
+            .border(1.dp, Color(0x66FFC107), RoundedCornerShape(8.dp))
+            .padding(horizontal = 10.dp, vertical = 8.dp),
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(10.dp),
+    ) {
+        MacButton(
+            label = "Enable Accessibility permissions",
+            onClick = onGrantClick,
+        )
+        Text(
+            "to allow viewing and managing apps' windows",
+            color = Color(0xFFFFD668),
+            style = MaterialTheme.typography.bodySmall,
+        )
+    }
+}
+
+/**
+ * Compact macOS-style push button: small corner radius, light fill, dark
+ * text, subtle border. Sits on the warning-amber banner background; the
+ * light fill provides the contrast a real NSButton would get from its
+ * window's default surface.
+ */
+@OptIn(ExperimentalComposeUiApi::class)
+@Composable
+private fun MacButton(label: String, onClick: () -> Unit) {
+    Box(
+        Modifier
+            .clip(RoundedCornerShape(5.dp))
+            .background(Color(0xFFEDEDEF))
+            .border(1.dp, Color(0x33000000), RoundedCornerShape(5.dp))
+            .pointerInput(Unit) { detectTapGestures(onTap = { onClick() }) }
+            .padding(horizontal = 10.dp, vertical = 4.dp),
+        contentAlignment = Alignment.Center,
+    ) {
+        Text(
+            label,
+            color = Color(0xFF1A1A1A),
+            fontWeight = FontWeight.Medium,
+            style = MaterialTheme.typography.labelMedium,
+        )
+    }
 }
 
 private data class AppCellArgs(

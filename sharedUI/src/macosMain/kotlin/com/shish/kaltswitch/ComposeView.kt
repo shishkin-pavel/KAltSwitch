@@ -182,6 +182,7 @@ fun AttachSwitcherOverlay(window: NSWindow): ComposeNSViewDelegate = ComposeNSVi
         val accentColor by store.accentColor.collectAsState()
         val systemAccentRgb by store.systemAccentRgb.collectAsState()
         val switcherSettings by store.switcherSettings.collectAsState()
+        val axTrusted by store.axTrusted.collectAsState()
         val current = ui
         // Render whenever there's a session — even during showDelay
         // (`current.visible == false`). The Swift panel's alphaValue
@@ -204,6 +205,7 @@ fun AttachSwitcherOverlay(window: NSWindow): ComposeNSViewDelegate = ComposeNSVi
                     ui = current,
                     iconsByPid = icons,
                     switcherSettings = switcherSettings,
+                    axTrusted = axTrusted,
                     onNavigate = { switcherController.onNavigate(it) },
                     onEsc = { switcherController.onEsc() },
                     onShortcut = { switcherController.onShortcut(it) },
@@ -215,6 +217,10 @@ fun AttachSwitcherOverlay(window: NSWindow): ComposeNSViewDelegate = ComposeNSVi
                         store.setSwitcherPanelSize(w.toDouble(), h.toDouble())
                     },
                     onCommit = { switcherController.onCommit() },
+                    onGrantAxClick = {
+                        val granted = requestAxPermission()
+                        store.setAxTrusted(granted)
+                    },
                 )
             }
         }
