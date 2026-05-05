@@ -150,11 +150,24 @@ class AppDelegate: NSObject, NSApplicationDelegate {
             // already issued the activate call, leaving the system to negotiate
             // focus while our key panel is still on screen — that's enough to
             // make `nsApp.activate` silently no-op.
+            //
+            // `orderOut` only marks the panel removed from the window list;
+            // WindowServer takes the pixels off-screen on the next CA tick,
+            // asynchronously. The follow-up `commit()` call is synchronous and
+            // can block main for tens-to-hundreds of ms on slow AX targets
+            // (Slack/Electron). If we run it on the same runloop turn the
+            // panel is still composited on screen during the block, and the
+            // user perceives the switcher as frozen. Yielding one runloop
+            // turn between orderOut and commit lets WindowServer paint the
+            // removal first; the ~16ms focus delay is imperceptible.
             let widStr = windowId.map { String($0.int64Value) } ?? "nil"
             log("[swift] onCommitActivation pid=\(pid.int32Value) wid=\(widStr)")
             self?.overlayWindow?.orderOut(nil)
-            registry?.commit(pid: pid_t(truncatingIfNeeded: pid.int32Value),
-                             windowId: windowId?.int64Value)
+            let p = pid_t(truncatingIfNeeded: pid.int32Value)
+            let wid = windowId?.int64Value
+            DispatchQueue.main.async { [weak registry] in
+                registry?.commit(pid: p, windowId: wid)
+            }
         }
         // Esc / cancel: realign z-order with focus. cmd+M restore during
         // the cancelled session pops a de-minimised window above the
