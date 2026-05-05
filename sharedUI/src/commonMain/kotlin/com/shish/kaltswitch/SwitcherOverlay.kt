@@ -28,7 +28,9 @@ import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.layout.wrapContentWidth
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.ui.draw.clipToBounds
+import androidx.compose.ui.layout.onGloballyPositioned
 import androidx.compose.ui.layout.onSizeChanged
+import androidx.compose.ui.layout.positionInWindow
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
@@ -114,9 +116,13 @@ fun SwitcherOverlay(
 ) {
     val focus = remember { FocusRequester() }
     LaunchedEffect(Unit) { focus.requestFocus() }
+    var panelBounds by remember { mutableStateOf<IntRect?>(null) }
+    val reportPanelBounds: (IntRect?) -> Unit = { panelBounds = it }
 
     CompositionLocalProvider(
         LocalSelectionExpandDelayMs provides switcherSettings.selectionExpandDelayMs,
+        LocalPanelBoundsInWindow provides panelBounds,
+        LocalReportPanelBounds provides reportPanelBounds,
     ) {
     // The outer Box fills the *entire Compose scene*, which since iter48
     // is sized to the captured screen's visibleFrame and pinned to that
@@ -325,14 +331,45 @@ private val DockBadgeColor = Color(0xFFFF3B30)          // macOS systemRed (noti
  * appearing over the anchor steals pointer events, the anchor's
  * `Exit` fires, the popup hides, and we flicker.
  */
-private val OverlayTitleTooltipPosition = object : PopupPositionProvider {
-    override fun calculatePosition(
-        anchorBounds: IntRect,
-        windowSize: IntSize,
-        layoutDirection: LayoutDirection,
-        popupContentSize: IntSize,
-    ): IntOffset = IntOffset(anchorBounds.left, anchorBounds.top)
-}
+/**
+ * Builds a `PopupPositionProvider` for the row-expansion popup that
+ * clamps the popup's horizontal range to the visible panel plate
+ * (`panelBounds`) rather than to the whole Compose-window (= screen).
+ * Compose's default popup-position math operates in screen coords, but
+ * the user-visible clip happens at the NSPanel boundary, so without
+ * this clamp the popup is unclipped in scene coords yet visually
+ * cropped at the panel's right edge for cells near that edge.
+ *
+ * Behaviour:
+ *  - default `x = anchorBounds.left` so the popup visually extends
+ *    rightward from the row;
+ *  - if that would push the popup's right edge past `panelBounds.right`,
+ *    shift left until it fits;
+ *  - for popups wider than the panel, pin to `panelBounds.left` and let
+ *    the right edge clip — at least the title's beginning stays visible.
+ *
+ * `panelBounds == null` (first frame, before SwitcherPanel's
+ * `onGloballyPositioned` has fired) → unclamped behaviour.
+ */
+private fun overlayTitleTooltipPosition(panelBounds: IntRect?): PopupPositionProvider =
+    object : PopupPositionProvider {
+        override fun calculatePosition(
+            anchorBounds: IntRect,
+            windowSize: IntSize,
+            layoutDirection: LayoutDirection,
+            popupContentSize: IntSize,
+        ): IntOffset {
+            if (panelBounds == null) {
+                return IntOffset(anchorBounds.left, anchorBounds.top)
+            }
+            val maxAllowedX = (panelBounds.right - popupContentSize.width)
+                .coerceAtLeast(panelBounds.left)
+            val x = anchorBounds.left
+                .coerceAtMost(maxAllowedX)
+                .coerceAtLeast(panelBounds.left)
+            return IntOffset(x, anchorBounds.top)
+        }
+    }
 
 /**
  * Compose-local for the user-tunable "selection expand delay" — how long
@@ -342,6 +379,19 @@ private val OverlayTitleTooltipPosition = object : PopupPositionProvider {
  * 250 ms matches `SwitcherSettings.selectionExpandDelayMs`.
  */
 private val LocalSelectionExpandDelayMs = compositionLocalOf { 250L }
+
+/**
+ * The visible panel plate's bounds in Compose-window (= screen) coords.
+ * Captured by `SwitcherPanel`'s outer Box via `onGloballyPositioned` and
+ * read by `WindowTitleRow`'s `PopupPositionProvider` to clamp the
+ * expanded-row popup so it stays within the panel — without this, the
+ * popup is positioned in screen-space (Compose's scene is screen-sized
+ * per the iter48 architecture) and gets clipped by the NSPanel's right
+ * edge when a cell sits near the panel's right side. `null` until the
+ * first layout pass populates it.
+ */
+private val LocalPanelBoundsInWindow = compositionLocalOf<IntRect?> { null }
+private val LocalReportPanelBounds = compositionLocalOf<((IntRect?) -> Unit)?> { null }
 
 /** Expand/collapse tween duration for the selected window-row's row
  *  expansion. Fast enough to feel like a direct response to the cursor
@@ -474,6 +524,7 @@ private fun SwitcherPanel(
     if (entries.isEmpty() && axTrusted) return
 
     val withWindowsCount = state.snapshot.withWindows.size
+    val reportPanelBounds = LocalReportPanelBounds.current
 
     // The lookahead-driven onPanelSize report and the unbounded-maxHeight
     // override now live on the wrapper Box in SwitcherOverlay (so the
@@ -492,7 +543,24 @@ private fun SwitcherPanel(
             // rendering bugs (see docs/blur-attempts.md).
             .background(Color(0xFF1B1B1F))
             .border(1.dp, Color(0x33FFFFFF), RoundedCornerShape(16.dp))
-            .padding(horizontal = 16.dp, vertical = 12.dp),
+            .padding(horizontal = 16.dp, vertical = 12.dp)
+            // Capture the visible plate's bounds (after all sizing
+            // modifiers) in window coords so the row-expansion popup can
+            // clamp itself to the panel rather than the whole screen.
+            // Fires on every layout pass — cheap state update; the
+            // PopupPositionProvider captures the value at the moment its
+            // remember key changes.
+            .onGloballyPositioned { coords ->
+                val pos = coords.positionInWindow()
+                reportPanelBounds?.invoke(
+                    IntRect(
+                        left = pos.x.toInt(),
+                        top = pos.y.toInt(),
+                        right = pos.x.toInt() + coords.size.width,
+                        bottom = pos.y.toInt() + coords.size.height,
+                    )
+                )
+            },
     ) {
         Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
             if (!axTrusted) {
@@ -1068,30 +1136,37 @@ private fun WindowTitleRow(
 ) {
     var truncated by remember(title) { mutableStateOf(false) }
     var anchorSizePx by remember { mutableStateOf(IntSize.Zero) }
+    var anchorWindowX by remember { mutableStateOf<Int?>(null) }
+    var popupWindowX by remember { mutableStateOf<Int?>(null) }
     val expandDelayMs = LocalSelectionExpandDelayMs.current
     val density = LocalDensity.current
 
-    // Mouse-on-overflow gating. Two flags:
-    //   * popupOverflowHovered — live: cursor is currently in the
-    //     popup's rightward-overflow region (past the original row's
-    //     bounds).
-    //   * overflowSuppress — latched: cursor *did* enter the overflow
-    //     region while the popup was up. Stays latched until the row
-    //     stops being the controller's selected row, so the cursor
-    //     leaving the overflow during the collapse tween can't
-    //     immediately re-mount the popup mid-animation. Resets on
-    //     `!isActive` (= a different cell/window was selected) and on a
-    //     fresh inline-row Enter, so mousing back onto the original row
-    //     re-arms expansion.
+    // Mouse-on-overflow gating. Three flags:
+    //   * popupOverflowHovered — live: cursor is currently in either
+    //     overflow region (left of cell or right of cell within popup).
+    //   * overflowSuppress — latched: cursor *did* enter overflow while
+    //     the gate was open. Stays latched until the row stops being the
+    //     controller's selected row, so the cursor leaving the overflow
+    //     during the collapse tween can't immediately re-mount the popup
+    //     mid-animation. Resets on `!isActive` and on a fresh inline-row
+    //     Enter so mousing back onto the original row re-arms expansion.
+    //   * overflowGateOpen — only true once the popup-expand animation
+    //     has finished. Layout-driven Enter events fired *during* the
+    //     animation (the popup just grew leftward over a neighbouring
+    //     cell where the cursor was parked, etc.) don't count — without
+    //     this gate, keyboard nav with the cursor parked on any cell that
+    //     ends up under the popup's overflow region would immediately
+    //     latch overflowSuppress and collapse the popup.
     //
     // Crucially the gate is *only* "cursor in overflow", not "cursor in
     // original bounds". Keyboard navigation moves `isActive` without any
-    // mouse events at all, and a positive-signal gate (require hover to
-    // expand) would block keyboard-driven expansion. Negative-signal
-    // gating lets keyboard nav expand by default and only suppresses
-    // when the mouse explicitly moves into the expanded region.
+    // mouse events, and a positive-signal gate (require hover to expand)
+    // would block keyboard-driven expansion. Negative-signal gating lets
+    // keyboard nav expand by default and only suppresses when the user
+    // moves the mouse into the expanded region post-animation.
     var popupOverflowHovered by remember { mutableStateOf(false) }
     var overflowSuppress by remember { mutableStateOf(false) }
+    var overflowGateOpen by remember { mutableStateOf(false) }
 
     LaunchedEffect(isActive) {
         if (!isActive) {
@@ -1099,8 +1174,8 @@ private fun WindowTitleRow(
             overflowSuppress = false
         }
     }
-    LaunchedEffect(popupOverflowHovered) {
-        if (popupOverflowHovered) overflowSuppress = true
+    LaunchedEffect(popupOverflowHovered, overflowGateOpen) {
+        if (popupOverflowHovered && overflowGateOpen) overflowSuppress = true
     }
 
     val desired = isActive && truncated && !overflowSuppress
@@ -1116,19 +1191,30 @@ private fun WindowTitleRow(
         if (desired) {
             delay(expandDelayMs)
             popupMounted = true
+            overflowGateOpen = false
             // Yield one frame so the popup composes once at anchor width
             // before we ask animateContentSize to grow it. Without this
             // the very first composition would already be at natural
             // width and the expand animation would skip.
             delay(16L)
             popupExpanded = true
-        } else {
-            popupExpanded = false
-            // Hold the popup mounted while it's animating shut. After the
-            // tween completes, unmount so we stop drawing the (now-collapsed)
-            // copy of the row.
+            // Wait for the expand tween to settle so layout-driven Enter
+            // events on the leftBox / rightBox during animation are
+            // ignored (cursor parked on a neighbour cell shouldn't latch
+            // overflowSuppress just because the popup grew over it).
             delay(RowExpandAnimMs.toLong())
+            overflowGateOpen = true
+        } else {
+            // No collapse animation — when the controller cursor moves
+            // to a different row we want the previous row's popup gone
+            // immediately rather than playing a 150 ms shrink while the
+            // user is already focused on the new selection. Animating
+            // the close also caused a small jitter when the popup had
+            // been shifted (the position provider re-runs each frame
+            // during the shrink, so the popup slid right while shrinking).
+            popupExpanded = false
             popupMounted = false
+            overflowGateOpen = false
         }
     }
 
@@ -1136,6 +1222,9 @@ private fun WindowTitleRow(
         WindowRowVisual(
             modifier = Modifier
                 .fillMaxWidth()
+                .onGloballyPositioned { coords ->
+                    anchorWindowX = coords.positionInWindow().x.toInt()
+                }
                 // Per-row hover/click handlers run BEFORE the parent cell's,
                 // so pointing at a specific window row updates windowIndex
                 // instead of resetting to the cell-level default. Re-arm
@@ -1158,8 +1247,12 @@ private fun WindowTitleRow(
         )
         if (popupMounted && anchorSizePx != IntSize.Zero) {
             val anchorWidthDp = with(density) { anchorSizePx.width.toDp() }
+            val panelBounds = LocalPanelBoundsInWindow.current
+            val popupPositionProvider = remember(panelBounds) {
+                overlayTitleTooltipPosition(panelBounds)
+            }
             Popup(
-                popupPositionProvider = OverlayTitleTooltipPosition,
+                popupPositionProvider = popupPositionProvider,
                 properties = PopupProperties(focusable = false, clippingEnabled = false),
             ) {
                 // The width modifier flips between `width(anchorWidthDp)`
@@ -1170,14 +1263,11 @@ private fun WindowTitleRow(
                 // width. clipToBounds hides the still-overflowing title
                 // glyphs while the row is animating from anchor → natural.
                 //
-                // TODO: when a cell sits near the right edge of the
-                // panel, the expanded row gets clipped by the panel's
-                // outer rounded plate. The popup itself disables screen-
-                // clipping, but our parent compose scene clips to the
-                // session-screen rect. Possible fixes: relocate the
-                // popup so it can grow leftward when there's no rightward
-                // room, or reflow the panel rect to include the expanded
-                // row's bounds. Out of scope for this iteration.
+                // Right-edge clipping mitigation: the position provider
+                // (`overlayTitleTooltipPosition`) clamps the popup to
+                // `panelBounds` — for cells near the panel's right side
+                // the popup shifts left so it stops growing into the
+                // clipped strip past the panel's plate.
                 Box(
                     Modifier
                         .animateContentSize(
@@ -1196,7 +1286,10 @@ private fun WindowTitleRow(
                                 Modifier.width(anchorWidthDp)
                             },
                         )
-                        .clipToBounds(),
+                        .clipToBounds()
+                        .onGloballyPositioned { coords ->
+                            popupWindowX = coords.positionInWindow().x.toInt()
+                        },
                 ) {
                     WindowRowVisual(
                         // Click handler so taps on the original-bounds
@@ -1215,23 +1308,46 @@ private fun WindowTitleRow(
                         titleMaxLines = 1,
                         titleOverflow = TextOverflow.Visible,
                     )
-                    // Two-zone overlay over the popup, sized to the
-                    // popup's measured width via `matchParentSize`:
-                    //   * leading Spacer covers the original-bounds
-                    //     region — no pointer modifiers, so events fall
-                    //     through to the WindowRowVisual click handler
-                    //     beneath. Hovering this region produces no
-                    //     state change → popup stays open (the right
-                    //     behaviour for "cursor still on the original
-                    //     row").
-                    //   * trailing Box covers the rightward overflow
-                    //     (`weight(1f)` collapses to 0 px while the row
-                    //     is at anchor width and expands to the overflow
-                    //     width once popupExpanded grows the parent).
-                    //     Cursor in here flips `popupOverflowHovered`,
-                    //     which latches `overflowSuppress` and collapses
-                    //     the popup.
+                    // Three-zone overlay sized to the popup via
+                    // `matchParentSize`:
+                    //   * leading Box covers the *left* overflow — the
+                    //     region the popup grew leftward into when the
+                    //     position provider shifted to keep the right
+                    //     edge inside the panel. Width = `shift` (the
+                    //     gap between the popup's left edge and the
+                    //     original cell's left edge in window coords).
+                    //     Zero when no shift occurred, so it's a harmless
+                    //     no-op for cells that have rightward room.
+                    //   * middle Spacer covers the original anchor
+                    //     bounds — no pointer modifiers, so hover here
+                    //     leaves popupOverflowHovered alone (popup
+                    //     stays) and clicks fall through to the
+                    //     WindowRowVisual beneath.
+                    //   * trailing Box covers the *right* overflow with
+                    //     `weight(1f)` so it absorbs whatever's left of
+                    //     the popup width.
+                    // Both overflow Boxes flip popupOverflowHovered,
+                    // which (post overflowGateOpen) latches
+                    // overflowSuppress and collapses the popup.
+                    val shiftPx = if (anchorWindowX != null && popupWindowX != null) {
+                        (anchorWindowX!! - popupWindowX!!).coerceAtLeast(0)
+                    } else 0
+                    val shiftDp = with(density) { shiftPx.toDp() }
                     Row(Modifier.matchParentSize()) {
+                        Box(
+                            Modifier
+                                .width(shiftDp)
+                                .fillMaxHeight()
+                                .onPointerEvent(PointerEventType.Enter) {
+                                    popupOverflowHovered = true
+                                }
+                                .onPointerEvent(PointerEventType.Exit) {
+                                    popupOverflowHovered = false
+                                }
+                                .pointerInput(Unit) {
+                                    detectTapGestures(onTap = { onClick() })
+                                },
+                        )
                         Spacer(Modifier.width(anchorWidthDp))
                         Box(
                             Modifier
