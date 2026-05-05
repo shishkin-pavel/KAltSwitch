@@ -16,23 +16,32 @@ import androidx.compose.foundation.layout.ExperimentalLayoutApi
 import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.widthIn
+import androidx.compose.foundation.layout.wrapContentWidth
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.ui.draw.clipToBounds
+import androidx.compose.ui.layout.onSizeChanged
+import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.compositionLocalOf
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.movableContentOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
+import kotlinx.coroutines.delay
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -106,6 +115,9 @@ fun SwitcherOverlay(
     val focus = remember { FocusRequester() }
     LaunchedEffect(Unit) { focus.requestFocus() }
 
+    CompositionLocalProvider(
+        LocalSelectionExpandDelayMs provides switcherSettings.selectionExpandDelayMs,
+    ) {
     // The outer Box fills the *entire Compose scene*, which since iter48
     // is sized to the captured screen's visibleFrame and pinned to that
     // screen rect via Swift updating the Compose-host NSView's
@@ -210,6 +222,7 @@ fun SwitcherOverlay(
             }
         }
     }
+    }
 }
 
 /** Translates a single [KeyEvent] into the appropriate controller call.
@@ -293,107 +306,112 @@ private val FullscreenBadgeColor = Color(0xFF28C940)    // macOS green traffic-l
 private val DockBadgeColor = Color(0xFFFF3B30)          // macOS systemRed (notification badge)
 
 /**
- * Places the popup strictly *below* the anchor, never overlapping it.
+ * Aligns the popup's top-left with the anchor's top-left so the
+ * tooltip looks like the title row "broke out" of its cell and
+ * extended rightward, rather than a separate label below. Width is
+ * the natural width of the popup's content (which is the same Text
+ * with no `maxLines` cap), so it extends past the cell on the right
+ * by exactly the truncation overflow.
  *
- * The default `Popup(alignment = Alignment.BottomCenter)` math anchors
- * the popup's bottom edge at the anchor's bottom edge, which means a
- * popup wider/taller than the anchor extends *upward* and overlaps it.
- * That stole hover events from the title — cursor enters title → popup
- * shows over title → cursor is now "in popup" not title → Exit fires
- * → popup hides → cursor is "back in title" → Enter → popup shows →
- * loop = the rapid flicker the user reported.
+ * Vertical clipping disabled by `PopupProperties(clippingEnabled = false)`
+ * at the call site lets the popup extend past the panel's rounded
+ * plate horizontally — important when an app's name is *very* long
+ * (Slack DM with someone whose chosen name is "Frequently…", VS Code
+ * workspace path with several segments, …).
  *
- * This provider centres the popup horizontally on the anchor and
- * pins its *top* to the anchor's bottom + 6 px gap, so the popup never
- * occludes the anchor and hover events on the title stay stable.
- * Horizontal clamp keeps the tooltip on-screen for cells near the
- * panel's edges.
+ * Hover bookkeeping (see `HoverableTitle`): even though this popup
+ * sits on top of the original anchor, we track hover on *both* the
+ * anchor and the popup and union the two — without that, the popup
+ * appearing over the anchor steals pointer events, the anchor's
+ * `Exit` fires, the popup hides, and we flicker.
  */
-private val BelowAnchorTooltipPosition = object : PopupPositionProvider {
+private val OverlayTitleTooltipPosition = object : PopupPositionProvider {
     override fun calculatePosition(
         anchorBounds: IntRect,
         windowSize: IntSize,
         layoutDirection: LayoutDirection,
         popupContentSize: IntSize,
-    ): IntOffset {
-        val gap = 6
-        val x = (anchorBounds.left + anchorBounds.width / 2 - popupContentSize.width / 2)
-            .coerceIn(0, (windowSize.width - popupContentSize.width).coerceAtLeast(0))
-        val y = anchorBounds.bottom + gap
-        return IntOffset(x, y)
-    }
+    ): IntOffset = IntOffset(anchorBounds.left, anchorBounds.top)
 }
 
 /**
- * One-line ellipsised title that surfaces its full text in a floating
- * label on hover. Used for both app names (under each cell's icon) and
- * window-row titles, where the cell's max width frequently truncates
- * project names / browser tab titles to "MyApp — proj…".
+ * Compose-local for the user-tunable "selection expand delay" — how long
+ * a window row needs to be `isActive` before its truncated title expands
+ * into the popup. Lets `WindowTitleRow` read the value without threading
+ * `SwitcherSettings` down through every cell / window-list call. Default
+ * 250 ms matches `SwitcherSettings.selectionExpandDelayMs`.
+ */
+private val LocalSelectionExpandDelayMs = compositionLocalOf { 250L }
+
+/** Expand/collapse tween duration for the selected window-row's row
+ *  expansion. Fast enough to feel like a direct response to the cursor
+ *  landing on the row. */
+private const val RowExpandAnimMs = 150
+
+/**
+ * Plain visual of a window row — accent bg / padding / title + status
+ * badge — without any pointer handlers or fill modifiers. Both the
+ * inline (always-rendered) row and the expansion popup compose this
+ * same function with different sizing strategies, so the two visuals
+ * are guaranteed to match pixel-for-pixel.
  *
- * Mechanics:
- *  - `onTextLayout` records whether the rendered text actually overflows
- *    its single line (`hasVisualOverflow`); the tooltip only appears when
- *    truncation is meaningful, so non-truncated titles don't show a
- *    redundant duplicate label.
- *  - Hover state is tracked at the wrapper Box level via
- *    `PointerEventType.Enter/Exit`; we don't intercept the events, so the
- *    cell-/row-level hover handlers (which drive the switcher cursor)
- *    keep firing exactly as before.
- *  - The tooltip itself is a `Popup` anchored just below the title so it
- *    can render outside the cell's clipped bounds. `PopupProperties(focusable = false)`
- *    keeps the keyboard focus on the switcher; `clippingEnabled = false`
- *    lets long titles overflow the panel rather than getting silently
- *    clipped to the panel's rounded plate.
+ * `titleMaxLines` / `titleOverflow` switch between the inline form
+ * (1 / Ellipsis, with `Modifier.weight(1f)` on the title so it shrinks
+ * to fit the cell) and the popup form (1 / Visible, no weight so the
+ * title keeps its natural width and the row sizes around it).
  */
 @OptIn(ExperimentalComposeUiApi::class)
 @Composable
-private fun HoverableTitle(
-    text: String,
-    color: Color,
-    style: TextStyle,
+private fun WindowRowVisual(
     modifier: Modifier = Modifier,
-    fontWeight: FontWeight = FontWeight.Normal,
-    textAlign: TextAlign? = null,
+    title: String,
+    isActive: Boolean,
+    isMinimized: Boolean,
+    isFullscreen: Boolean,
+    isDemoted: Boolean,
+    titleMaxLines: Int,
+    titleOverflow: TextOverflow,
+    onTextLayout: ((androidx.compose.ui.text.TextLayoutResult) -> Unit)? = null,
 ) {
-    var hovered by remember { mutableStateOf(false) }
-    var truncated by remember(text) { mutableStateOf(false) }
-    Box(
+    val bg = if (isActive) AccentColor else Color.Transparent
+    val fg = when {
+        isActive -> Color.Black
+        // Demoted titles share the normal-row colour; the demote cue
+        // is the backdrop, not the text dim — the previous 0x8A was
+        // unreadable against any backdrop tint.
+        else -> Color(0xFFBBBBBB)
+    }
+    Row(
         modifier
-            .onPointerEvent(PointerEventType.Enter) { hovered = true }
-            .onPointerEvent(PointerEventType.Exit) { hovered = false }
+            .clip(RoundedCornerShape(4.dp))
+            .background(bg)
+            .padding(horizontal = 6.dp, vertical = 2.dp),
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(4.dp),
     ) {
         Text(
-            text,
-            color = color,
-            fontWeight = fontWeight,
-            style = style,
-            textAlign = textAlign,
-            maxLines = 1,
-            overflow = TextOverflow.Ellipsis,
-            modifier = Modifier.fillMaxWidth(),
-            onTextLayout = { layout -> truncated = layout.hasVisualOverflow },
+            title,
+            color = fg,
+            style = MaterialTheme.typography.bodySmall,
+            maxLines = titleMaxLines,
+            overflow = titleOverflow,
+            onTextLayout = { layout -> onTextLayout?.invoke(layout) },
+            // Visible-overflow form (popup) wants natural width so the row
+            // sizes around the title; ellipsis form (inline) needs a weight
+            // so Compose has a bound to ellipsise against.
+            modifier = if (titleOverflow == TextOverflow.Visible) {
+                Modifier
+            } else {
+                Modifier.weight(1f, fill = true)
+            },
         )
-        if (hovered && truncated) {
-            Popup(
-                popupPositionProvider = BelowAnchorTooltipPosition,
-                properties = PopupProperties(focusable = false, clippingEnabled = false),
-            ) {
-                Box(
-                    Modifier
-                        .clip(RoundedCornerShape(6.dp))
-                        .background(Color(0xF21B1B1F))
-                        .border(1.dp, Color(0x55FFFFFF), RoundedCornerShape(6.dp))
-                        .padding(horizontal = 8.dp, vertical = 4.dp),
-                ) {
-                    Text(
-                        text,
-                        color = Color.White,
-                        style = MaterialTheme.typography.bodySmall,
-                        maxLines = 3,
-                        overflow = TextOverflow.Ellipsis,
-                    )
-                }
-            }
+        // Trailing status badge. macOS doesn't simultaneously minimize +
+        // fullscreen a window (minimized takes precedence visually if both
+        // ever showed up), so we render at most one.
+        if (isMinimized) {
+            StatusBadge(glyph = "−", background = MinimizedBadgeColor)
+        } else if (isFullscreen) {
+            StatusBadge(glyph = "⤢", background = FullscreenBadgeColor)
         }
     }
 }
@@ -805,11 +823,13 @@ private fun AppCell(
                 )
             }
         }
-        HoverableTitle(
-            text = name,
+        Text(
+            name,
             color = nameColor,
             fontWeight = if (isSelected) FontWeight.SemiBold else FontWeight.Normal,
             style = MaterialTheme.typography.labelMedium,
+            maxLines = 1,
+            overflow = TextOverflow.Ellipsis,
             // Center on the icon's column. Without this the text would
             // ellipsis from the right edge under the cell's content
             // arrangement, looking off-balance under a centered icon.
@@ -1046,41 +1066,190 @@ private fun WindowTitleRow(
     onHover: () -> Unit,
     onClick: () -> Unit,
 ) {
-    val bg = if (isActive) AccentColor else Color.Transparent
-    val fg = when {
-        isActive -> Color.Black
-        // Demoted titles share the normal-row colour; the demote cue
-        // is the backdrop, not the text dim — the previous 0x8A was
-        // unreadable against any backdrop tint.
-        else -> Color(0xFFBBBBBB)
+    var truncated by remember(title) { mutableStateOf(false) }
+    var anchorSizePx by remember { mutableStateOf(IntSize.Zero) }
+    val expandDelayMs = LocalSelectionExpandDelayMs.current
+    val density = LocalDensity.current
+
+    // Mouse-on-overflow gating. Two flags:
+    //   * popupOverflowHovered — live: cursor is currently in the
+    //     popup's rightward-overflow region (past the original row's
+    //     bounds).
+    //   * overflowSuppress — latched: cursor *did* enter the overflow
+    //     region while the popup was up. Stays latched until the row
+    //     stops being the controller's selected row, so the cursor
+    //     leaving the overflow during the collapse tween can't
+    //     immediately re-mount the popup mid-animation. Resets on
+    //     `!isActive` (= a different cell/window was selected) and on a
+    //     fresh inline-row Enter, so mousing back onto the original row
+    //     re-arms expansion.
+    //
+    // Crucially the gate is *only* "cursor in overflow", not "cursor in
+    // original bounds". Keyboard navigation moves `isActive` without any
+    // mouse events at all, and a positive-signal gate (require hover to
+    // expand) would block keyboard-driven expansion. Negative-signal
+    // gating lets keyboard nav expand by default and only suppresses
+    // when the mouse explicitly moves into the expanded region.
+    var popupOverflowHovered by remember { mutableStateOf(false) }
+    var overflowSuppress by remember { mutableStateOf(false) }
+
+    LaunchedEffect(isActive) {
+        if (!isActive) {
+            popupOverflowHovered = false
+            overflowSuppress = false
+        }
     }
-    Row(
-        modifier
-            .fillMaxWidth()
-            .clip(RoundedCornerShape(4.dp))
-            .background(bg)
-            // Per-row hover/click handlers run BEFORE the parent cell's,
-            // so pointing at a specific window row updates windowIndex
-            // instead of resetting to the cell-level default.
-            .onPointerEvent(PointerEventType.Enter) { onHover() }
-            .pointerInput(Unit) { detectTapGestures(onTap = { onClick() }) }
-            .padding(horizontal = 6.dp, vertical = 2.dp),
-        verticalAlignment = Alignment.CenterVertically,
-        horizontalArrangement = Arrangement.spacedBy(4.dp),
-    ) {
-        HoverableTitle(
-            text = title,
-            color = fg,
-            style = MaterialTheme.typography.bodySmall,
-            modifier = Modifier.weight(1f, fill = true),
+    LaunchedEffect(popupOverflowHovered) {
+        if (popupOverflowHovered) overflowSuppress = true
+    }
+
+    val desired = isActive && truncated && !overflowSuppress
+
+    // Two-stage state machine so the popup mounts at the *collapsed* size,
+    // gets a frame, then animates open:
+    //   desired ──delay──▶ mounted=true ──one-frame──▶ expanded=true
+    //   ¬desired ─immediate▶ expanded=false ──animTween──▶ mounted=false
+    var popupMounted by remember { mutableStateOf(false) }
+    var popupExpanded by remember { mutableStateOf(false) }
+
+    LaunchedEffect(desired, expandDelayMs) {
+        if (desired) {
+            delay(expandDelayMs)
+            popupMounted = true
+            // Yield one frame so the popup composes once at anchor width
+            // before we ask animateContentSize to grow it. Without this
+            // the very first composition would already be at natural
+            // width and the expand animation would skip.
+            delay(16L)
+            popupExpanded = true
+        } else {
+            popupExpanded = false
+            // Hold the popup mounted while it's animating shut. After the
+            // tween completes, unmount so we stop drawing the (now-collapsed)
+            // copy of the row.
+            delay(RowExpandAnimMs.toLong())
+            popupMounted = false
+        }
+    }
+
+    Box(modifier.onSizeChanged { anchorSizePx = it }) {
+        WindowRowVisual(
+            modifier = Modifier
+                .fillMaxWidth()
+                // Per-row hover/click handlers run BEFORE the parent cell's,
+                // so pointing at a specific window row updates windowIndex
+                // instead of resetting to the cell-level default. Re-arm
+                // expansion on every fresh Enter so mousing back onto the
+                // inline row after a previous overflow-suppress dismissal
+                // pops the popup again.
+                .onPointerEvent(PointerEventType.Enter) {
+                    overflowSuppress = false
+                    onHover()
+                }
+                .pointerInput(Unit) { detectTapGestures(onTap = { onClick() }) },
+            title = title,
+            isActive = isActive,
+            isMinimized = isMinimized,
+            isFullscreen = isFullscreen,
+            isDemoted = isDemoted,
+            titleMaxLines = 1,
+            titleOverflow = TextOverflow.Ellipsis,
+            onTextLayout = { layout -> truncated = layout.hasVisualOverflow },
         )
-        // Trailing status badge. macOS doesn't simultaneously minimize +
-        // fullscreen a window (minimized takes precedence visually if both
-        // ever showed up), so we render at most one.
-        if (isMinimized) {
-            StatusBadge(glyph = "−", background = MinimizedBadgeColor)
-        } else if (isFullscreen) {
-            StatusBadge(glyph = "⤢", background = FullscreenBadgeColor)
+        if (popupMounted && anchorSizePx != IntSize.Zero) {
+            val anchorWidthDp = with(density) { anchorSizePx.width.toDp() }
+            Popup(
+                popupPositionProvider = OverlayTitleTooltipPosition,
+                properties = PopupProperties(focusable = false, clippingEnabled = false),
+            ) {
+                // The width modifier flips between `width(anchorWidthDp)`
+                // (collapsed) and `wrapContentWidth(unbounded)` (expanded),
+                // so animateContentSize sees a real size delta in both
+                // directions and tweens the row's width — including the
+                // accent bg, since that's drawn at the row's measured
+                // width. clipToBounds hides the still-overflowing title
+                // glyphs while the row is animating from anchor → natural.
+                //
+                // TODO: when a cell sits near the right edge of the
+                // panel, the expanded row gets clipped by the panel's
+                // outer rounded plate. The popup itself disables screen-
+                // clipping, but our parent compose scene clips to the
+                // session-screen rect. Possible fixes: relocate the
+                // popup so it can grow leftward when there's no rightward
+                // room, or reflow the panel rect to include the expanded
+                // row's bounds. Out of scope for this iteration.
+                Box(
+                    Modifier
+                        .animateContentSize(
+                            animationSpec = tween(
+                                durationMillis = RowExpandAnimMs,
+                                easing = FastOutSlowInEasing,
+                            ),
+                        )
+                        .then(
+                            if (popupExpanded) {
+                                Modifier.wrapContentWidth(
+                                    align = Alignment.Start,
+                                    unbounded = true,
+                                )
+                            } else {
+                                Modifier.width(anchorWidthDp)
+                            },
+                        )
+                        .clipToBounds(),
+                ) {
+                    WindowRowVisual(
+                        // Click handler so taps on the original-bounds
+                        // region (which sit beneath the Spacer in the
+                        // overlay below — Spacer has no handlers, so
+                        // events pass through here) and on the overflow
+                        // region (handled by the overlay's Box) both
+                        // commit.
+                        modifier = Modifier
+                            .pointerInput(Unit) { detectTapGestures(onTap = { onClick() }) },
+                        title = title,
+                        isActive = isActive,
+                        isMinimized = isMinimized,
+                        isFullscreen = isFullscreen,
+                        isDemoted = isDemoted,
+                        titleMaxLines = 1,
+                        titleOverflow = TextOverflow.Visible,
+                    )
+                    // Two-zone overlay over the popup, sized to the
+                    // popup's measured width via `matchParentSize`:
+                    //   * leading Spacer covers the original-bounds
+                    //     region — no pointer modifiers, so events fall
+                    //     through to the WindowRowVisual click handler
+                    //     beneath. Hovering this region produces no
+                    //     state change → popup stays open (the right
+                    //     behaviour for "cursor still on the original
+                    //     row").
+                    //   * trailing Box covers the rightward overflow
+                    //     (`weight(1f)` collapses to 0 px while the row
+                    //     is at anchor width and expands to the overflow
+                    //     width once popupExpanded grows the parent).
+                    //     Cursor in here flips `popupOverflowHovered`,
+                    //     which latches `overflowSuppress` and collapses
+                    //     the popup.
+                    Row(Modifier.matchParentSize()) {
+                        Spacer(Modifier.width(anchorWidthDp))
+                        Box(
+                            Modifier
+                                .weight(1f, fill = true)
+                                .fillMaxHeight()
+                                .onPointerEvent(PointerEventType.Enter) {
+                                    popupOverflowHovered = true
+                                }
+                                .onPointerEvent(PointerEventType.Exit) {
+                                    popupOverflowHovered = false
+                                }
+                                .pointerInput(Unit) {
+                                    detectTapGestures(onTap = { onClick() })
+                                },
+                        )
+                    }
+                }
+            }
         }
     }
 }

@@ -78,6 +78,11 @@ data class SwitcherSettings(
     /** Absolute width in points (= dp on macOS) used as the panel's max
      *  width when [maxWidthMode] = [MaxSizeMode.Dp]. */
     val maxWidthDp: Double = 1200.0,
+    /** Hover-and-hold delay before a truncated selected window-row's title
+     *  expands rightward to show the full text. Lets the user navigate
+     *  past long rows without them flickering open. Symmetric collapse is
+     *  immediate — only expansion is delayed. */
+    val selectionExpandDelayMs: Long = 250L,
 )
 
 /**
@@ -96,6 +101,7 @@ fun SwitcherSettings.sanitized(): SwitcherSettings = copy(
     repeatIntervalMs = repeatIntervalMs.coerceAtLeast(1L),
     maxWidthPercent = maxWidthPercent.coerceIn(0.3, 1.0),
     maxWidthDp = maxWidthDp.coerceIn(400.0, 3000.0),
+    selectionExpandDelayMs = selectionExpandDelayMs.coerceAtLeast(0L),
 )
 
 /**

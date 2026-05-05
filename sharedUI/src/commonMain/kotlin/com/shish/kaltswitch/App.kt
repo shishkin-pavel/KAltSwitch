@@ -424,6 +424,12 @@ private fun SettingsPanel(
             range = 30f..500f,
             onChange = { onChange(settings.copy(repeatIntervalMs = it)) },
         )
+        DelaySlider(
+            label = "Selection expand delay",
+            valueMs = settings.selectionExpandDelayMs,
+            range = 0f..1000f,
+            onChange = { onChange(settings.copy(selectionExpandDelayMs = it)) },
+        )
         MaxWidthSetting(
             mode = settings.maxWidthMode,
             percent = settings.maxWidthPercent,
