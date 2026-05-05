@@ -250,7 +250,48 @@ windowless) makes the windowless apps visually less intrusive, and we can add
   the calmer UX during selection. If/when SkyLight stops working on a future
   macOS, this is the documented backup plan.
 
-- **Preview-raise on selection (high-priority post-MVP)**: the controller has
+- **Send-to-back / send-to-front shortcuts on the selected window**: while
+  a switcher session is open, single-key bindings to push the selected
+  window to the bottom of cross-app z-order (or to the top without
+  changing focus). Use cases: dismiss a window that just got
+  de-minimised on top of work; pull a reference window up beside the
+  current focus; shuffle a stack of overlapping windows.
+
+  Tooling already inventoried (see `SkyLight.swift`):
+  - `kAXRaiseAction` — within-app raise. Already wired via
+    `AxAppWatcher.raiseWindow`.
+  - `_SLPSSetFrontProcessWithOptions` — bring app + window to top with
+    focus change. Already wired via `bringAppToFront`.
+
+  Missing primitives (private CGS, same family as the above; sigs lifted
+  verbatim from alt-tab-macos):
+  - `CGSOrderWindow(cid, wid, place, relTo)` — arbitrary z-order
+    placement (`above` / `below` / `top` / `bottom` / relative to
+    `relTo`). Doesn't change focus, doesn't activate the app.
+  - `CGSGetWindowLevel` / `CGSSetWindowLevel` — level categories
+    (normal/floating/...); useful if we want a "pin always-on-top" mode.
+
+  Concrete deltas to ship:
+  1. Forward-declare `CGSOrderWindow` in `SkyLight.swift`.
+  2. Add `AxAppWatcher.sendWindowToBack(windowId:)` —
+     `_AXUIElementGetWindow` to resolve CGWindowID, then
+     `CGSOrderWindow(cid, cgWid, .below, 0)`.
+  3. Add two `SwitcherAction` enum cases (e.g. `SendBack`,
+     `SendFront`), wire `onPerformAction` on the Swift side, and bind
+     to single keys in `handleKey` (decide on letters that don't
+     collide with existing Q/W/M/H/F).
+  4. Like `ToggleMinimize`, the action should call
+     `WorldStore.recordWindowActivation` (window-only signal): the user
+     touched a window's z-order, not committed to using its app.
+  5. Probably skip the `onRaiseFocusedWindow`-on-Esc path for these
+     specific actions — sending a window back is the user's intent;
+     re-raising the focus window on Esc would feel like the action was
+     undone.
+
+  Open question: should send-to-back also blur / lower app-level z-order
+  for the *whole app*? `CGSOrderWindow` only touches the one window;
+  if the user wants to push an entire app behind everything, we'd
+  iterate its windows. Probably keep it window-scoped for v1. the controller has
   the `previewDelay` timer and an `onRaiseWindow` callback wired all the way
   through to `AxAppWatcher.raiseWindow` (`kAXRaiseAction`), but
   `previewEnabled = false` in `SwitcherController` keeps the path dormant for
