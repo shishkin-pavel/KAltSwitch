@@ -61,6 +61,7 @@ import androidx.compose.ui.input.key.isShiftPressed
 import androidx.compose.ui.input.key.key
 import androidx.compose.ui.input.key.onPreviewKeyEvent
 import androidx.compose.ui.input.key.type
+import androidx.compose.ui.input.pointer.PointerEventPass
 import androidx.compose.ui.input.pointer.PointerEventType
 import androidx.compose.ui.input.pointer.onPointerEvent
 import androidx.compose.ui.input.pointer.pointerInput
@@ -148,7 +149,14 @@ fun SwitcherOverlay(
             // gate. Without this, hover-Enter events fired purely because
             // the panel just appeared under a stationary mouse would yank
             // the keyboard-selected default cursor away.
-            .onPointerEvent(PointerEventType.Move) { onPointerMoved() },
+            //
+            // Initial pass (outer→inner) so the gate is already open by the
+            // time per-cell Move handlers run on the Main pass — that's what
+            // lets a wiggle inside the cell the cursor was sitting in at
+            // session-open snap selection to that cell. Without Initial,
+            // cell Move would call onPointAt before this handler flipped the
+            // gate, and the gate-check would early-return.
+            .onPointerEvent(PointerEventType.Move, PointerEventPass.Initial) { onPointerMoved() },
     ) {
         // Outer LookaheadScope: gives the wrapper Box's `Modifier.layout`
         // access to `IntrinsicMeasureScope.isLookingAhead`, which is how
@@ -846,6 +854,12 @@ private fun AppCell(
             .clip(RoundedCornerShape(10.dp))
             .border(2.dp, borderColor, RoundedCornerShape(10.dp))
             .onPointerEvent(PointerEventType.Enter) { onHoverApp() }
+            // Move alongside Enter so a wiggle inside the cell the cursor
+            // was already sitting in at session-open registers as hover.
+            // Enter alone misses that case — the cursor never crossed the
+            // cell boundary. onPointAt early-returns when the cursor would
+            // be unchanged, so subsequent Moves inside the cell are cheap.
+            .onPointerEvent(PointerEventType.Move) { onHoverApp() }
             .pointerInput(Unit) { detectTapGestures(onTap = { onClickApp() }) }
             .padding(horizontal = 6.dp, vertical = 6.dp),
         horizontalAlignment = Alignment.CenterHorizontally,
@@ -1235,6 +1249,10 @@ private fun WindowTitleRow(
                     overflowSuppress = false
                     onHover()
                 }
+                // Move alongside Enter for the stationary-cursor-at-open
+                // case (see AppCell). overflowSuppress stays Enter-only —
+                // re-arming on every Move would defeat the dismiss latch.
+                .onPointerEvent(PointerEventType.Move) { onHover() }
                 .pointerInput(Unit) { detectTapGestures(onTap = { onClick() }) },
             title = title,
             isActive = isActive,
