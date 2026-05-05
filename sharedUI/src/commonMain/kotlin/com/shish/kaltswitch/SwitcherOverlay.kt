@@ -282,6 +282,35 @@ private fun StatusBadge(
 private val HiddenBadgeColor = Color(0xFFAFAFB7)        // muted grey-blue
 private val MinimizedBadgeColor = Color(0xFFFFBD2E)     // macOS yellow traffic-light
 private val FullscreenBadgeColor = Color(0xFF28C940)    // macOS green traffic-light
+private val DockBadgeColor = Color(0xFFFF3B30)          // macOS systemRed (notification badge)
+
+/**
+ * Pill-shaped notification badge mirroring the macOS Dock-tile look:
+ * red rounded rect with white bold text, sized to its content. Driven by
+ * `App.badgeText` which is sourced from the Dock's `AXStatusLabel` per item.
+ * The min width keeps single-character badges (`5`, `•`) from collapsing
+ * to a sliver, while padding lets longer strings (`12`, `99+`) breathe.
+ */
+@Composable
+private fun DockBadge(text: String, modifier: Modifier = Modifier) {
+    Box(
+        modifier
+            .widthIn(min = 18.dp)
+            .height(16.dp)
+            .clip(RoundedCornerShape(8.dp))
+            .background(DockBadgeColor)
+            .padding(horizontal = 5.dp),
+        contentAlignment = Alignment.Center,
+    ) {
+        Text(
+            text,
+            color = Color.White,
+            fontSize = 10.sp,
+            fontWeight = FontWeight.Bold,
+            maxLines = 1,
+        )
+    }
+}
 
 /**
  * Backdrop tint for *demoted* apps and windows — apps the inspector's
@@ -409,6 +438,7 @@ private fun SwitcherPanel(
                                 iconBytes = args.iconBytes,
                                 isHidden = args.isHidden,
                                 isDemoted = args.isDemoted,
+                                badgeText = args.badgeText,
                                 windows = args.windows,
                                 shownWindowCount = args.shownWindowCount,
                                 isSelected = args.isSelected,
@@ -539,6 +569,7 @@ private data class AppCellArgs(
     val iconBytes: ByteArray?,
     val isHidden: Boolean,
     val isDemoted: Boolean,
+    val badgeText: String?,
     val windows: List<com.shish.kaltswitch.model.Window>,
     val shownWindowCount: Int,
     val isSelected: Boolean,
@@ -566,6 +597,7 @@ private fun cellArgs(
         iconBytes = iconBytes,
         isHidden = entry.app.isHidden,
         isDemoted = isDemoted,
+        badgeText = entry.app.badgeText,
         windows = entry.windows,
         shownWindowCount = entry.shownWindowCount,
         isSelected = isSelected,
@@ -586,6 +618,7 @@ private fun AppCell(
     iconBytes: ByteArray?,
     isHidden: Boolean,
     isDemoted: Boolean,
+    badgeText: String?,
     windows: List<com.shish.kaltswitch.model.Window>,
     shownWindowCount: Int,
     isSelected: Boolean,
@@ -628,14 +661,33 @@ private fun AppCell(
         // crashed at the moment the badge first composed (i.e. the very
         // first time the user hid an app via cmd+H), via Compose's
         // `PaddingElement.<init>` precondition check.
+        // Two badges can sit at the icon's top-right at once:
+        //   - dock badge ("5", "•", "999+") when the app's Dock tile has an
+        //     `AXStatusLabel` set — typically incoming-attention counters
+        //     from Mail / Slack / iMessage / Telegram. macOS draws this in
+        //     the same spot, so users already read it as "attention here";
+        //   - the hidden-status pictogram ("−") for cmd+H'd apps, kept on
+        //     for parity with the inspector.
+        // When both are set we stack them: dock badge overhangs the corner
+        // (offset y = -4), hidden badge sits just below (offset y = +14)
+        // so neither is occluded.
         Box(contentAlignment = Alignment.TopEnd) {
             AppIconBox(pid = pid, iconBytes = iconBytes, name = name, isDemoted = isDemoted)
+            if (badgeText != null) {
+                DockBadge(
+                    text = badgeText,
+                    modifier = Modifier.offset(x = 6.dp, y = (-4).dp),
+                )
+            }
             if (isHidden) {
                 StatusBadge(
                     glyph = "−",
                     background = HiddenBadgeColor,
                     contentColor = Color.White,
-                    modifier = Modifier.offset(x = 4.dp, y = (-4).dp),
+                    modifier = Modifier.offset(
+                        x = 4.dp,
+                        y = if (badgeText != null) 14.dp else (-4).dp,
+                    ),
                 )
             }
         }

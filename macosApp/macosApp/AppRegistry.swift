@@ -23,6 +23,11 @@ final class AppRegistry {
     private var systemAccentObserver: NSObjectProtocol?
     private var trustTimer: Timer?
     private var lastTrusted = false
+    /// Reads notification badges off the macOS Dock's AX tree and pushes
+    /// them into `WorldStore`. Owned here because its lifetime mirrors
+    /// the per-app watchers' and it benefits from the same trust-flip
+    /// respawn (its observer also needs AX permission to attach).
+    private var dockBadgeWatcher: DockBadgeWatcher?
     /// Fires whenever AX trust flips. The hotkey controller's CGEventTap
     /// creation requires AX, so on `true` AppDelegate calls `start()` again
     /// (the call is idempotent).
@@ -91,6 +96,14 @@ final class AppRegistry {
         for nsApp in workspace.runningApplications {
             spawn(for: nsApp)
         }
+
+        // Dock-tile badge reader. Sits alongside the per-app watchers
+        // because it relies on the same AX permission gate; if AX flips
+        // off and back on, `respawnAllWatchers` rebuilds it for a fresh
+        // observer attach (the old AXObserver would be silently dead).
+        let badgeWatcher = DockBadgeWatcher(store: store)
+        badgeWatcher.start()
+        dockBadgeWatcher = badgeWatcher
 
         // Seed the visible-space set so the filter works even before the
         // first space switch. Cheap call — no harm in doing it eagerly.
@@ -161,6 +174,8 @@ final class AppRegistry {
         }
         for (_, w) in watchers { w.stop() }
         watchers.removeAll()
+        dockBadgeWatcher?.stop()
+        dockBadgeWatcher = nil
     }
 
     // MARK: - Switcher actions (raise / commit / quit / hide / window-actions)
@@ -263,6 +278,12 @@ final class AppRegistry {
         for nsApp in NSWorkspace.shared.runningApplications {
             spawn(for: nsApp)
         }
+        // The previous AXObserver on the Dock dies with the trust flip
+        // too — rebuild so we keep getting AXValueChanged for badges.
+        dockBadgeWatcher?.stop()
+        let badgeWatcher = DockBadgeWatcher(store: store)
+        badgeWatcher.start()
+        dockBadgeWatcher = badgeWatcher
     }
 
     // MARK: - Notification handlers
@@ -270,6 +291,13 @@ final class AppRegistry {
     private func handleLaunched(_ note: Notification) {
         guard let nsApp = note.userInfo?[NSWorkspace.applicationUserInfoKey] as? NSRunningApplication else { return }
         spawn(for: nsApp)
+        // Dock typically takes a beat to add the new tile to its AX tree;
+        // schedule the rescan slightly out so the AXURL/AXStatusLabel are
+        // already populated when we read. A second rescan is cheap if the
+        // first one was too early.
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) { [weak self] in
+            self?.dockBadgeWatcher?.rescan()
+        }
     }
 
     private func handleTerminated(_ note: Notification) {

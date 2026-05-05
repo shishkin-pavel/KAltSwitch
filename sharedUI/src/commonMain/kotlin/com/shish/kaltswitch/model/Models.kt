@@ -29,6 +29,11 @@ data class App(
     val isFinishedLaunching: Boolean = true,
     val executablePath: String? = null,
     val launchDateMillis: Long? = null,
+    /** Dock-tile badge string ("5", "•", etc.) read from the macOS Dock's
+     *  AX `AXStatusLabel`. `null` = no badge / unknown. Updated independently
+     *  of the rest of the record by `DockBadgeWatcher`, so [WorldStore.upsertApp]
+     *  is careful to preserve it across NSWorkspace-driven re-upserts. */
+    val badgeText: String? = null,
 )
 
 /**

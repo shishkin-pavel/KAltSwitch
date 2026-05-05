@@ -183,9 +183,30 @@ class WorldStore(initial: World = World(ActivationLog(), emptyMap(), emptyMap())
         _activeWindowId.value = windowId
     }
 
-    /** Insert or update one app's record. */
+    /** Insert or update one app's record. Preserves the previous record's
+     *  [App.badgeText] when the caller didn't supply one — the badge stream
+     *  from `DockBadgeWatcher` is independent of the NSWorkspace-driven
+     *  upsert path, so we mustn't blow it away on every workspace event. */
     fun upsertApp(app: App) {
-        _state.update { it.copy(runningApps = it.runningApps + (app.pid to app)) }
+        _state.update {
+            val merged = if (app.badgeText == null) {
+                val prevBadge = it.runningApps[app.pid]?.badgeText
+                if (prevBadge != null) app.copy(badgeText = prevBadge) else app
+            } else app
+            it.copy(runningApps = it.runningApps + (app.pid to merged))
+        }
+    }
+
+    /** Update the dock badge string for an existing pid. No-op if the pid is
+     *  unknown — the badge for an app we haven't seen yet would be lost
+     *  anyway, and the next upsert + immediate rescan from the dock watcher
+     *  will re-deliver it. */
+    fun setAppBadge(pid: Pid, badgeText: String?) {
+        _state.update {
+            val app = it.runningApps[pid] ?: return@update it
+            if (app.badgeText == badgeText) return@update it
+            it.copy(runningApps = it.runningApps + (pid to app.copy(badgeText = badgeText)))
+        }
     }
 
     /** Remove an app and any windows we knew about for it. Also prunes that
