@@ -58,10 +58,18 @@ import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.layout.layout
 import androidx.compose.ui.unit.Constraints
 import androidx.compose.ui.unit.IntOffset
+import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.unit.IntRect
+import androidx.compose.ui.unit.IntSize
+import androidx.compose.ui.unit.LayoutDirection
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import androidx.compose.ui.window.Popup
+import androidx.compose.ui.window.PopupPositionProvider
+import androidx.compose.ui.window.PopupProperties
 import com.shish.kaltswitch.config.MaxSizeMode
 import com.shish.kaltswitch.config.SwitcherSettings
 import com.shish.kaltswitch.icon.rememberAppIcon
@@ -283,6 +291,112 @@ private val HiddenBadgeColor = Color(0xFFAFAFB7)        // muted grey-blue
 private val MinimizedBadgeColor = Color(0xFFFFBD2E)     // macOS yellow traffic-light
 private val FullscreenBadgeColor = Color(0xFF28C940)    // macOS green traffic-light
 private val DockBadgeColor = Color(0xFFFF3B30)          // macOS systemRed (notification badge)
+
+/**
+ * Places the popup strictly *below* the anchor, never overlapping it.
+ *
+ * The default `Popup(alignment = Alignment.BottomCenter)` math anchors
+ * the popup's bottom edge at the anchor's bottom edge, which means a
+ * popup wider/taller than the anchor extends *upward* and overlaps it.
+ * That stole hover events from the title — cursor enters title → popup
+ * shows over title → cursor is now "in popup" not title → Exit fires
+ * → popup hides → cursor is "back in title" → Enter → popup shows →
+ * loop = the rapid flicker the user reported.
+ *
+ * This provider centres the popup horizontally on the anchor and
+ * pins its *top* to the anchor's bottom + 6 px gap, so the popup never
+ * occludes the anchor and hover events on the title stay stable.
+ * Horizontal clamp keeps the tooltip on-screen for cells near the
+ * panel's edges.
+ */
+private val BelowAnchorTooltipPosition = object : PopupPositionProvider {
+    override fun calculatePosition(
+        anchorBounds: IntRect,
+        windowSize: IntSize,
+        layoutDirection: LayoutDirection,
+        popupContentSize: IntSize,
+    ): IntOffset {
+        val gap = 6
+        val x = (anchorBounds.left + anchorBounds.width / 2 - popupContentSize.width / 2)
+            .coerceIn(0, (windowSize.width - popupContentSize.width).coerceAtLeast(0))
+        val y = anchorBounds.bottom + gap
+        return IntOffset(x, y)
+    }
+}
+
+/**
+ * One-line ellipsised title that surfaces its full text in a floating
+ * label on hover. Used for both app names (under each cell's icon) and
+ * window-row titles, where the cell's max width frequently truncates
+ * project names / browser tab titles to "MyApp — proj…".
+ *
+ * Mechanics:
+ *  - `onTextLayout` records whether the rendered text actually overflows
+ *    its single line (`hasVisualOverflow`); the tooltip only appears when
+ *    truncation is meaningful, so non-truncated titles don't show a
+ *    redundant duplicate label.
+ *  - Hover state is tracked at the wrapper Box level via
+ *    `PointerEventType.Enter/Exit`; we don't intercept the events, so the
+ *    cell-/row-level hover handlers (which drive the switcher cursor)
+ *    keep firing exactly as before.
+ *  - The tooltip itself is a `Popup` anchored just below the title so it
+ *    can render outside the cell's clipped bounds. `PopupProperties(focusable = false)`
+ *    keeps the keyboard focus on the switcher; `clippingEnabled = false`
+ *    lets long titles overflow the panel rather than getting silently
+ *    clipped to the panel's rounded plate.
+ */
+@OptIn(ExperimentalComposeUiApi::class)
+@Composable
+private fun HoverableTitle(
+    text: String,
+    color: Color,
+    style: TextStyle,
+    modifier: Modifier = Modifier,
+    fontWeight: FontWeight = FontWeight.Normal,
+    textAlign: TextAlign? = null,
+) {
+    var hovered by remember { mutableStateOf(false) }
+    var truncated by remember(text) { mutableStateOf(false) }
+    Box(
+        modifier
+            .onPointerEvent(PointerEventType.Enter) { hovered = true }
+            .onPointerEvent(PointerEventType.Exit) { hovered = false }
+    ) {
+        Text(
+            text,
+            color = color,
+            fontWeight = fontWeight,
+            style = style,
+            textAlign = textAlign,
+            maxLines = 1,
+            overflow = TextOverflow.Ellipsis,
+            modifier = Modifier.fillMaxWidth(),
+            onTextLayout = { layout -> truncated = layout.hasVisualOverflow },
+        )
+        if (hovered && truncated) {
+            Popup(
+                popupPositionProvider = BelowAnchorTooltipPosition,
+                properties = PopupProperties(focusable = false, clippingEnabled = false),
+            ) {
+                Box(
+                    Modifier
+                        .clip(RoundedCornerShape(6.dp))
+                        .background(Color(0xF21B1B1F))
+                        .border(1.dp, Color(0x55FFFFFF), RoundedCornerShape(6.dp))
+                        .padding(horizontal = 8.dp, vertical = 4.dp),
+                ) {
+                    Text(
+                        text,
+                        color = Color.White,
+                        style = MaterialTheme.typography.bodySmall,
+                        maxLines = 3,
+                        overflow = TextOverflow.Ellipsis,
+                    )
+                }
+            }
+        }
+    }
+}
 
 /**
  * Pill-shaped notification badge mirroring the macOS Dock-tile look:
@@ -691,17 +805,15 @@ private fun AppCell(
                 )
             }
         }
-        Text(
-            name,
+        HoverableTitle(
+            text = name,
             color = nameColor,
             fontWeight = if (isSelected) FontWeight.SemiBold else FontWeight.Normal,
             style = MaterialTheme.typography.labelMedium,
-            maxLines = 1,
-            overflow = TextOverflow.Ellipsis,
             // Center on the icon's column. Without this the text would
             // ellipsis from the right edge under the cell's content
             // arrangement, looking off-balance under a centered icon.
-            textAlign = androidx.compose.ui.text.style.TextAlign.Center,
+            textAlign = TextAlign.Center,
             modifier = Modifier.fillMaxWidth(),
         )
         if (windows.isNotEmpty()) {
@@ -956,12 +1068,10 @@ private fun WindowTitleRow(
         verticalAlignment = Alignment.CenterVertically,
         horizontalArrangement = Arrangement.spacedBy(4.dp),
     ) {
-        Text(
-            title,
+        HoverableTitle(
+            text = title,
             color = fg,
             style = MaterialTheme.typography.bodySmall,
-            maxLines = 1,
-            overflow = TextOverflow.Ellipsis,
             modifier = Modifier.weight(1f, fill = true),
         )
         // Trailing status badge. macOS doesn't simultaneously minimize +
