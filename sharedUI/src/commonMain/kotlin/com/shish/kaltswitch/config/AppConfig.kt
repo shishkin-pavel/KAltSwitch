@@ -83,6 +83,14 @@ data class SwitcherSettings(
      *  past long rows without them flickering open. Symmetric collapse is
      *  immediate — only expansion is delayed. */
     val selectionExpandDelayMs: Long = 250L,
+    /** Scale factor (percent) applied to the switcher overlay's app
+     *  icon and the surrounding `AppCell` box. 100 = default; range
+     *  50..200 (clamped in [sanitized]). Text (app name, window titles)
+     *  and panel-level paddings deliberately stay unscaled — only the
+     *  icon visual + its enclosing cell react. The overlay reads this
+     *  via a CompositionLocal so only the cell-zone dp values multiply
+     *  by the factor. */
+    val cellSizePercent: Int = 100,
 )
 
 /**
@@ -102,6 +110,7 @@ fun SwitcherSettings.sanitized(): SwitcherSettings = copy(
     maxWidthPercent = maxWidthPercent.coerceIn(0.3, 1.0),
     maxWidthDp = maxWidthDp.coerceIn(400.0, 3000.0),
     selectionExpandDelayMs = selectionExpandDelayMs.coerceAtLeast(0L),
+    cellSizePercent = cellSizePercent.coerceIn(50, 200),
 )
 
 /**

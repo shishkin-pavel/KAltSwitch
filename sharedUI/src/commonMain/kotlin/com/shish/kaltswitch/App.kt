@@ -442,6 +442,10 @@ private fun SettingsPanel(
                 ))
             },
         )
+        CellSizeSlider(
+            percent = settings.cellSizePercent,
+            onChange = { onChange(settings.copy(cellSizePercent = it)) },
+        )
         ToggleRow(
             label = "Show menubar icon",
             checked = showMenubarIcon,
@@ -630,6 +634,48 @@ private fun MaxWidthSetting(
             onCheckedChange = { usePixels ->
                 onChange(if (usePixels) MaxSizeMode.Dp else MaxSizeMode.Percent, percent, dp)
             },
+        )
+    }
+}
+
+/**
+ * Slider for the switcher overlay icon-and-cell scale. 100 % = stock
+ * sizes; the overlay applies the factor only to the app-icon visual and
+ * its enclosing `AppCell` (size, padding, corner, width range) — text
+ * and panel-level paddings stay unscaled.
+ */
+@Composable
+private fun CellSizeSlider(
+    percent: Int,
+    onChange: (Int) -> Unit,
+) {
+    Column(verticalArrangement = Arrangement.spacedBy(0.dp)) {
+        Row(
+            Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.SpaceBetween,
+        ) {
+            Text(
+                "Cell size",
+                color = Color(0xFFE0E0E0),
+                style = MaterialTheme.typography.labelSmall,
+            )
+            Text(
+                "${percent} %",
+                color = AccentColor,
+                fontWeight = FontWeight.Medium,
+                style = MaterialTheme.typography.labelSmall,
+            )
+        }
+        Slider(
+            value = percent.toFloat().coerceIn(50f, 200f),
+            onValueChange = { onChange(it.toInt().coerceIn(50, 200)) },
+            valueRange = 50f..200f,
+            colors = SliderDefaults.colors(
+                thumbColor = AccentColor,
+                activeTrackColor = AccentColor,
+                inactiveTrackColor = Color(0x33FFFFFF),
+            ),
+            modifier = Modifier.height(20.dp),
         )
     }
 }

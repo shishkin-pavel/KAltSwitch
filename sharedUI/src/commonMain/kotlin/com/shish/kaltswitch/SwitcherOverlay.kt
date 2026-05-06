@@ -120,7 +120,16 @@ fun SwitcherOverlay(
     var panelBounds by remember { mutableStateOf<IntRect?>(null) }
     val reportPanelBounds: (IntRect?) -> Unit = { panelBounds = it }
 
+    // Targeted scale for the icon-and-cell visual only. Read inside
+    // `AppCell` and `AppIconBox` so the multiplier hits cell width
+    // range, padding, corner, border, vertical inner spacing, the
+    // icon size, and the fallback letter font — but NOT app-name
+    // text, window-row text/paddings, panel-level paddings, FlowRow
+    // gaps, or badges. See `LocalIconCellScale`.
+    val iconCellScale = (switcherSettings.cellSizePercent / 100f).coerceIn(0.5f, 2f)
+
     CompositionLocalProvider(
+        LocalIconCellScale provides iconCellScale,
         LocalSelectionExpandDelayMs provides switcherSettings.selectionExpandDelayMs,
         LocalPanelBoundsInWindow provides panelBounds,
         LocalReportPanelBounds provides reportPanelBounds,
@@ -400,6 +409,19 @@ private val LocalSelectionExpandDelayMs = compositionLocalOf { 250L }
  */
 private val LocalPanelBoundsInWindow = compositionLocalOf<IntRect?> { null }
 private val LocalReportPanelBounds = compositionLocalOf<((IntRect?) -> Unit)?> { null }
+
+/**
+ * User-controlled scale factor (default 1f) applied only to the app
+ * icon visual and its enclosing `AppCell` — width range, padding,
+ * corner, border, vertical inner spacing, icon size, and the fallback
+ * letter font. Text styling, window rows, panel paddings, FlowRow gaps,
+ * and badges are intentionally *outside* the scope so the icon-cell
+ * grows/shrinks independently of textual layout.
+ *
+ * Provided by `SwitcherOverlay` from the user's `cellSizePercent`
+ * setting (see [com.shish.kaltswitch.config.SwitcherSettings]).
+ */
+private val LocalIconCellScale = compositionLocalOf { 1f }
 
 /** Expand/collapse tween duration for the selected window-row's row
  *  expansion. Fast enough to feel like a direct response to the cursor
@@ -841,6 +863,7 @@ private fun AppCell(
     // desaturation; the cell's text colour matches the normal-row colour
     // so it stays legible against the darker backdrop.
     val nameColor = if (isSelected) Color.White else Color(0xFFCCCCCC)
+    val s = LocalIconCellScale.current
     // The demote backdrop now lives on the parent Box (not per-cell), so
     // the cell's modifier chain is just the inner clip + selection
     // border + interaction. Doing the bg per-cell broke under varying
@@ -850,9 +873,9 @@ private fun AppCell(
     // whole demote section.
     Column(
         modifier
-            .widthIn(min = 92.dp, max = 132.dp)
-            .clip(RoundedCornerShape(10.dp))
-            .border(2.dp, borderColor, RoundedCornerShape(10.dp))
+            .widthIn(min = (92 * s).dp, max = (132 * s).dp)
+            .clip(RoundedCornerShape((10 * s).dp))
+            .border(2.dp, borderColor, RoundedCornerShape((10 * s).dp))
             .onPointerEvent(PointerEventType.Enter) { onHoverApp() }
             // Move alongside Enter so a wiggle inside the cell the cursor
             // was already sitting in at session-open registers as hover.
@@ -861,9 +884,9 @@ private fun AppCell(
             // be unchanged, so subsequent Moves inside the cell are cheap.
             .onPointerEvent(PointerEventType.Move) { onHoverApp() }
             .pointerInput(Unit) { detectTapGestures(onTap = { onClickApp() }) }
-            .padding(horizontal = 6.dp, vertical = 6.dp),
+            .padding(horizontal = (6 * s).dp, vertical = (6 * s).dp),
         horizontalAlignment = Alignment.CenterHorizontally,
-        verticalArrangement = Arrangement.spacedBy(4.dp),
+        verticalArrangement = Arrangement.spacedBy((4 * s).dp),
     ) {
         // Stack the hidden-status badge on top-right of the icon. Box uses
         // the icon's intrinsic size; the badge is positioned with
@@ -1093,6 +1116,7 @@ private fun WindowList(
 @Composable
 private fun AppIconBox(pid: Int, iconBytes: ByteArray?, name: String, isDemoted: Boolean) {
     val icon: ImageBitmap? = rememberAppIcon(pid, iconBytes)
+    val s = LocalIconCellScale.current
     // Light desaturation for demoted icons — keeps app branding identifiable
     // (full grayscale erases too much information when there are 30 demoted
     // apps in a row) while still clearly tagging the bucket. The matrix is
@@ -1104,10 +1128,10 @@ private fun AppIconBox(pid: Int, iconBytes: ByteArray?, name: String, isDemoted:
     }
     Box(
         Modifier
-            // 80dp (was 64dp). The icon is the strongest visual anchor for
-            // app identification, especially in a row of unfamiliar apps;
-            // bumping size is the cheapest readability win.
-            .size(80.dp),
+            // 80dp (was 64dp) at 100 %. User's "Cell size" setting scales
+            // the icon and its enclosing AppCell only; text and panel
+            // paddings stay unscaled.
+            .size((80 * s).dp),
         // No background — sits directly on the panel plate. The Color(0x22FFFFFF)
         // backplate the previous version had created a subtle "icon tray"
         // effect that diluted the icon's own design (especially for icons
@@ -1130,7 +1154,7 @@ private fun AppIconBox(pid: Int, iconBytes: ByteArray?, name: String, isDemoted:
                 // to this fallback Text path.
                 color = if (isDemoted) Color(0xFFCCCCCC) else Color(0xFFEEEEEE),
                 fontWeight = FontWeight.Bold,
-                fontSize = 32.sp,
+                fontSize = (32 * s).sp,
             )
         }
     }

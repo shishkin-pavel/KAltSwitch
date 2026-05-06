@@ -18,19 +18,28 @@ import platform.Foundation.NSData
 import platform.posix.memcpy
 
 /**
- * Render `NSRunningApplication.icon` (a vector `NSImage`) to a 128×128 PNG
+ * Render `NSRunningApplication.icon` (a vector `NSImage`) to a square PNG
  * and push the bytes into [store].
  *
  * Skia (Compose's renderer) decodes PNG natively; `NSImage.tiffRepresentation`
  * — the default — would also need a PNG-encoded bitmap somewhere along the
  * way. Doing the encode here keeps the boundary clean: `WorldStore` only
  * ever stores PNG bytes per-pid.
+ *
+ * Side picked at 384 px (= 128 × 3) so the user's "Cell size" slider can
+ * scale the overlay up to 300 % without the rasterised icon visibly
+ * blurring. macOS app icons are typically multi-rep `.icns` (up to
+ * 1024 px), so drawing into a 384-px bitmap rasterises a high-fidelity
+ * representation rather than upscaling a 128-px one. At 100 % the
+ * 384-px PNG is downscaled by Compose with bilinear filtering — the
+ * extra few KB per app outweighs the cost of dynamic re-renders on
+ * every slider tick.
  */
 fun renderAndStoreAppIcon(pid: Int, store: WorldStore) {
     val nsApp = NSRunningApplication.runningApplicationWithProcessIdentifier(pid) ?: return
     val image = nsApp.icon ?: return
 
-    val side: Long = 128
+    val side: Long = 384
     val bitmap = NSBitmapImageRep(
         bitmapDataPlanes = null,
         pixelsWide = side,
