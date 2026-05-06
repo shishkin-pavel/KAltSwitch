@@ -48,11 +48,12 @@ import com.shish.kaltswitch.model.filteredSnapshot
 // ─────────────────────────── Settings window content ───────────────────────────
 
 /**
- * Top-level Compose root for the Settings window. Two tabs (General /
- * Rules) sit at the top inside an AppKit-style segmented control; below
- * it scrolls the active tab's content. Theme is driven by the Swift-side
- * `NSAppearance` observer pushing into [com.shish.kaltswitch.store.WorldStore.isDarkMode];
- * the caller wraps this composable in [ProvideAppPalette] + [ProvideAccent].
+ * Top-level Compose root for the Settings window. The tab bar (General /
+ * Rules) sits inline on the window background — no separate toolbar
+ * band — and the active tab's content scrolls below it. Theme is
+ * driven by the Swift-side `NSAppearance` observer pushing into
+ * [com.shish.kaltswitch.store.WorldStore.isDarkMode]; the caller wraps
+ * this composable in [ProvideAppPalette] + [ProvideAccent].
  */
 @Composable
 fun SettingsContent(
@@ -79,8 +80,7 @@ fun SettingsContent(
         Box(
             Modifier
                 .fillMaxWidth()
-                .background(pal.toolbarBg)
-                .padding(horizontal = 16.dp, vertical = 10.dp),
+                .padding(top = 16.dp, bottom = 8.dp),
             contentAlignment = Alignment.Center,
         ) {
             NativeTabBar(
@@ -91,18 +91,12 @@ fun SettingsContent(
         }
         Box(
             Modifier
-                .fillMaxWidth()
-                .height(1.dp)
-                .background(pal.divider),
-        )
-        Box(
-            Modifier
                 .fillMaxSize()
                 .verticalScroll(rememberScrollState())
-                .padding(20.dp),
+                .padding(start = 20.dp, end = 20.dp, top = 4.dp, bottom = 20.dp),
         ) {
             when (selectedTab) {
-                0 -> GeneralTab(
+                0 -> GeneralSection(
                     settings = switcherSettings,
                     onChange = onSwitcherSettingsChange,
                     showMenubarIcon = showMenubarIcon,
@@ -123,10 +117,10 @@ fun SettingsContent(
     }
 }
 
-// ──────────────────────── General tab — switcher knobs ───────────────────────
+// ──────────────────────── General section — switcher knobs ───────────────────────
 
 @Composable
-private fun GeneralTab(
+private fun GeneralSection(
     settings: SwitcherSettings,
     onChange: (SwitcherSettings) -> Unit,
     showMenubarIcon: Boolean,

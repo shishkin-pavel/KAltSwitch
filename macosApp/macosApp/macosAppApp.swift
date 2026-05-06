@@ -165,6 +165,17 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         installGlobalKeyMonitor()
         installMouseDownMonitor()
         installAppearanceObserver()
+
+        // Eagerly construct both heavy windows (hidden) so the first
+        // menubar-driven open is just `makeKeyAndOrderFront` —
+        // ComposeNSViewDelegate's contentView attach + frame restore
+        // run during launch, not the moment the user clicks. Lazy
+        // construction empirically left the just-attached Compose
+        // NSView in a state where `makeKeyAndOrderFront` raised the
+        // window without making it firstResponder, so the user saw
+        // an unfocused window.
+        _ = ensureSettingsWindow()
+        _ = ensureInspectorWindow()
     }
 
     // MARK: - Settings + Inspector windows
@@ -200,7 +211,14 @@ class AppDelegate: NSObject, NSApplicationDelegate {
             self?.persistSettingsFrame()
         }
         let willClose = center.addObserver(forName: NSWindow.willCloseNotification, object: w, queue: .main) { [weak self] _ in
-            self?.refreshActivationPolicy()
+            // willClose fires synchronously *before* AppKit flips
+            // `isVisible` to false. Defer one runloop tick so
+            // refreshActivationPolicy sees the post-close state and
+            // can drop us back to .accessory when both windows are
+            // closed — otherwise the Dock icon lingers.
+            DispatchQueue.main.async {
+                self?.refreshActivationPolicy()
+            }
         }
         frameObservers.append(contentsOf: [move, resize, willClose])
         settingsWindow = w
@@ -236,7 +254,14 @@ class AppDelegate: NSObject, NSApplicationDelegate {
             self?.persistInspectorFrame()
         }
         let willClose = center.addObserver(forName: NSWindow.willCloseNotification, object: w, queue: .main) { [weak self] _ in
-            self?.refreshActivationPolicy()
+            // willClose fires synchronously *before* AppKit flips
+            // `isVisible` to false. Defer one runloop tick so
+            // refreshActivationPolicy sees the post-close state and
+            // can drop us back to .accessory when both windows are
+            // closed — otherwise the Dock icon lingers.
+            DispatchQueue.main.async {
+                self?.refreshActivationPolicy()
+            }
         }
         frameObservers.append(contentsOf: [move, resize, willClose])
         inspectorWindow = w
@@ -276,17 +301,27 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     private func showSettings() {
         ComposeViewKt.switcherController.onEsc()
         let w = ensureSettingsWindow()
-        refreshActivationPolicy(promoteForVisibleWindow: true)
-        w.makeKeyAndOrderFront(nil)
-        NSApp.activate()
+        bringWindowToFront(w)
     }
 
     private func showInspector() {
         ComposeViewKt.switcherController.onEsc()
         let w = ensureInspectorWindow()
+        bringWindowToFront(w)
+    }
+
+    /// Promote to `.regular` (Dock icon + cmd+tab presence) and make
+    /// the window key. The activation chain is finicky on
+    /// `LSUIElement=true` apps right after a setActivationPolicy
+    /// transition: `NSApp.activate()` (the modern no-arg form) often
+    /// no-ops because the policy flip hasn't propagated yet.
+    /// `NSRunningApplication.current.activate(options:)` goes through
+    /// a different code path that respects the just-flipped policy
+    /// and reliably brings our window to the foreground.
+    private func bringWindowToFront(_ w: NSWindow) {
         refreshActivationPolicy(promoteForVisibleWindow: true)
         w.makeKeyAndOrderFront(nil)
-        NSApp.activate()
+        NSRunningApplication.current.activate(options: [.activateAllWindows])
     }
 
     /// Bring activation policy in line with the union of "any of our heavy
