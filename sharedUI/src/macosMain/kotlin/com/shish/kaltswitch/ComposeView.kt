@@ -88,6 +88,18 @@ fun observeLaunchAtLogin(onChange: (Boolean) -> Unit) {
         .launchIn(bridgeScope)
 }
 
+/** Pushes the switcher's "open on which screen" preference to Swift as the
+ *  enum's [Enum.name] ("MouseScreen" / "ActiveWindowScreen" / "MainScreen").
+ *  Swift caches the latest value and consults it inside `captureSessionScreen`.
+ *  String over the bridge keeps this insulated from K/N enum-binding gotchas. */
+fun observeSwitcherWindowPlacement(onChange: (String) -> Unit) {
+    store.switcherSettings
+        .map { it.windowPlacement.name }
+        .distinctUntilChanged()
+        .onEach(onChange)
+        .launchIn(bridgeScope)
+}
+
 fun observeSwitcherPanelSize(onChange: (Double, Double) -> Unit, onCleared: () -> Unit) {
     store.switcherPanelSize
         .onEach { size ->

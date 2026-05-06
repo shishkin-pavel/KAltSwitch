@@ -34,6 +34,7 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.shish.kaltswitch.config.AccentColorChoice
 import com.shish.kaltswitch.config.MaxSizeMode
+import com.shish.kaltswitch.config.SwitcherPlacement
 import com.shish.kaltswitch.config.SwitcherSettings
 import com.shish.kaltswitch.model.AppActivationPolicy
 import com.shish.kaltswitch.model.AppView
@@ -193,6 +194,11 @@ private fun GeneralSection(
             NativeRow(label = "Current space only") {
                 NativeToggle(checked = currentSpaceOnly, onCheckedChange = onCurrentSpaceOnlyChange)
             }
+            NativeRowDivider()
+            PlacementRow(
+                placement = settings.windowPlacement,
+                onChange = { onChange(settings.copy(windowPlacement = it)) },
+            )
         }
         NativeGroupBox(title = "Accent colour") {
             AccentColorRow(
@@ -221,6 +227,25 @@ private fun DelayRow(
             }
             NativeText("${valueMs} ms", color = AppPalette.textSecondary, fontSize = 12.sp)
         }
+    }
+}
+
+@Composable
+private fun PlacementRow(
+    placement: SwitcherPlacement,
+    onChange: (SwitcherPlacement) -> Unit,
+) {
+    val options = listOf(
+        SwitcherPlacement.MouseScreen to "Mouse",
+        SwitcherPlacement.ActiveWindowScreen to "Active window",
+        SwitcherPlacement.MainScreen to "Main",
+    )
+    NativeRow(label = "Open switcher on") {
+        NativeTabBar(
+            items = options.map { it.second },
+            selectedIndex = options.indexOfFirst { it.first == placement }.coerceAtLeast(0),
+            onSelect = { idx -> onChange(options[idx].first) },
+        )
     }
 }
 

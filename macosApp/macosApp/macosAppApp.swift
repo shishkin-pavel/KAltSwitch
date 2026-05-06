@@ -115,6 +115,9 @@ class AppDelegate: NSObject, NSApplicationDelegate {
             },
             onCleared: { /* no-op */ },
         )
+        ComposeViewKt.observeSwitcherWindowPlacement { [weak panel] mode in
+            panel?.placementMode = mode
+        }
 
         panel.onCommandReleased = { [weak controller] in
             controller?.onModifierReleased()

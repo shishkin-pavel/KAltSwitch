@@ -50,6 +50,19 @@ data class WindowFrame(
 enum class MaxSizeMode { Percent, MaxIconsPerRow }
 
 /**
+ * Which screen the switcher panel opens on.
+ *
+ * * [MouseScreen] — display containing the cursor at session start (default;
+ *   matches alt-tab-macos and Spotlight).
+ * * [ActiveWindowScreen] — display containing the frontmost app's focused
+ *   window. Falls back to [MouseScreen] if AX can't read the focused frame
+ *   (no window, no AX permission, off-screen window).
+ * * [MainScreen] — `NSScreen.main` (the screen with the active menu bar).
+ */
+@Serializable
+enum class SwitcherPlacement { MouseScreen, ActiveWindowScreen, MainScreen }
+
+/**
  * Switcher behaviour knobs. Surfaced in the Settings window's General tab
  * and read live by [com.shish.kaltswitch.switcher.SwitcherController].
  *
@@ -91,6 +104,8 @@ data class SwitcherSettings(
      *  50..200 (clamped in [sanitized]). Text (app name, window titles)
      *  and panel-level paddings deliberately stay unscaled. */
     val cellSizePercent: Int = 100,
+    /** Which display the switcher opens on. See [SwitcherPlacement]. */
+    val windowPlacement: SwitcherPlacement = SwitcherPlacement.MouseScreen,
 )
 
 /**

@@ -1,4 +1,5 @@
 import AppKit
+import ApplicationServices
 import Carbon.HIToolbox
 import ComposeAppMac
 
@@ -54,6 +55,15 @@ final class SwitcherOverlayWindow: NSPanel {
     /// content-driven resize. Captured once per session so the panel
     /// doesn't follow the cursor onto a different display mid-session.
     private var sessionScreenFrame: NSRect?
+
+    /// Latest "where to open" preference pushed from
+    /// `observeSwitcherWindowPlacement`. Read at session start by
+    /// `captureSessionScreen`. Carried as the Kotlin enum's `.name`
+    /// — `"MouseScreen"`, `"ActiveWindowScreen"`, `"MainScreen"` —
+    /// so the K/N bridge stays a plain String. Default is the
+    /// historical mouse-cursor behaviour, used until the first push
+    /// from the observer arrives.
+    var placementMode: String = "MouseScreen"
 
     /// Pending shrink work item. When Compose reports a smaller target
     /// size we keep the panel at the larger envelope until the cell
@@ -136,25 +146,105 @@ final class SwitcherOverlayWindow: NSPanel {
         log("[panel] compose view installed wrapperBounds=\(wrapper.bounds)")
     }
 
-    /// Cache the screen the cursor is on at session start so subsequent
+    /// Resolve which screen this session should open on, honouring the
+    /// user's [placementMode] preference.
+    ///
+    /// * `MouseScreen` (default) — display under the cursor at session start.
+    /// * `ActiveWindowScreen` — display containing the frontmost app's AX
+    ///   focused window. Falls through to `MouseScreen` if AX is denied,
+    ///   the front app has no focused window, or the window's centre lands
+    ///   off every screen (e.g. minimised, off-screen).
+    /// * `MainScreen` — the macOS *primary* display (`NSScreen.screens[0]`),
+    ///   the one with the menu bar in the Displays arrangement panel.
+    ///   Note: this is intentionally NOT `NSScreen.main`, which Apple
+    ///   defines as "screen of the key window" — that's effectively the
+    ///   same as `ActiveWindowScreen` and would make this option redundant.
+    ///
+    /// Every branch ends in the same `NSScreen.main ?? NSScreen.screens.first`
+    /// fallback so a misconfigured / disconnected setup still yields *some*
+    /// screen rather than refusing to open the panel.
+    private func pickSessionScreen() -> NSScreen? {
+        let fallback = NSScreen.main ?? NSScreen.screens.first
+        switch placementMode {
+        case "MainScreen":
+            return NSScreen.screens.first ?? fallback
+        case "ActiveWindowScreen":
+            if let s = screenForFrontmostFocusedWindow() { return s }
+            return screenUnderMouse() ?? fallback
+        default: // "MouseScreen" + any unrecognised value
+            return screenUnderMouse() ?? fallback
+        }
+    }
+
+    private func screenUnderMouse() -> NSScreen? {
+        let mouse = NSEvent.mouseLocation
+        return NSScreen.screens.first(where: { NSMouseInRect(mouse, $0.frame, false) })
+            ?? NSScreen.main
+            ?? NSScreen.screens.first
+    }
+
+    /// Read the frontmost app's AX focused window, compute its centre point,
+    /// and return the `NSScreen` whose `frame` contains that point. Returns
+    /// `nil` for any failure mode (no front app, no AX permission, no focused
+    /// window, missing pos/size, point outside every screen) — the caller
+    /// falls back to the mouse-cursor screen, matching the long-standing
+    /// behaviour of every other AX path in this app.
+    ///
+    /// AX uses top-left-origin "screen" coordinates (y grows downward, anchored
+    /// to the primary screen's TOP edge). `NSScreen.frame` uses bottom-left
+    /// Cocoa coordinates (y grows upward). We convert via the primary screen's
+    /// height before doing `containsPoint`.
+    private func screenForFrontmostFocusedWindow() -> NSScreen? {
+        guard let frontmost = NSWorkspace.shared.frontmostApplication else { return nil }
+        let pid = frontmost.processIdentifier
+        let appEl = AXUIElementCreateApplication(pid)
+        var focusedRef: AnyObject?
+        let err = AXUIElementCopyAttributeValue(appEl, kAXFocusedWindowAttribute as CFString, &focusedRef)
+        guard err == .success,
+              let v = focusedRef,
+              CFGetTypeID(v as CFTypeRef) == AXUIElementGetTypeID() else { return nil }
+        let win = v as! AXUIElement
+
+        var posRef: AnyObject?
+        var sizeRef: AnyObject?
+        guard AXUIElementCopyAttributeValue(win, kAXPositionAttribute as CFString, &posRef) == .success,
+              AXUIElementCopyAttributeValue(win, kAXSizeAttribute as CFString, &sizeRef) == .success,
+              let posV = posRef, let sizeV = sizeRef,
+              CFGetTypeID(posV as CFTypeRef) == AXValueGetTypeID(),
+              CFGetTypeID(sizeV as CFTypeRef) == AXValueGetTypeID() else { return nil }
+
+        var p = CGPoint.zero
+        var s = CGSize.zero
+        AXValueGetValue(posV as! AXValue, .cgPoint, &p)
+        AXValueGetValue(sizeV as! AXValue, .cgSize, &s)
+
+        // AX → Cocoa coordinate flip, anchored to the primary screen height.
+        guard let primary = NSScreen.screens.first else { return nil }
+        let primaryHeight = primary.frame.size.height
+        let centerCocoa = NSPoint(
+            x: p.x + s.width / 2,
+            y: primaryHeight - (p.y + s.height / 2)
+        )
+        return NSScreen.screens.first(where: { NSMouseInRect(centerCocoa, $0.frame, false) })
+    }
+
+    /// Cache the screen chosen by [pickSessionScreen] so subsequent
     /// `setContentSize` calls can recenter the panel without following
-    /// the cursor to a different display mid-session, and pre-size the
-    /// panel to a generous fraction of that screen so the first
-    /// Compose composition has room to lay out cells in their natural
-    /// single-row arrangement. Without the pre-size, Compose's first
-    /// layout would inherit whatever (potentially small) width the
-    /// panel ended up at after the previous session, and FlowRow
-    /// would wrap prematurely. Subsequent `setContentSize` calls
-    /// shrink the panel to the actual content width.
+    /// the cursor (or any other live signal) to a different display
+    /// mid-session, and pre-size the panel to a generous fraction of
+    /// that screen so the first Compose composition has room to lay
+    /// out cells in their natural single-row arrangement. Without the
+    /// pre-size, Compose's first layout would inherit whatever
+    /// (potentially small) width the panel ended up at after the
+    /// previous session, and FlowRow would wrap prematurely.
+    /// Subsequent `setContentSize` calls shrink the panel to the
+    /// actual content width.
     ///
     /// Resets `capturedTopY` so the next `setContentSize` will sample
     /// it from the screen-centred placement at the freshly-measured
     /// first content size.
     func captureSessionScreen() {
-        let mouse = NSEvent.mouseLocation
-        let screen = NSScreen.screens.first(where: { NSMouseInRect(mouse, $0.frame, false) })
-            ?? NSScreen.main
-            ?? NSScreen.screens.first
+        let screen = pickSessionScreen()
         guard let screen = screen else { return }
         let s = screen.visibleFrame
         sessionScreenFrame = s
