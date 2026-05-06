@@ -67,12 +67,11 @@ class WorldStoreTest {
     fun applyConfig_seedsEveryPersistedField() = runTest {
         val store = WorldStore()
         val cfg = AppConfig(
-            schemaVersion = 3,
+            schemaVersion = 4,
             filters = FilteringRules(),
-            windowFrame = WindowFrame(x = 100.0, y = 200.0, width = 480.0, height = 720.0),
-            inspectorWidth = 555.0,
+            settingsWindowFrame = WindowFrame(x = 100.0, y = 200.0, width = 640.0, height = 540.0),
+            inspectorWindowFrame = WindowFrame(x = 800.0, y = 100.0, width = 720.0, height = 600.0),
             switcher = SwitcherSettings(showDelayMs = 50L, previewEnabled = true),
-            inspectorVisible = false,
             showMenubarIcon = false,
             launchAtLogin = true,
             currentSpaceOnly = true,
@@ -84,7 +83,7 @@ class WorldStoreTest {
         // Round-trip via configFlow: first emission is the current snapshot.
         val snapshot = store.configFlow().first()
         // schemaVersion isn't part of the round-trip (configFlow uses default).
-        assertEquals(cfg.copy(schemaVersion = 3), snapshot)
+        assertEquals(cfg.copy(schemaVersion = 4), snapshot)
     }
 
     @Test
@@ -96,9 +95,15 @@ class WorldStoreTest {
         val afterLaunchAtLogin = store.configFlow().first()
         assertEquals(initial.copy(launchAtLogin = true), afterLaunchAtLogin)
 
-        store.setInspectorWidth(640.0)
-        val afterWidth = store.configFlow().first()
-        assertEquals(initial.copy(launchAtLogin = true, inspectorWidth = 640.0), afterWidth)
+        store.saveSettingsWindowFrame(x = 10.0, y = 20.0, width = 640.0, height = 540.0)
+        val afterFrame = store.configFlow().first()
+        assertEquals(
+            initial.copy(
+                launchAtLogin = true,
+                settingsWindowFrame = WindowFrame(10.0, 20.0, 640.0, 540.0),
+            ),
+            afterFrame,
+        )
     }
 
     @Test

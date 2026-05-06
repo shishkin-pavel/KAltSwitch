@@ -64,22 +64,18 @@ import com.shish.kaltswitch.model.WidthPredicate
 import kotlin.random.Random
 
 /**
- * Settings-sidebar panel containing the user-editable filter rule list.
- * The three pinned fallback toggles (accessory / hidden / windowless) sit
- * at the bottom — they're intentionally always visible so toggling visibility
- * of e.g. accessory apps is one click away regardless of how many rules
- * the user has authored.
+ * Filter-rules editor surface. Lives in the Settings window's "Rules"
+ * tab. Each rule renders as a `RuleCard`; "+ rule" appends a new empty
+ * one. Reorder via small ▲/▼ buttons — drag-and-drop in Compose desktop
+ * needs an extra dep that isn't worth pulling in for this list size.
  */
 @Composable
 fun FilteringRulesPanel(
     filters: FilteringRules,
     onChange: (FilteringRules) -> Unit,
-    inspectorVisible: Boolean,
-    onToggleInspector: () -> Unit,
     modifier: Modifier = Modifier,
 ) {
     Column(modifier, verticalArrangement = Arrangement.spacedBy(10.dp)) {
-        Header(inspectorVisible, onToggleInspector)
         for ((index, rule) in filters.rules.withIndex()) {
             RuleCard(
                 rule = rule,
@@ -107,63 +103,13 @@ fun FilteringRulesPanel(
     }
 }
 
-/** "Filtering rules" header + inspector-toggle button (right side). */
-@Composable
-private fun Header(inspectorVisible: Boolean, onToggleInspector: () -> Unit) {
-    Row(
-        Modifier.fillMaxWidth(),
-        verticalAlignment = Alignment.CenterVertically,
-    ) {
-        Text(
-            "Filtering rules",
-            color = Color.White,
-            fontWeight = FontWeight.SemiBold,
-            style = MaterialTheme.typography.labelLarge,
-            modifier = Modifier.weight(1f),
-        )
-        Row(
-            Modifier
-                .clip(RoundedCornerShape(6.dp))
-                .background(Color(0x33FFFFFF))
-                .clickable(onClick = onToggleInspector)
-                .padding(horizontal = 10.dp, vertical = 6.dp),
-            verticalAlignment = Alignment.CenterVertically,
-            horizontalArrangement = Arrangement.spacedBy(6.dp),
-        ) {
-            Text(
-                "Inspector",
-                color = Color(0xFFE0E0E0),
-                fontWeight = FontWeight.Medium,
-                style = MaterialTheme.typography.labelMedium,
-            )
-            Text(
-                if (inspectorVisible) "‹" else "›",
-                color = AccentColor,
-                fontWeight = FontWeight.Bold,
-                style = MaterialTheme.typography.titleSmall,
-            )
-        }
-    }
-}
-
 @Composable
 private fun AddRuleButton(onClick: () -> Unit) {
-    Box(
-        Modifier
-            .fillMaxWidth()
-            .clip(RoundedCornerShape(6.dp))
-            .background(Color(0x22FFFFFF))
-            .clickable(onClick = onClick)
-            .padding(vertical = 8.dp),
-        contentAlignment = Alignment.Center,
-    ) {
-        Text(
-            "+ rule",
-            color = Color(0xFFE0E0E0),
-            fontWeight = FontWeight.Medium,
-            style = MaterialTheme.typography.labelMedium,
-        )
-    }
+    NativeButton(
+        label = "+ rule",
+        onClick = onClick,
+        modifier = Modifier.fillMaxWidth(),
+    )
 }
 
 @Composable
@@ -178,7 +124,7 @@ private fun RuleCard(
         Modifier
             .fillMaxWidth()
             .clip(RoundedCornerShape(8.dp))
-            .background(Color(0xFF222222))
+            .background(AppPalette.groupBg)
             .padding(10.dp),
         verticalArrangement = Arrangement.spacedBy(8.dp),
     ) {
@@ -187,9 +133,6 @@ private fun RuleCard(
             verticalAlignment = Alignment.CenterVertically,
             horizontalArrangement = Arrangement.spacedBy(6.dp),
         ) {
-            // Reorder via up/down arrows. Drag-and-drop in Compose desktop
-            // requires extra deps — keep simple buttons until rule lists
-            // grow long enough that this becomes painful.
             ArrowButton("▲", enabled = onMoveUp != null, onClick = { onMoveUp?.invoke() })
             ArrowButton("▼", enabled = onMoveDown != null, onClick = { onMoveDown?.invoke() })
             NameField(
@@ -198,13 +141,9 @@ private fun RuleCard(
                 onChange = { onChange(rule.copy(name = it)) },
                 modifier = Modifier.weight(1f),
             )
-            Switch(
+            NativeToggle(
                 checked = rule.enabled,
                 onCheckedChange = { onChange(rule.copy(enabled = it)) },
-                colors = SwitchDefaults.colors(
-                    checkedTrackColor = AccentColor,
-                    checkedThumbColor = Color.Black,
-                ),
             )
             IconButton(
                 glyph = "×",
@@ -215,7 +154,7 @@ private fun RuleCard(
 
         // Outcome
         Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-            Text("Outcome:", color = Color(0xFFB0BEC5), style = MaterialTheme.typography.labelSmall)
+            NativeText("Outcome:", color = AppPalette.textSecondary, fontSize = 11.sp)
             for (option in TriFilter.entries) {
                 SegmentChip(option.name, selected = option == rule.outcome) {
                     onChange(rule.copy(outcome = option))
@@ -253,30 +192,12 @@ private fun NameField(
     onChange: (String) -> Unit,
     modifier: Modifier = Modifier,
 ) {
-    Box(
-        modifier
-            .clip(RoundedCornerShape(4.dp))
-            .background(Color(0xFF1A1A1A))
-            .padding(horizontal = 8.dp, vertical = 6.dp),
-    ) {
-        if (value.isEmpty()) {
-            Text(placeholder, color = Color(0x66FFFFFF), style = MaterialTheme.typography.bodySmall)
-        }
-        // String overload — Compose manages the cursor/selection internally,
-        // unlike the TextFieldValue overload where re-keying on `value` resets
-        // selection to 0 and makes typed characters appear right-to-left.
-        BasicTextField(
-            value = value,
-            onValueChange = onChange,
-            singleLine = true,
-            cursorBrush = SolidColor(AccentColor),
-            textStyle = TextStyle(
-                color = Color(0xFFE0E0E0),
-                fontSize = 13.sp,
-            ),
-            modifier = Modifier.fillMaxWidth(),
-        )
-    }
+    NativeTextField(
+        value = value,
+        onValueChange = onChange,
+        modifier = modifier,
+        placeholder = placeholder,
+    )
 }
 
 @Composable
@@ -297,25 +218,25 @@ private fun PredicateRow(
             modifier = Modifier.size(20.dp),
         )
         // Inversion (NOT) toggle, rendered as a small chip rather than a
-        // checkbox so the predicate-row stays one line on a 320 dp sidebar.
+        // checkbox so the predicate-row stays one line.
         Box(
             Modifier
                 .clip(RoundedCornerShape(4.dp))
-                .background(if (predicate.inverted) Color(0xFFE57373) else Color(0xFF2A2A2A))
+                .background(if (predicate.inverted) Color(0xFFE57373) else AppPalette.controlTrack)
                 .clickable { onChange(predicate.withInverted(!predicate.inverted)) }
                 .padding(horizontal = 6.dp, vertical = 4.dp),
         ) {
-            Text(
+            NativeText(
                 "not",
-                color = if (predicate.inverted) Color.Black else Color(0xFFCCCCCC),
+                color = if (predicate.inverted) Color.Black else AppPalette.textPrimary,
                 fontSize = 11.sp,
                 fontWeight = FontWeight.Medium,
             )
         }
-        Text(
+        NativeText(
             kindOf(predicate).label,
-            color = Color(0xFFE0E0E0),
-            style = MaterialTheme.typography.labelSmall,
+            color = AppPalette.textPrimary,
+            fontSize = 11.sp,
             modifier = Modifier.width(80.dp),
         )
         PredicateOperatorAndValue(
@@ -457,14 +378,14 @@ private fun <T> OpDropdown(
         Row(
             Modifier
                 .clip(RoundedCornerShape(4.dp))
-                .background(Color(0xFF2A2A2A))
+                .background(AppPalette.controlTrack)
                 .clickable { expanded = true }
                 .padding(horizontal = 8.dp, vertical = 4.dp),
             verticalAlignment = Alignment.CenterVertically,
             horizontalArrangement = Arrangement.spacedBy(4.dp),
         ) {
-            Text(label, color = Color(0xFFCCCCCC), fontSize = 11.sp, fontWeight = FontWeight.Medium)
-            Text("▾", color = Color(0xFF999999), fontSize = 9.sp)
+            NativeText(label, color = AppPalette.textPrimary, fontSize = 11.sp, fontWeight = FontWeight.Medium)
+            NativeText("▾", color = AppPalette.textSecondary, fontSize = 9.sp)
         }
         DropdownMenu(
             expanded = expanded,
@@ -490,22 +411,11 @@ private fun ValueTextField(
     keyboardType: KeyboardType,
     modifier: Modifier = Modifier,
 ) {
-    Box(
-        modifier
-            .clip(RoundedCornerShape(4.dp))
-            .background(Color(0xFF1A1A1A))
-            .padding(horizontal = 6.dp, vertical = 4.dp),
-    ) {
-        BasicTextField(
-            value = value,
-            onValueChange = onChange,
-            singleLine = true,
-            visualTransformation = VisualTransformation.None,
-            cursorBrush = SolidColor(AccentColor),
-            textStyle = TextStyle(color = Color(0xFFE0E0E0), fontSize = 11.sp),
-            modifier = Modifier.fillMaxWidth(),
-        )
-    }
+    NativeTextField(
+        value = value,
+        onValueChange = onChange,
+        modifier = modifier,
+    )
 }
 
 @Composable
@@ -515,14 +425,14 @@ private fun AddPredicateButton(onAdd: (PredicateKind) -> Unit) {
         Row(
             Modifier
                 .clip(RoundedCornerShape(4.dp))
-                .background(Color(0x22FFFFFF))
+                .background(AppPalette.controlTrack)
                 .clickable { expanded = true }
                 .padding(horizontal = 8.dp, vertical = 4.dp),
             verticalAlignment = Alignment.CenterVertically,
             horizontalArrangement = Arrangement.spacedBy(4.dp),
         ) {
-            Text("+ predicate", color = Color(0xFFCCCCCC), fontSize = 11.sp, fontWeight = FontWeight.Medium)
-            Text("▾", color = Color(0xFF999999), fontSize = 9.sp)
+            NativeText("+ predicate", color = AppPalette.textPrimary, fontSize = 11.sp, fontWeight = FontWeight.Medium)
+            NativeText("▾", color = AppPalette.textSecondary, fontSize = 9.sp)
         }
         DropdownMenu(
             expanded = expanded,
@@ -543,8 +453,8 @@ private fun AddPredicateButton(onAdd: (PredicateKind) -> Unit) {
 
 @Composable
 private fun ArrowButton(glyph: String, enabled: Boolean, onClick: () -> Unit) {
-    val bg = if (enabled) Color(0xFF2A2A2A) else Color(0xFF1A1A1A)
-    val fg = if (enabled) Color(0xFFCCCCCC) else Color(0xFF555555)
+    val bg = if (enabled) AppPalette.controlTrack else AppPalette.controlFill
+    val fg = if (enabled) AppPalette.textPrimary else AppPalette.textSecondary
     Box(
         Modifier
             .size(20.dp)
@@ -553,7 +463,7 @@ private fun ArrowButton(glyph: String, enabled: Boolean, onClick: () -> Unit) {
             .clickable(enabled = enabled, onClick = onClick),
         contentAlignment = Alignment.Center,
     ) {
-        Text(glyph, color = fg, fontSize = 9.sp, fontWeight = FontWeight.Bold)
+        NativeText(glyph, color = fg, fontSize = 9.sp, fontWeight = FontWeight.Bold)
     }
 }
 
@@ -563,18 +473,18 @@ private fun IconButton(glyph: String, onClick: () -> Unit, color: Color) {
         Modifier
             .size(22.dp)
             .clip(RoundedCornerShape(4.dp))
-            .background(Color(0x22FFFFFF))
+            .background(AppPalette.controlTrack)
             .clickable(onClick = onClick),
         contentAlignment = Alignment.Center,
     ) {
-        Text(glyph, color = color, fontSize = 14.sp, fontWeight = FontWeight.Bold)
+        NativeText(glyph, color = color, fontSize = 14.sp, fontWeight = FontWeight.Bold)
     }
 }
 
 @Composable
 private fun SegmentChip(text: String, selected: Boolean, onClick: () -> Unit) {
-    val bg = if (selected) AccentColor else Color(0xFF2A2A2A)
-    val fg = if (selected) Color.Black else Color(0xFFCCCCCC)
+    val bg = if (selected) AccentColor else AppPalette.controlTrack
+    val fg = if (selected) Color.White else AppPalette.textPrimary
     Box(
         Modifier
             .clip(RoundedCornerShape(4.dp))
@@ -582,7 +492,7 @@ private fun SegmentChip(text: String, selected: Boolean, onClick: () -> Unit) {
             .clickable(onClick = onClick)
             .padding(horizontal = 8.dp, vertical = 4.dp),
     ) {
-        Text(text, color = fg, fontSize = 11.sp)
+        NativeText(text, color = fg, fontSize = 11.sp)
     }
 }
 

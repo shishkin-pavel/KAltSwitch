@@ -56,3 +56,79 @@ fun rgbToColor(rgb: Long): Color {
     val b = (rgb and 0xFF).toInt()
     return Color(red = r, green = g, blue = b)
 }
+
+// ──────────────────────────── AppKit-mimicking palette ────────────────────────────
+
+/**
+ * Static colour set tuned to look like a stock macOS settings window in
+ * either Light or Dark appearance. Hand-picked from sampling Settings.app
+ * — the system colours aren't directly exposable through the Compose
+ * Multiplatform skiko backend without going through `NSColor`/AppKit, and
+ * a fixed palette is good enough for our uses (Settings + Inspector windows
+ * only; the switcher overlay keeps its own dark cinematic look).
+ */
+data class AppPaletteColors(
+    val isDark: Boolean,
+    /** Window backdrop. */
+    val windowBg: Color,
+    /** Group-box / card backdrop laid on the window. */
+    val groupBg: Color,
+    /** Hairline separator between rows. */
+    val divider: Color,
+    /** 1 dp inset border for group boxes. */
+    val groupBorder: Color,
+    /** Primary text — labels, headings. */
+    val textPrimary: Color,
+    /** Secondary text — value tags, hints, disabled labels. */
+    val textSecondary: Color,
+    /** Inactive control track / unselected pill bg. */
+    val controlTrack: Color,
+    /** Selected segment / pressed button backdrop. */
+    val controlSelected: Color,
+    /** Plain control fill (e.g. an unchecked switch's pill). */
+    val controlFill: Color,
+    /** Tab bar / toolbar backdrop, slightly different from windowBg so the
+     *  tab strip reads as a separate band. */
+    val toolbarBg: Color,
+)
+
+private val LightPalette = AppPaletteColors(
+    isDark = false,
+    windowBg = Color(0xFFECECEC),
+    groupBg = Color(0xFFF7F7F7),
+    divider = Color(0xFFD4D4D4),
+    groupBorder = Color(0xFFD8D8D8),
+    textPrimary = Color(0xFF1D1D1F),
+    textSecondary = Color(0xFF6C6C6E),
+    controlTrack = Color(0xFFD9D9D9),
+    controlSelected = Color(0xFFFFFFFF),
+    controlFill = Color(0xFFFFFFFF),
+    toolbarBg = Color(0xFFE6E6E6),
+)
+
+private val DarkPalette = AppPaletteColors(
+    isDark = true,
+    windowBg = Color(0xFF1E1E1E),
+    groupBg = Color(0xFF2A2A2A),
+    divider = Color(0xFF3A3A3A),
+    groupBorder = Color(0xFF3A3A3A),
+    textPrimary = Color(0xFFF2F2F7),
+    textSecondary = Color(0xFF8E8E93),
+    controlTrack = Color(0xFF3A3A3C),
+    controlSelected = Color(0xFF4A4A4C),
+    controlFill = Color(0xFF3A3A3C),
+    toolbarBg = Color(0xFF252525),
+)
+
+val LocalAppPalette = compositionLocalOf { LightPalette }
+
+val AppPalette: AppPaletteColors
+    @Composable
+    @ReadOnlyComposable
+    get() = LocalAppPalette.current
+
+@Composable
+fun ProvideAppPalette(isDark: Boolean, content: @Composable () -> Unit) {
+    val pal = if (isDark) DarkPalette else LightPalette
+    CompositionLocalProvider(LocalAppPalette provides pal, content = content)
+}

@@ -57,13 +57,6 @@ class WorldStore(initial: World = World(ActivationLog(), emptyMap(), emptyMap())
         _switcherSettings.value = s.sanitized()
     }
 
-    private val _inspectorVisible = MutableStateFlow(true)
-    val inspectorVisible: StateFlow<Boolean> = _inspectorVisible.asStateFlow()
-
-    fun setInspectorVisible(visible: Boolean) {
-        _inspectorVisible.value = visible
-    }
-
     private val _showMenubarIcon = MutableStateFlow(true)
     val showMenubarIcon: StateFlow<Boolean> = _showMenubarIcon.asStateFlow()
 
@@ -141,37 +134,40 @@ class WorldStore(initial: World = World(ActivationLog(), emptyMap(), emptyMap())
         _iconsByPid.update { it + (pid to png) }
     }
 
-    /** Window position + height + settings-only width. See AppConfig.windowFrame. */
-    private val _windowFrame = MutableStateFlow<com.shish.kaltswitch.config.WindowFrame?>(null)
-    val windowFrame: StateFlow<com.shish.kaltswitch.config.WindowFrame?> = _windowFrame.asStateFlow()
+    /** Settings window position + size. Updated by Swift on
+     *  `NSWindow.didMove` / `didEndLiveResize`. */
+    private val _settingsWindowFrame = MutableStateFlow<com.shish.kaltswitch.config.WindowFrame?>(null)
+    val settingsWindowFrame: StateFlow<com.shish.kaltswitch.config.WindowFrame?> = _settingsWindowFrame.asStateFlow()
 
-    fun setWindowFrame(frame: com.shish.kaltswitch.config.WindowFrame?) {
-        _windowFrame.value = frame
+    fun setSettingsWindowFrame(frame: com.shish.kaltswitch.config.WindowFrame?) {
+        _settingsWindowFrame.value = frame
     }
 
-    /** Swift-friendly variant taking primitives. */
-    fun saveWindowFrame(x: Double, y: Double, width: Double, height: Double) {
-        _windowFrame.value = com.shish.kaltswitch.config.WindowFrame(x, y, width, height)
+    fun saveSettingsWindowFrame(x: Double, y: Double, width: Double, height: Double) {
+        _settingsWindowFrame.value = com.shish.kaltswitch.config.WindowFrame(x, y, width, height)
     }
 
-    /** Update only the window's width (sidebar / settings-pane width).
-     *  Leaves origin and height untouched so the dragger inside Compose
-     *  doesn't have to know about the rest of the frame. No-op if the frame
-     *  hasn't been seeded yet — Swift will save it on next NSWindow event. */
-    fun saveSidebarWidth(width: Double) {
-        _windowFrame.update { it?.copy(width = width) }
+    /** Inspector window position + size. */
+    private val _inspectorWindowFrame = MutableStateFlow<com.shish.kaltswitch.config.WindowFrame?>(null)
+    val inspectorWindowFrame: StateFlow<com.shish.kaltswitch.config.WindowFrame?> = _inspectorWindowFrame.asStateFlow()
+
+    fun setInspectorWindowFrame(frame: com.shish.kaltswitch.config.WindowFrame?) {
+        _inspectorWindowFrame.value = frame
     }
 
-    private val _inspectorWidth = MutableStateFlow(480.0)
-    val inspectorWidth: StateFlow<Double> = _inspectorWidth.asStateFlow()
-
-    fun setInspectorWidth(width: Double) {
-        _inspectorWidth.value = width
+    fun saveInspectorWindowFrame(x: Double, y: Double, width: Double, height: Double) {
+        _inspectorWindowFrame.value = com.shish.kaltswitch.config.WindowFrame(x, y, width, height)
     }
 
-    /** Swift-friendly accessor — kept for symmetry with `saveWindowFrame`. */
-    fun saveInspectorWidth(width: Double) {
-        _inspectorWidth.value = width
+    /** Whether macOS is currently in dark mode. Pushed by Swift from
+     *  `NSApp.effectiveAppearance` (KVO) so the Compose theme provider can
+     *  swap palettes live. Default `false` (Light) — Swift seeds the real
+     *  value at launch before any window is shown. */
+    private val _isDarkMode = MutableStateFlow(false)
+    val isDarkMode: StateFlow<Boolean> = _isDarkMode.asStateFlow()
+
+    fun setIsDarkMode(dark: Boolean) {
+        _isDarkMode.value = dark
     }
 
     fun setAxTrusted(trusted: Boolean) {
@@ -330,10 +326,9 @@ class WorldStore(initial: World = World(ActivationLog(), emptyMap(), emptyMap())
      */
     fun applyConfig(cfg: AppConfig) {
         setFilters(cfg.filters)
-        setWindowFrame(cfg.windowFrame)
-        setInspectorWidth(cfg.inspectorWidth)
+        setSettingsWindowFrame(cfg.settingsWindowFrame)
+        setInspectorWindowFrame(cfg.inspectorWindowFrame)
         setSwitcherSettings(cfg.switcher)
-        setInspectorVisible(cfg.inspectorVisible)
         setShowMenubarIcon(cfg.showMenubarIcon)
         setLaunchAtLogin(cfg.launchAtLogin)
         setCurrentSpaceOnly(cfg.currentSpaceOnly)
@@ -354,28 +349,26 @@ class WorldStore(initial: World = World(ActivationLog(), emptyMap(), emptyMap())
     fun configFlow(): Flow<AppConfig> {
         val core = combine(
             filters,
-            windowFrame,
-            inspectorWidth,
+            settingsWindowFrame,
+            inspectorWindowFrame,
             switcherSettings,
-            inspectorVisible,
-        ) { filters, frame, inspW, switcher, inspectorVisible ->
+            showMenubarIcon,
+        ) { filters, settingsFrame, inspectorFrame, switcher, menubar ->
             AppConfig(
                 filters = filters,
-                windowFrame = frame,
-                inspectorWidth = inspW,
+                settingsWindowFrame = settingsFrame,
+                inspectorWindowFrame = inspectorFrame,
                 switcher = switcher,
-                inspectorVisible = inspectorVisible,
+                showMenubarIcon = menubar,
             )
         }
         return combine(
             core,
-            showMenubarIcon,
             launchAtLogin,
             currentSpaceOnly,
             accentColor,
-        ) { base, menubar, launchAtLogin, currentSpaceOnly, accent ->
+        ) { base, launchAtLogin, currentSpaceOnly, accent ->
             base.copy(
-                showMenubarIcon = menubar,
                 launchAtLogin = launchAtLogin,
                 currentSpaceOnly = currentSpaceOnly,
                 accentColor = accent,

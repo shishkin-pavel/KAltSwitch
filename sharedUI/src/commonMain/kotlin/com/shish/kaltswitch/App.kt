@@ -1,13 +1,8 @@
 package com.shish.kaltswitch
 
 import androidx.compose.foundation.background
-import androidx.compose.foundation.clickable
-import androidx.compose.foundation.gestures.Orientation
-import androidx.compose.foundation.gestures.draggable
-import androidx.compose.foundation.gestures.rememberDraggableState
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
-import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
@@ -23,21 +18,17 @@ import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
-import androidx.compose.ui.platform.LocalDensity
-import androidx.compose.material3.Button
-import androidx.compose.material3.ButtonDefaults
-import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.Slider
-import androidx.compose.material3.SliderDefaults
-import androidx.compose.material3.Switch
-import androidx.compose.material3.SwitchDefaults
-import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.saveable.rememberSaveable
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
@@ -54,70 +45,64 @@ import com.shish.kaltswitch.model.WindowView
 import com.shish.kaltswitch.model.World
 import com.shish.kaltswitch.model.filteredSnapshot
 
+// ─────────────────────────── Settings window content ───────────────────────────
+
+/**
+ * Top-level Compose root for the Settings window. Two tabs (General /
+ * Rules) sit at the top inside an AppKit-style segmented control; below
+ * it scrolls the active tab's content. Theme is driven by the Swift-side
+ * `NSAppearance` observer pushing into [com.shish.kaltswitch.store.WorldStore.isDarkMode];
+ * the caller wraps this composable in [ProvideAppPalette] + [ProvideAccent].
+ */
 @Composable
-fun App(
-    world: World,
-    axTrusted: Boolean = true,
-    activeAppPid: Int? = null,
-    activeWindowId: WindowId? = null,
-    filters: FilteringRules = FilteringRules(),
-    onFiltersChange: (FilteringRules) -> Unit = {},
-    switcherSettings: SwitcherSettings = SwitcherSettings(),
-    onSwitcherSettingsChange: (SwitcherSettings) -> Unit = {},
-    inspectorVisible: Boolean = true,
-    onInspectorVisibleChange: (Boolean) -> Unit = {},
-    showMenubarIcon: Boolean = true,
-    onShowMenubarIconChange: (Boolean) -> Unit = {},
-    launchAtLogin: Boolean = false,
-    onLaunchAtLoginChange: (Boolean) -> Unit = {},
-    sidebarWidth: Double = DefaultSidebarWidth,
-    onSidebarWidthChange: (Double) -> Unit = {},
-    onInspectorWidthChange: (Double) -> Unit = {},
-    currentSpaceOnly: Boolean = false,
-    onCurrentSpaceOnlyChange: (Boolean) -> Unit = {},
-    visibleSpaceIds: List<Long> = emptyList(),
-    accentColor: AccentColorChoice = AccentColorChoice.Custom(0xFFC107),
-    onAccentColorChange: (AccentColorChoice) -> Unit = {},
-    systemAccentRgb: Long? = null,
-    onGrantAxClick: () -> Unit = {},
+fun SettingsContent(
+    switcherSettings: SwitcherSettings,
+    onSwitcherSettingsChange: (SwitcherSettings) -> Unit,
+    showMenubarIcon: Boolean,
+    onShowMenubarIconChange: (Boolean) -> Unit,
+    launchAtLogin: Boolean,
+    onLaunchAtLoginChange: (Boolean) -> Unit,
+    currentSpaceOnly: Boolean,
+    onCurrentSpaceOnlyChange: (Boolean) -> Unit,
+    accentColor: AccentColorChoice,
+    onAccentColorChange: (AccentColorChoice) -> Unit,
+    filters: FilteringRules,
+    onFiltersChange: (FilteringRules) -> Unit,
 ) {
-    val snapshot = remember(world, filters, currentSpaceOnly, visibleSpaceIds) {
-        world.filteredSnapshot(filters, currentSpaceOnly, visibleSpaceIds)
-    }
-    val density = LocalDensity.current
-    val resolvedAccent = resolveAccent(accentColor, systemAccentRgb)
-    ProvideAccent(resolvedAccent) {
-    BoxWithConstraints(Modifier.fillMaxSize().background(Color(0xFF1E1E1E))) {
-        val totalWidthPx = with(density) { maxWidth.toPx() }
-        val handleWidthPx = with(density) { SeparatorWidth.toPx() }
-        val minSidebarPx = with(density) { MinSidebarWidth.toPx() }
-        val minInspectorPx = with(density) { MinInspectorWidth.toPx() }
-
-        // Clamp sidebar to a sensible range relative to the current window
-        // width — needed so launches at unusual sizes (or stale persisted
-        // widths from a wider window) don't blow out the inspector.
-        val effectiveSidebarPx = if (inspectorVisible) {
-            val sidebarPx = with(density) { sidebarWidth.dp.toPx() }
-            sidebarPx.coerceIn(
-                minimumValue = minSidebarPx,
-                maximumValue = (totalWidthPx - handleWidthPx - minInspectorPx).coerceAtLeast(minSidebarPx),
+    var selectedTab by rememberSaveable { mutableStateOf(0) }
+    val pal = AppPalette
+    Column(
+        Modifier
+            .fillMaxSize()
+            .background(pal.windowBg),
+    ) {
+        Box(
+            Modifier
+                .fillMaxWidth()
+                .background(pal.toolbarBg)
+                .padding(horizontal = 16.dp, vertical = 10.dp),
+            contentAlignment = Alignment.Center,
+        ) {
+            NativeTabBar(
+                items = listOf("General", "Rules"),
+                selectedIndex = selectedTab,
+                onSelect = { selectedTab = it },
             )
-        } else {
-            totalWidthPx
         }
-        val effectiveSidebarDp = with(density) { effectiveSidebarPx.toDp() }
-
-        Row(Modifier.fillMaxSize()) {
-            Column(
-                Modifier
-                    .width(effectiveSidebarDp)
-                    .fillMaxHeight()
-                    .background(Color(0xFF181818))
-                    .padding(12.dp)
-                    .verticalScroll(rememberScrollState()),
-                verticalArrangement = Arrangement.spacedBy(14.dp),
-            ) {
-                SettingsPanel(
+        Box(
+            Modifier
+                .fillMaxWidth()
+                .height(1.dp)
+                .background(pal.divider),
+        )
+        Box(
+            Modifier
+                .fillMaxSize()
+                .verticalScroll(rememberScrollState())
+                .padding(20.dp),
+        ) {
+            when (selectedTab) {
+                0 -> GeneralTab(
                     settings = switcherSettings,
                     onChange = onSwitcherSettingsChange,
                     showMenubarIcon = showMenubarIcon,
@@ -129,84 +114,265 @@ fun App(
                     accentColor = accentColor,
                     onAccentColorChange = onAccentColorChange,
                 )
-                Spacer(Modifier.height(2.dp))
-                FilteringRulesPanel(
+                1 -> FilteringRulesPanel(
                     filters = filters,
                     onChange = onFiltersChange,
-                    inspectorVisible = inspectorVisible,
-                    onToggleInspector = { onInspectorVisibleChange(!inspectorVisible) },
-                )
-            }
-            if (inspectorVisible) {
-                // Drag separator: shifts the sidebar/inspector boundary inside
-                // the same Compose canvas — the host window's overall width
-                // doesn't change. We persist both widths so toggling the
-                // inspector (which Swift uses to grow/shrink the window by
-                // exactly `inspectorWidth`) stays in sync.
-                DragHandle(
-                    onDrag = { dx ->
-                        val newSidebarPx = (effectiveSidebarPx + dx).coerceIn(
-                            minimumValue = minSidebarPx,
-                            maximumValue = totalWidthPx - handleWidthPx - minInspectorPx,
-                        )
-                        val newInspectorPx = totalWidthPx - newSidebarPx - handleWidthPx
-                        with(density) {
-                            onSidebarWidthChange(newSidebarPx.toDp().value.toDouble())
-                            onInspectorWidthChange(newInspectorPx.toDp().value.toDouble())
-                        }
-                    },
-                )
-                InspectorPanel(
-                    snapshot = snapshot,
-                    axTrusted = axTrusted,
-                    activeAppPid = activeAppPid,
-                    activeWindowId = activeWindowId,
-                    onGrantAxClick = onGrantAxClick,
-                    modifier = Modifier
-                        .fillMaxHeight()
-                        .padding(16.dp),
                 )
             }
         }
     }
+}
+
+// ──────────────────────── General tab — switcher knobs ───────────────────────
+
+@Composable
+private fun GeneralTab(
+    settings: SwitcherSettings,
+    onChange: (SwitcherSettings) -> Unit,
+    showMenubarIcon: Boolean,
+    onShowMenubarIconChange: (Boolean) -> Unit,
+    launchAtLogin: Boolean,
+    onLaunchAtLoginChange: (Boolean) -> Unit,
+    currentSpaceOnly: Boolean,
+    onCurrentSpaceOnlyChange: (Boolean) -> Unit,
+    accentColor: AccentColorChoice,
+    onAccentColorChange: (AccentColorChoice) -> Unit,
+) {
+    Column(verticalArrangement = Arrangement.spacedBy(14.dp)) {
+        NativeGroupBox(title = "Switcher timing") {
+            DelayRow(
+                label = "Show delay",
+                valueMs = settings.showDelayMs,
+                range = 0f..200f,
+                onChange = { onChange(settings.copy(showDelayMs = it)) },
+            )
+            NativeRowDivider()
+            DelayRow(
+                label = "Auto-advance after",
+                valueMs = settings.repeatInitialDelayMs,
+                range = 100f..1500f,
+                onChange = { onChange(settings.copy(repeatInitialDelayMs = it)) },
+            )
+            NativeRowDivider()
+            DelayRow(
+                label = "Auto-advance step",
+                valueMs = settings.repeatIntervalMs,
+                range = 30f..500f,
+                onChange = { onChange(settings.copy(repeatIntervalMs = it)) },
+            )
+            NativeRowDivider()
+            DelayRow(
+                label = "Title expand delay",
+                valueMs = settings.selectionExpandDelayMs,
+                range = 0f..1000f,
+                onChange = { onChange(settings.copy(selectionExpandDelayMs = it)) },
+            )
+        }
+        NativeGroupBox(title = "Layout") {
+            MaxWidthSetting(
+                mode = settings.maxWidthMode,
+                percent = settings.maxWidthPercent,
+                maxIcons = settings.maxIconsPerRow,
+                onChange = { mode, percent, maxIcons ->
+                    onChange(settings.copy(
+                        maxWidthMode = mode,
+                        maxWidthPercent = percent,
+                        maxIconsPerRow = maxIcons,
+                    ))
+                },
+            )
+            NativeRowDivider()
+            CellSizeRow(
+                percent = settings.cellSizePercent,
+                onChange = { onChange(settings.copy(cellSizePercent = it)) },
+            )
+        }
+        NativeGroupBox(title = "Behaviour") {
+            NativeRow(label = "Show menubar icon") {
+                NativeToggle(checked = showMenubarIcon, onCheckedChange = onShowMenubarIconChange)
+            }
+            NativeRowDivider()
+            NativeRow(label = "Launch at login") {
+                NativeToggle(checked = launchAtLogin, onCheckedChange = onLaunchAtLoginChange)
+            }
+            NativeRowDivider()
+            NativeRow(label = "Current space only") {
+                NativeToggle(checked = currentSpaceOnly, onCheckedChange = onCurrentSpaceOnlyChange)
+            }
+        }
+        NativeGroupBox(title = "Accent colour") {
+            AccentColorRow(
+                choice = accentColor,
+                onChange = onAccentColorChange,
+            )
+        }
     }
 }
 
-private val DefaultSidebarWidth = 320.0
-private val SeparatorWidth = 4.dp
-private val MinSidebarWidth = 240.dp
-private val MinInspectorWidth = 240.dp
-
 @Composable
-private fun DragHandle(onDrag: (Float) -> Unit) {
-    val state = rememberDraggableState { delta -> onDrag(delta) }
-    Box(
-        Modifier
-            .width(SeparatorWidth)
-            .fillMaxHeight()
-            .background(Color(0xFF101010))
-            .draggable(
-                orientation = Orientation.Horizontal,
-                state = state,
-            ),
-    )
+private fun DelayRow(
+    label: String,
+    valueMs: Long,
+    range: ClosedFloatingPointRange<Float>,
+    onChange: (Long) -> Unit,
+) {
+    NativeRow(label = label) {
+        Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            Box(Modifier.width(180.dp)) {
+                NativeSlider(
+                    value = valueMs.toFloat().coerceIn(range),
+                    onValueChange = { onChange(it.toLong()) },
+                    valueRange = range,
+                )
+            }
+            NativeText("${valueMs} ms", color = AppPalette.textSecondary, fontSize = 12.sp)
+        }
+    }
 }
 
-// ─────────── Inspector (right) ───────────
+@Composable
+private fun CellSizeRow(percent: Int, onChange: (Int) -> Unit) {
+    NativeRow(label = "Cell size") {
+        Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            Box(Modifier.width(180.dp)) {
+                NativeSlider(
+                    value = percent.toFloat().coerceIn(50f, 200f),
+                    onValueChange = { onChange(it.toInt().coerceIn(50, 200)) },
+                    valueRange = 50f..200f,
+                )
+            }
+            NativeText("$percent %", color = AppPalette.textSecondary, fontSize = 12.sp)
+        }
+    }
+}
+
+/**
+ * Max-panel-width row: a value-tagged slider with a tab switch above it
+ * for the cap unit. Both [percent] and [maxIcons] are kept in the
+ * settings so flipping the mode preserves whatever the user dialled in
+ * for each.
+ */
+@Composable
+private fun MaxWidthSetting(
+    mode: MaxSizeMode,
+    percent: Double,
+    maxIcons: Int,
+    onChange: (mode: MaxSizeMode, percent: Double, maxIcons: Int) -> Unit,
+) {
+    Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+        NativeRow(label = "Max panel width") {
+            Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                NativeTabBar(
+                    items = listOf("% of screen", "Icons / row"),
+                    selectedIndex = if (mode == MaxSizeMode.Percent) 0 else 1,
+                    onSelect = { idx ->
+                        val newMode = if (idx == 0) MaxSizeMode.Percent else MaxSizeMode.MaxIconsPerRow
+                        onChange(newMode, percent, maxIcons)
+                    },
+                )
+            }
+        }
+        NativeRow(label = "") {
+            Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                if (mode == MaxSizeMode.Percent) {
+                    Box(Modifier.width(180.dp)) {
+                        NativeSlider(
+                            value = (percent * 100).toFloat().coerceIn(30f, 100f),
+                            onValueChange = { onChange(mode, (it / 100.0).coerceIn(0.3, 1.0), maxIcons) },
+                            valueRange = 30f..100f,
+                        )
+                    }
+                    NativeText("${(percent * 100).toInt()} %", color = AppPalette.textSecondary, fontSize = 12.sp)
+                } else {
+                    Box(Modifier.width(180.dp)) {
+                        NativeSlider(
+                            value = maxIcons.toFloat().coerceIn(1f, 30f),
+                            onValueChange = { onChange(mode, percent, it.toInt().coerceIn(1, 50)) },
+                            valueRange = 1f..30f,
+                        )
+                    }
+                    NativeText("$maxIcons", color = AppPalette.textSecondary, fontSize = 12.sp)
+                }
+            }
+        }
+    }
+}
 
 @Composable
-private fun InspectorPanel(
-    snapshot: FilteredSnapshot,
-    axTrusted: Boolean,
-    activeAppPid: Int?,
-    activeWindowId: WindowId?,
-    onGrantAxClick: () -> Unit,
-    modifier: Modifier = Modifier,
+private fun AccentColorRow(
+    choice: AccentColorChoice,
+    onChange: (AccentColorChoice) -> Unit,
 ) {
-    Column(modifier, verticalArrangement = Arrangement.spacedBy(8.dp)) {
+    val isSystem = choice is AccentColorChoice.UseSystem
+    val customRgb = (choice as? AccentColorChoice.Custom)?.rgb ?: 0xFFC107L
+    NativeRow(label = "Use system colour") {
+        NativeToggle(
+            checked = isSystem,
+            onCheckedChange = { wantSystem ->
+                onChange(if (wantSystem) AccentColorChoice.UseSystem else AccentColorChoice.Custom(customRgb))
+            },
+        )
+    }
+    if (!isSystem) {
+        NativeRowDivider()
+        NativeRow(label = "Custom colour") {
+            Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                Box(
+                    Modifier
+                        .width(20.dp)
+                        .height(20.dp)
+                        .clip(RoundedCornerShape(4.dp))
+                        .background(rgbToColor(customRgb)),
+                )
+                Box(Modifier.width(90.dp)) {
+                    NativeTextField(
+                        value = customRgb.toString(16).padStart(6, '0').uppercase(),
+                        onValueChange = { raw ->
+                            val cleaned = raw.trimStart('#').take(6).uppercase()
+                            if (cleaned.length == 6) {
+                                cleaned.toLongOrNull(16)?.let { onChange(AccentColorChoice.Custom(it)) }
+                            }
+                        },
+                    )
+                }
+            }
+        }
+    }
+}
+
+// ─────────────────────────── Inspector window content ───────────────────────────
+
+/**
+ * Live snapshot view rendered in the dedicated Inspector window. Three
+ * sections (Show / Demote / Hide) listing apps with their windows. Same
+ * contents as the pre-split sidebar pane; just hosted in its own
+ * NSWindow now and themed via [LocalAppPalette].
+ */
+@Composable
+fun InspectorContent(
+    world: World,
+    axTrusted: Boolean,
+    activeAppPid: Int? = null,
+    activeWindowId: WindowId? = null,
+    filters: FilteringRules = FilteringRules(),
+    currentSpaceOnly: Boolean = false,
+    visibleSpaceIds: List<Long> = emptyList(),
+    onGrantAxClick: () -> Unit = {},
+) {
+    val pal = AppPalette
+    val snapshot = remember(world, filters, currentSpaceOnly, visibleSpaceIds) {
+        world.filteredSnapshot(filters, currentSpaceOnly, visibleSpaceIds)
+    }
+    Column(
+        Modifier
+            .fillMaxSize()
+            .background(pal.windowBg)
+            .padding(16.dp),
+        verticalArrangement = Arrangement.spacedBy(8.dp),
+    ) {
         if (!axTrusted) AxBanner(onGrantAxClick)
         LazyColumn(
-            Modifier.padding(start = 4.dp).fillMaxSize(),
+            Modifier.fillMaxSize(),
             verticalArrangement = Arrangement.spacedBy(2.dp),
         ) {
             modeSection("Show", snapshot.show, activeAppPid, activeWindowId)
@@ -229,11 +395,10 @@ private fun LazyListScope.modeSection(
     activeWindowId: WindowId?,
 ) {
     item {
-        Text(
+        NativeText(
             "$title (${apps.size})",
-            color = Color.White,
-            fontWeight = FontWeight.Bold,
-            style = MaterialTheme.typography.titleMedium,
+            fontSize = 13.sp,
+            fontWeight = FontWeight.SemiBold,
         )
     }
     items(apps) { entry -> AppRow(entry, activeAppPid, activeWindowId) }
@@ -245,21 +410,18 @@ private fun AxBanner(onGrantClick: () -> Unit) {
         Modifier
             .fillMaxWidth()
             .clip(RoundedCornerShape(6.dp))
-            .background(Color(0xFF3A2C0A))
+            .background(AccentColor.copy(alpha = 0.15f))
             .padding(12.dp),
         verticalAlignment = Alignment.CenterVertically,
         horizontalArrangement = Arrangement.spacedBy(12.dp),
     ) {
-        Text(
-            "⚠️  Accessibility permission not granted. Without it we can't see other apps' windows.",
-            color = AccentColor,
+        NativeText(
+            "⚠  Accessibility permission not granted. Without it the switcher can't see other apps' windows.",
             modifier = Modifier.weight(1f),
-            style = MaterialTheme.typography.bodyMedium,
+            color = AppPalette.textPrimary,
+            fontSize = 12.sp,
         )
-        Button(
-            onClick = onGrantClick,
-            colors = ButtonDefaults.buttonColors(containerColor = AccentColor, contentColor = Color.Black),
-        ) { Text("Grant…") }
+        NativeButton(label = "Grant…", onClick = onGrantClick, accent = true)
     }
 }
 
@@ -267,7 +429,7 @@ private fun AxBanner(onGrantClick: () -> Unit) {
 private fun AppRow(view: AppView, activeAppPid: Int?, activeWindowId: WindowId?) {
     val app = view.app
     val isActiveApp = app.pid == activeAppPid
-    val baseColor = if (isActiveApp) Color(0xFFFFFFFF) else Color(0xFFE0E0E0)
+    val baseColor = AppPalette.textPrimary
     val color = baseColor.dimmedFor(view.mode)
     val pictogram = appPictogram(app, isActiveApp)
     val tags = buildList {
@@ -277,11 +439,11 @@ private fun AppRow(view: AppView, activeAppPid: Int?, activeWindowId: WindowId?)
         app.bundleId?.let { add(it) }
     }.joinToString(" · ")
     Column {
-        Text(
+        NativeText(
             "$pictogram ${app.name}  ${tagText(tags)}",
             color = color,
             fontWeight = if (isActiveApp) FontWeight.Bold else FontWeight.Normal,
-            style = MaterialTheme.typography.bodyMedium,
+            fontSize = 12.sp,
         )
         view.windows.forEach { wv ->
             WindowSubtree(wv, appName = app.name, depth = 1, isInActiveApp = activeAppPid == app.pid, activeWindowId = activeWindowId)
@@ -306,18 +468,11 @@ private fun WindowSubtree(
 @Composable
 private fun WindowRow(view: WindowView, appName: String, depth: Int, isActive: Boolean) {
     val w = view.window
-    val baseColor = if (isActive) Color(0xFFFFFFFF) else Color(0xFF9E9E9E)
+    val baseColor = if (isActive) AppPalette.textPrimary else AppPalette.textSecondary
     val color = baseColor.dimmedFor(view.mode)
     val pictogram = windowPictogram(view, isActive)
     val tags = buildList {
         if (view.mode != TriFilter.Show) add(view.mode.name.lowercase())
-        // Show role/subrole verbatim (with the "AX" prefix AX returns).
-        // Pre-iter27 the inspector silently stripped the prefix on
-        // display, but rules stored "AXWindow" — meaning a user who
-        // typed "Window" into a RolePredicate(Eq) got no match while
-        // Contains worked as a substring. Honest naming closes the
-        // gap: what you see in the inspector is what you put in the
-        // rule.
         if (!w.role.isNullOrBlank()) add("role: " + w.role)
         if (!w.subrole.isNullOrBlank()) add("subrole: " + w.subrole)
         if (w.isMain) add("main")
@@ -325,11 +480,11 @@ private fun WindowRow(view: WindowView, appName: String, depth: Int, isActive: B
         if (view.children.isNotEmpty()) add("${view.children.size} child")
     }.joinToString(" · ")
     val indent = "    ".repeat(depth)
-    Text(
+    NativeText(
         "$indent$pictogram ${effectiveWindowTitle(w.title, appName)}  ${tagText(tags)}",
         color = color,
         fontWeight = if (isActive) FontWeight.SemiBold else FontWeight.Normal,
-        style = MaterialTheme.typography.bodySmall,
+        fontSize = 11.sp,
     )
 }
 
@@ -356,363 +511,8 @@ private fun policyTag(p: AppActivationPolicy): String = when (p) {
 
 private fun tagText(s: String): String = if (s.isBlank()) "" else "  · $s"
 
-/** Visually weaken a color based on filter mode so demoted/hidden rows recede. */
 private fun Color.dimmedFor(mode: TriFilter): Color = when (mode) {
     TriFilter.Show -> this
     TriFilter.Demote -> this.copy(alpha = 0.65f)
     TriFilter.Hide -> this.copy(alpha = 0.35f)
 }
-
-// ─────────── Settings panel (left) ───────────
-
-@Composable
-private fun SettingsPanel(
-    settings: SwitcherSettings,
-    onChange: (SwitcherSettings) -> Unit,
-    showMenubarIcon: Boolean,
-    onShowMenubarIconChange: (Boolean) -> Unit,
-    launchAtLogin: Boolean,
-    onLaunchAtLoginChange: (Boolean) -> Unit,
-    currentSpaceOnly: Boolean,
-    onCurrentSpaceOnlyChange: (Boolean) -> Unit,
-    accentColor: AccentColorChoice,
-    onAccentColorChange: (AccentColorChoice) -> Unit,
-) {
-    Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
-        Text(
-            "Settings",
-            color = Color.White,
-            fontWeight = FontWeight.SemiBold,
-            style = MaterialTheme.typography.labelLarge,
-        )
-        Spacer(Modifier.height(4.dp))
-        DelaySlider(
-            label = "Show delay",
-            valueMs = settings.showDelayMs,
-            range = 0f..200f,
-            onChange = { onChange(settings.copy(showDelayMs = it)) },
-        )
-        // Preview group: toggle + delay slider. Disabled controller-side
-        // (see SwitcherController.schedulePreview) so the UI is hidden but
-        // the underlying SwitcherSettings fields stay so persisted
-        // configs round-trip cleanly. Reviving preview = uncomment this
-        // block plus the call sites + Swift wiring.
-        // ToggleRow(
-        //     label = "Preview-raise on hover",
-        //     checked = settings.previewEnabled,
-        //     onCheckedChange = { onChange(settings.copy(previewEnabled = it)) },
-        // )
-        // if (settings.previewEnabled) {
-        //     Box(Modifier.padding(start = 16.dp)) {
-        //         DelaySlider(
-        //             label = "Preview delay",
-        //             valueMs = settings.previewDelayMs,
-        //             range = 50f..1000f,
-        //             onChange = { onChange(settings.copy(previewDelayMs = it)) },
-        //         )
-        //     }
-        // }
-        DelaySlider(
-            label = "Auto-advance after",
-            valueMs = settings.repeatInitialDelayMs,
-            range = 100f..1500f,
-            onChange = { onChange(settings.copy(repeatInitialDelayMs = it)) },
-        )
-        DelaySlider(
-            label = "Auto-advance step",
-            valueMs = settings.repeatIntervalMs,
-            range = 30f..500f,
-            onChange = { onChange(settings.copy(repeatIntervalMs = it)) },
-        )
-        DelaySlider(
-            label = "Selection expand delay",
-            valueMs = settings.selectionExpandDelayMs,
-            range = 0f..1000f,
-            onChange = { onChange(settings.copy(selectionExpandDelayMs = it)) },
-        )
-        MaxWidthSetting(
-            mode = settings.maxWidthMode,
-            percent = settings.maxWidthPercent,
-            dp = settings.maxWidthDp,
-            onChange = { mode, percent, dp ->
-                onChange(settings.copy(
-                    maxWidthMode = mode,
-                    maxWidthPercent = percent,
-                    maxWidthDp = dp,
-                ))
-            },
-        )
-        CellSizeSlider(
-            percent = settings.cellSizePercent,
-            onChange = { onChange(settings.copy(cellSizePercent = it)) },
-        )
-        ToggleRow(
-            label = "Show menubar icon",
-            checked = showMenubarIcon,
-            onCheckedChange = onShowMenubarIconChange,
-        )
-        ToggleRow(
-            label = "Launch at login",
-            checked = launchAtLogin,
-            onCheckedChange = onLaunchAtLoginChange,
-        )
-        ToggleRow(
-            label = "Current space only",
-            checked = currentSpaceOnly,
-            onCheckedChange = onCurrentSpaceOnlyChange,
-        )
-        Spacer(Modifier.height(2.dp))
-        AccentColorRow(
-            choice = accentColor,
-            onChange = onAccentColorChange,
-        )
-    }
-}
-
-/**
- * Two-row "Accent colour" widget: a Use-system toggle and (when off) a hex
- * input the user types directly into. We accept 6-digit hex with or without
- * a leading `#`; bad input is silently ignored so partial typing doesn't
- * spam invalid `setAccentColor` calls.
- */
-@Composable
-private fun AccentColorRow(
-    choice: AccentColorChoice,
-    onChange: (AccentColorChoice) -> Unit,
-) {
-    val isSystem = choice is AccentColorChoice.UseSystem
-    val customRgb = (choice as? AccentColorChoice.Custom)?.rgb ?: 0xFFC107L
-    ToggleRow(
-        label = "Use system accent color",
-        checked = isSystem,
-        onCheckedChange = { wantSystem ->
-            onChange(if (wantSystem) AccentColorChoice.UseSystem else AccentColorChoice.Custom(customRgb))
-        },
-    )
-    if (!isSystem) {
-        Row(
-            Modifier.fillMaxWidth().padding(top = 4.dp),
-            verticalAlignment = Alignment.CenterVertically,
-            horizontalArrangement = Arrangement.spacedBy(8.dp),
-        ) {
-            Text(
-                "Custom color",
-                color = Color(0xFFE0E0E0),
-                style = MaterialTheme.typography.labelSmall,
-                modifier = Modifier.weight(1f),
-            )
-            // Visual swatch + hex input. Click-to-edit happens via the
-            // BasicTextField; the swatch reflects the currently-stored
-            // RGB so the user has a feedback loop while typing.
-            Box(
-                Modifier
-                    .width(20.dp)
-                    .height(20.dp)
-                    .clip(RoundedCornerShape(4.dp))
-                    .background(rgbToColor(customRgb)),
-            )
-            HexField(
-                rgb = customRgb,
-                onChange = { onChange(AccentColorChoice.Custom(it)) },
-            )
-        }
-    }
-}
-
-@Composable
-private fun HexField(rgb: Long, onChange: (Long) -> Unit) {
-    val text = rgb.toString(16).padStart(6, '0').uppercase()
-    Box(
-        Modifier
-            .width(80.dp)
-            .clip(RoundedCornerShape(4.dp))
-            .background(Color(0xFF1A1A1A))
-            .padding(horizontal = 6.dp, vertical = 4.dp),
-    ) {
-        androidx.compose.foundation.text.BasicTextField(
-            value = text,
-            onValueChange = { raw ->
-                val cleaned = raw.trimStart('#').take(6).uppercase()
-                if (cleaned.length == 6) {
-                    cleaned.toLongOrNull(16)?.let(onChange)
-                }
-            },
-            singleLine = true,
-            cursorBrush = androidx.compose.ui.graphics.SolidColor(AccentColor),
-            textStyle = androidx.compose.ui.text.TextStyle(
-                color = Color(0xFFE0E0E0),
-                fontSize = 12.sp,
-            ),
-        )
-    }
-}
-
-@Composable
-private fun ToggleRow(
-    label: String,
-    checked: Boolean,
-    onCheckedChange: (Boolean) -> Unit,
-) {
-    Row(
-        Modifier.fillMaxWidth().padding(top = 4.dp),
-        verticalAlignment = Alignment.CenterVertically,
-        horizontalArrangement = Arrangement.spacedBy(8.dp),
-    ) {
-        Text(
-            label,
-            color = Color(0xFFE0E0E0),
-            style = MaterialTheme.typography.labelSmall,
-            modifier = Modifier.weight(1f),
-        )
-        Switch(
-            checked = checked,
-            onCheckedChange = onCheckedChange,
-            colors = SwitchDefaults.colors(
-                checkedTrackColor = AccentColor,
-                checkedThumbColor = Color.Black,
-            ),
-        )
-    }
-}
-
-/**
- * Max-panel-width row: a value-tagged slider plus a "use absolute pixels"
- * toggle. Both [percent] and [dp] are kept in the underlying settings so
- * flipping the toggle preserves whatever the user dialled in for each
- * unit. Slider ranges match `SwitcherSettings.sanitized`'s clamps so a
- * user can't drive the value into an unusable region from the UI.
- */
-@Composable
-private fun MaxWidthSetting(
-    mode: MaxSizeMode,
-    percent: Double,
-    dp: Double,
-    onChange: (mode: MaxSizeMode, percent: Double, dp: Double) -> Unit,
-) {
-    val sliderColors = SliderDefaults.colors(
-        thumbColor = AccentColor,
-        activeTrackColor = AccentColor,
-        inactiveTrackColor = Color(0x33FFFFFF),
-    )
-    Column(verticalArrangement = Arrangement.spacedBy(0.dp)) {
-        Row(
-            Modifier.fillMaxWidth(),
-            horizontalArrangement = Arrangement.SpaceBetween,
-        ) {
-            Text(
-                "Max panel width",
-                color = Color(0xFFE0E0E0),
-                style = MaterialTheme.typography.labelSmall,
-            )
-            Text(
-                if (mode == MaxSizeMode.Percent) "${(percent * 100).toInt()} %" else "${dp.toInt()} px",
-                color = AccentColor,
-                fontWeight = FontWeight.Medium,
-                style = MaterialTheme.typography.labelSmall,
-            )
-        }
-        if (mode == MaxSizeMode.Percent) {
-            Slider(
-                value = (percent * 100).toFloat().coerceIn(30f, 100f),
-                onValueChange = { onChange(mode, (it / 100.0).coerceIn(0.3, 1.0), dp) },
-                valueRange = 30f..100f,
-                colors = sliderColors,
-                modifier = Modifier.height(20.dp),
-            )
-        } else {
-            Slider(
-                value = dp.toFloat().coerceIn(400f, 3000f),
-                onValueChange = { onChange(mode, percent, it.toDouble().coerceIn(400.0, 3000.0)) },
-                valueRange = 400f..3000f,
-                colors = sliderColors,
-                modifier = Modifier.height(20.dp),
-            )
-        }
-        ToggleRow(
-            label = "Use absolute pixel value",
-            checked = mode == MaxSizeMode.Dp,
-            onCheckedChange = { usePixels ->
-                onChange(if (usePixels) MaxSizeMode.Dp else MaxSizeMode.Percent, percent, dp)
-            },
-        )
-    }
-}
-
-/**
- * Slider for the switcher overlay icon-and-cell scale. 100 % = stock
- * sizes; the overlay applies the factor only to the app-icon visual and
- * its enclosing `AppCell` (size, padding, corner, width range) — text
- * and panel-level paddings stay unscaled.
- */
-@Composable
-private fun CellSizeSlider(
-    percent: Int,
-    onChange: (Int) -> Unit,
-) {
-    Column(verticalArrangement = Arrangement.spacedBy(0.dp)) {
-        Row(
-            Modifier.fillMaxWidth(),
-            horizontalArrangement = Arrangement.SpaceBetween,
-        ) {
-            Text(
-                "Cell size",
-                color = Color(0xFFE0E0E0),
-                style = MaterialTheme.typography.labelSmall,
-            )
-            Text(
-                "${percent} %",
-                color = AccentColor,
-                fontWeight = FontWeight.Medium,
-                style = MaterialTheme.typography.labelSmall,
-            )
-        }
-        Slider(
-            value = percent.toFloat().coerceIn(50f, 200f),
-            onValueChange = { onChange(it.toInt().coerceIn(50, 200)) },
-            valueRange = 50f..200f,
-            colors = SliderDefaults.colors(
-                thumbColor = AccentColor,
-                activeTrackColor = AccentColor,
-                inactiveTrackColor = Color(0x33FFFFFF),
-            ),
-            modifier = Modifier.height(20.dp),
-        )
-    }
-}
-
-@Composable
-private fun DelaySlider(
-    label: String,
-    valueMs: Long,
-    range: ClosedFloatingPointRange<Float>,
-    onChange: (Long) -> Unit,
-) {
-    // macOS settings-style row: label left, value right, slider underneath
-    // with reduced height. labelSmall keeps it visually quiet.
-    Column(verticalArrangement = Arrangement.spacedBy(0.dp)) {
-        Row(
-            Modifier.fillMaxWidth(),
-            horizontalArrangement = Arrangement.SpaceBetween,
-        ) {
-            Text(label, color = Color(0xFFE0E0E0), style = MaterialTheme.typography.labelSmall)
-            Text(
-                "${valueMs} ms",
-                color = AccentColor,
-                fontWeight = FontWeight.Medium,
-                style = MaterialTheme.typography.labelSmall,
-            )
-        }
-        Slider(
-            value = valueMs.toFloat().coerceIn(range),
-            onValueChange = { onChange(it.toLong()) },
-            valueRange = range,
-            colors = SliderDefaults.colors(
-                thumbColor = AccentColor,
-                activeTrackColor = AccentColor,
-                inactiveTrackColor = Color(0x33FFFFFF),
-            ),
-            modifier = Modifier.height(20.dp),
-        )
-    }
-}
-

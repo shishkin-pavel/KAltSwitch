@@ -202,10 +202,15 @@ fun SwitcherOverlay(
                         // to enforce the cap here on the wrapper.
                         val sceneWidth = constraints.maxWidth
                         val sceneHeight = constraints.maxHeight
+                        // `MaxIconsPerRow` mode caps the row count via
+                        // `FlowRow.maxItemsInEachRow` (see SwitcherPanel).
+                        // No width cap here — the panel grows naturally
+                        // until that row count is reached, with sceneWidth
+                        // as the only ultimate bound.
                         val capPx = if (switcherSettings.maxWidthMode == MaxSizeMode.Percent) {
                             (sceneWidth * switcherSettings.maxWidthPercent).toInt()
                         } else {
-                            switcherSettings.maxWidthDp.toFloat().dp.toPx().toInt()
+                            sceneWidth
                         }
                         val effectiveMaxWidth = capPx.coerceIn(0, sceneWidth)
                         // Override parent maxHeight so FlowRow can wrap
@@ -241,7 +246,20 @@ fun SwitcherOverlay(
                         }
                     }
             ) {
-                SwitcherPanel(ui, iconsByPid, axTrusted, onPointAt, onCommit, onGrantAxClick)
+                val maxItemsPerRow = if (switcherSettings.maxWidthMode == MaxSizeMode.MaxIconsPerRow) {
+                    switcherSettings.maxIconsPerRow
+                } else {
+                    Int.MAX_VALUE
+                }
+                SwitcherPanel(
+                    ui = ui,
+                    iconsByPid = iconsByPid,
+                    axTrusted = axTrusted,
+                    onPointAt = onPointAt,
+                    onCommit = onCommit,
+                    onGrantAxClick = onGrantAxClick,
+                    maxItemsPerRow = maxItemsPerRow,
+                )
             }
         }
     }
@@ -545,6 +563,7 @@ private fun SwitcherPanel(
     onPointAt: (appIndex: Int, windowIndex: Int?) -> Unit,
     onCommit: () -> Unit,
     onGrantAxClick: () -> Unit,
+    maxItemsPerRow: Int,
 ) {
     val state = ui.state
     val entries = state.snapshot.all
@@ -684,6 +703,7 @@ private fun SwitcherPanel(
                 FlowRow(
                     horizontalArrangement = Arrangement.spacedBy(6.dp, Alignment.CenterHorizontally),
                     verticalArrangement = Arrangement.spacedBy(8.dp),
+                    maxItemsInEachRow = maxItemsPerRow,
                 ) {
                     showEntries.forEachIndexed { showIndex, entry ->
                         cellsByPid.getValue(entry.app.pid)(

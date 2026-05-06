@@ -1,5 +1,9 @@
 package com.shish.kaltswitch
 
+import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.darkColorScheme
+import androidx.compose.material3.lightColorScheme
+import androidx.compose.runtime.Composable
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import com.shish.kaltswitch.config.ConfigStore
@@ -54,14 +58,8 @@ val switcherController = SwitcherController(
 /** Lifetime scope for cross-boundary observers. Cancelled on app termination. */
 private val bridgeScope = CoroutineScope(Dispatchers.Main)
 
-/**
- * Subscribe Swift to overlay session-active transitions. `active == true` means a
- * switcher session has just started — the overlay panel should be ordered front
- * and made key (even if it's still inside `showDelay` and visually transparent),
- * because making it key from t=0 is what lets `NSPanel.sendEvent` see the
- * modifier-release `flagsChanged` events without relying on AX-permission-gated
- * `CGEventTap`.
- */
+// ───────────────────────── Swift-facing observers ─────────────────────────
+
 fun observeSwitcherSession(onChange: (Boolean) -> Unit) {
     switcherController.ui
         .map { it != null }
@@ -70,9 +68,6 @@ fun observeSwitcherSession(onChange: (Boolean) -> Unit) {
         .launchIn(bridgeScope)
 }
 
-/** Subscribe Swift to overlay visible transitions (post-`showDelay`). The panel
- *  toggles its `alphaValue` between 0 and 1 on this signal so the contents only
- *  appear after the delay, while the panel itself stays key from session start. */
 fun observeSwitcherVisibility(onChange: (Boolean) -> Unit) {
     switcherController.ui
         .map { it?.visible == true }
@@ -81,32 +76,18 @@ fun observeSwitcherVisibility(onChange: (Boolean) -> Unit) {
         .launchIn(bridgeScope)
 }
 
-/** Subscribe Swift to inspector-visibility transitions so the inspector
- *  window's title can switch between "Settings" and "Settings/Inspector".
- *  StateFlow is already conflated, so no extra `distinctUntilChanged`. */
-fun observeInspectorVisible(onChange: (Boolean) -> Unit) {
-    store.inspectorVisible
-        .onEach(onChange)
-        .launchIn(bridgeScope)
-}
-
-/** Whether the menubar status item should be installed. */
 fun observeShowMenubarIcon(onChange: (Boolean) -> Unit) {
     store.showMenubarIcon
         .onEach(onChange)
         .launchIn(bridgeScope)
 }
 
-/** Auto-launch at login (SMAppService on the Swift side). */
 fun observeLaunchAtLogin(onChange: (Boolean) -> Unit) {
     store.launchAtLogin
         .onEach(onChange)
         .launchIn(bridgeScope)
 }
 
-/** Compose-reported visible-panel size in dp, used by Swift to resize
- *  the `NSPanel` to track the visible content rect on every layout pass.
- *  `null` means there's no active session. */
 fun observeSwitcherPanelSize(onChange: (Double, Double) -> Unit, onCleared: () -> Unit) {
     store.switcherPanelSize
         .onEach { size ->
@@ -115,64 +96,100 @@ fun observeSwitcherPanelSize(onChange: (Double, Double) -> Unit, onCleared: () -
         .launchIn(bridgeScope)
 }
 
-fun AttachMainComposeView(
-    window: NSWindow,
-): ComposeNSViewDelegate = ComposeNSViewDelegate(
+// ─────────────────────────── Theme provider ───────────────────────────
+
+/**
+ * Wraps Compose content in: AppPalette (our hand-tuned light/dark colours),
+ * MaterialTheme (so any leftover Material widgets follow the same theme),
+ * and the user's accent override.
+ */
+@Composable
+private fun AppShell(content: @Composable () -> Unit) {
+    val isDark by store.isDarkMode.collectAsState()
+    val accentColor by store.accentColor.collectAsState()
+    val systemAccentRgb by store.systemAccentRgb.collectAsState()
+    val accent = resolveAccent(accentColor, systemAccentRgb)
+    val colorScheme = if (isDark) darkColorScheme() else lightColorScheme()
+    ProvideAppPalette(isDark) {
+        ProvideAccent(accent) {
+            MaterialTheme(colorScheme = colorScheme, content = content)
+        }
+    }
+}
+
+// ─────────────────────────── Window-level entries ───────────────────────────
+
+/**
+ * Compose host for the **Settings** window. Renders [SettingsContent] —
+ * General + Rules tabs with native-mimicking controls.
+ */
+fun AttachSettingsView(window: NSWindow): ComposeNSViewDelegate = ComposeNSViewDelegate(
     window = window,
     content = {
-        val world by store.state.collectAsState()
-        val axTrusted by store.axTrusted.collectAsState()
-        val activeAppPid by store.activeAppPid.collectAsState()
-        val activeWindowId by store.activeWindowId.collectAsState()
-        val filters by store.filters.collectAsState()
-        val switcherSettings by store.switcherSettings.collectAsState()
-        val inspectorVisible by store.inspectorVisible.collectAsState()
-        val showMenubarIcon by store.showMenubarIcon.collectAsState()
-        val launchAtLogin by store.launchAtLogin.collectAsState()
-        val currentSpaceOnly by store.currentSpaceOnly.collectAsState()
-        val visibleSpaceIds by store.visibleSpaceIds.collectAsState()
-        val accentColor by store.accentColor.collectAsState()
-        val systemAccentRgb by store.systemAccentRgb.collectAsState()
-        val windowFrame by store.windowFrame.collectAsState()
-        // Sidebar width is stored alongside the rest of the window frame —
-        // when the inspector is hidden it's the whole window's width, when
-        // visible it's the left pane up to the draggable separator.
-        val sidebarWidth = windowFrame?.width ?: 320.0
-        App(
-            world = world,
-            axTrusted = axTrusted,
-            activeAppPid = activeAppPid,
-            activeWindowId = activeWindowId,
-            filters = filters,
-            onFiltersChange = { store.setFilters(it) },
-            switcherSettings = switcherSettings,
-            onSwitcherSettingsChange = { store.setSwitcherSettings(it) },
-            inspectorVisible = inspectorVisible,
-            onInspectorVisibleChange = { store.setInspectorVisible(it) },
-            showMenubarIcon = showMenubarIcon,
-            onShowMenubarIconChange = { store.setShowMenubarIcon(it) },
-            launchAtLogin = launchAtLogin,
-            onLaunchAtLoginChange = { store.setLaunchAtLogin(it) },
-            sidebarWidth = sidebarWidth,
-            onSidebarWidthChange = { store.saveSidebarWidth(it) },
-            onInspectorWidthChange = { store.saveInspectorWidth(it) },
-            currentSpaceOnly = currentSpaceOnly,
-            onCurrentSpaceOnlyChange = { store.setCurrentSpaceOnly(it) },
-            visibleSpaceIds = visibleSpaceIds,
-            accentColor = accentColor,
-            onAccentColorChange = { store.setAccentColor(it) },
-            systemAccentRgb = systemAccentRgb,
-            onGrantAxClick = {
-                val granted = requestAxPermission()
-                store.setAxTrusted(granted)
-            },
-        )
+        AppShell {
+            val switcherSettings by store.switcherSettings.collectAsState()
+            val showMenubarIcon by store.showMenubarIcon.collectAsState()
+            val launchAtLogin by store.launchAtLogin.collectAsState()
+            val currentSpaceOnly by store.currentSpaceOnly.collectAsState()
+            val accentColor by store.accentColor.collectAsState()
+            val filters by store.filters.collectAsState()
+            SettingsContent(
+                switcherSettings = switcherSettings,
+                onSwitcherSettingsChange = { store.setSwitcherSettings(it) },
+                showMenubarIcon = showMenubarIcon,
+                onShowMenubarIconChange = { store.setShowMenubarIcon(it) },
+                launchAtLogin = launchAtLogin,
+                onLaunchAtLoginChange = { store.setLaunchAtLogin(it) },
+                currentSpaceOnly = currentSpaceOnly,
+                onCurrentSpaceOnlyChange = { store.setCurrentSpaceOnly(it) },
+                accentColor = accentColor,
+                onAccentColorChange = { store.setAccentColor(it) },
+                filters = filters,
+                onFiltersChange = { store.setFilters(it) },
+            )
+        }
     },
 )
 
 /**
- * Compose content host for the switcher overlay panel (`NSPanel` provided by Swift).
+ * Compose host for the **Inspector** window. Renders [InspectorContent] —
+ * the live snapshot of apps and windows after filtering.
+ */
+fun AttachInspectorView(window: NSWindow): ComposeNSViewDelegate = ComposeNSViewDelegate(
+    window = window,
+    content = {
+        AppShell {
+            val world by store.state.collectAsState()
+            val axTrusted by store.axTrusted.collectAsState()
+            val activeAppPid by store.activeAppPid.collectAsState()
+            val activeWindowId by store.activeWindowId.collectAsState()
+            val filters by store.filters.collectAsState()
+            val currentSpaceOnly by store.currentSpaceOnly.collectAsState()
+            val visibleSpaceIds by store.visibleSpaceIds.collectAsState()
+            InspectorContent(
+                world = world,
+                axTrusted = axTrusted,
+                activeAppPid = activeAppPid,
+                activeWindowId = activeWindowId,
+                filters = filters,
+                currentSpaceOnly = currentSpaceOnly,
+                visibleSpaceIds = visibleSpaceIds,
+                onGrantAxClick = {
+                    val granted = requestAxPermission()
+                    store.setAxTrusted(granted)
+                },
+            )
+        }
+    },
+)
+
+/**
+ * Compose host for the switcher overlay panel (`NSPanel` provided by Swift).
  * Renders [SwitcherOverlay] when a session is active and visible; otherwise empty.
+ *
+ * Stays on its own dark cinematic palette regardless of system appearance —
+ * the overlay is composited over the active screen contents and a light
+ * theme would clash. Only the accent is shared with the rest of the app.
  */
 fun AttachSwitcherOverlay(window: NSWindow): ComposeNSViewDelegate = ComposeNSViewDelegate(
     window = window,
@@ -184,21 +201,6 @@ fun AttachSwitcherOverlay(window: NSWindow): ComposeNSViewDelegate = ComposeNSVi
         val switcherSettings by store.switcherSettings.collectAsState()
         val axTrusted by store.axTrusted.collectAsState()
         val current = ui
-        // Render whenever there's a session — even during showDelay
-        // (`current.visible == false`). The Swift panel's alphaValue
-        // is what actually hides the overlay during showDelay (it's
-        // 0 until observeSwitcherVisibility says visible=true).
-        // Rendering during showDelay matters for two reasons:
-        //   * by the time alpha flips to 1, Compose has already
-        //     composed + laid out + rendered the cells, so the metal
-        //     layer holds the final frame and the reveal is
-        //     instantaneous — gating rendering would leave the layer
-        //     empty for one frame after alpha=1 and produce a brief
-        //     blank flash;
-        //   * `onPanelSize` fires from layout, so the Swift panel
-        //     reaches the natural-content size during showDelay too,
-        //     instead of snapping from `lastUsedSize` to the right
-        //     size only after reveal.
         if (current != null) {
             ProvideAccent(resolveAccent(accentColor, systemAccentRgb)) {
                 SwitcherOverlay(

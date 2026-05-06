@@ -37,17 +37,21 @@ data class WindowFrame(
 )
 
 /**
- * Selector for how a max-size value is interpreted: as a fraction of the
- * containing screen's `visibleFrame` ([Percent]) or as an absolute pixel/point
- * count ([Dp]). Stored alongside both candidate values so toggling between
- * modes preserves whatever was last entered for each.
+ * How the switcher's per-row width cap is interpreted: as a fraction of
+ * the session screen's `visibleFrame.width` ([Percent]) or as a hard cap
+ * on the number of icon cells per row ([MaxIconsPerRow]).
+ *
+ * The two values are stored alongside each other so flipping the mode
+ * preserves whatever the user dialled in for each. `MaxIconsPerRow`
+ * feeds `FlowRow.maxItemsInEachRow` directly — wider windows then leave
+ * trailing whitespace rather than packing extra cells.
  */
 @Serializable
-enum class MaxSizeMode { Percent, Dp }
+enum class MaxSizeMode { Percent, MaxIconsPerRow }
 
 /**
- * Switcher behaviour knobs. Surfaced in the inspector's Settings panel and
- * read live by [com.shish.kaltswitch.switcher.SwitcherController].
+ * Switcher behaviour knobs. Surfaced in the Settings window's General tab
+ * and read live by [com.shish.kaltswitch.switcher.SwitcherController].
  *
  * Modifier choice (cmd vs alt) is intentionally absent — changing it requires
  * re-registering the global Carbon hotkey and updating the panel's cmd-release
@@ -68,16 +72,15 @@ data class SwitcherSettings(
     val repeatInitialDelayMs: Long = 400L,
     /** Step interval once auto-advance is engaged. */
     val repeatIntervalMs: Long = 120L,
-    /** Whether [maxWidthPercent] or [maxWidthDp] is the active cap. Both
-     *  values are kept so toggling the mode doesn't lose the user's
-     *  previous fine-tuning. */
+    /** Whether [maxWidthPercent] or [maxIconsPerRow] is the active cap. */
     val maxWidthMode: MaxSizeMode = MaxSizeMode.Percent,
     /** Fraction (0..1) of the session screen's `visibleFrame.width` used
      *  as the panel's max width when [maxWidthMode] = [MaxSizeMode.Percent]. */
     val maxWidthPercent: Double = 0.9,
-    /** Absolute width in points (= dp on macOS) used as the panel's max
-     *  width when [maxWidthMode] = [MaxSizeMode.Dp]. */
-    val maxWidthDp: Double = 1200.0,
+    /** Hard cap on the number of icon cells per row, honoured when
+     *  [maxWidthMode] = [MaxSizeMode.MaxIconsPerRow]. Plumbed straight to
+     *  `FlowRow.maxItemsInEachRow`. */
+    val maxIconsPerRow: Int = 8,
     /** Hover-and-hold delay before a truncated selected window-row's title
      *  expands rightward to show the full text. Lets the user navigate
      *  past long rows without them flickering open. Symmetric collapse is
@@ -86,10 +89,7 @@ data class SwitcherSettings(
     /** Scale factor (percent) applied to the switcher overlay's app
      *  icon and the surrounding `AppCell` box. 100 = default; range
      *  50..200 (clamped in [sanitized]). Text (app name, window titles)
-     *  and panel-level paddings deliberately stay unscaled — only the
-     *  icon visual + its enclosing cell react. The overlay reads this
-     *  via a CompositionLocal so only the cell-zone dp values multiply
-     *  by the factor. */
+     *  and panel-level paddings deliberately stay unscaled. */
     val cellSizePercent: Int = 100,
 )
 
@@ -98,9 +98,9 @@ data class SwitcherSettings(
  * config or a buggy settings UI can't poison the switcher's runtime path.
  * `delay(...)` allows zero (returns immediately), so most fields are simply
  * coerced non-negative — but `repeatIntervalMs == 0` would spin a tight
- * coroutine loop, so we keep that one ≥ 1 ms. Max-width values are clamped
- * to ranges that the settings sliders also enforce — keeps a hand-edited
- * config from producing a tiny or absurdly wide panel.
+ * coroutine loop, so we keep that one ≥ 1 ms. Width values are clamped
+ * to ranges the settings sliders also enforce — keeps a hand-edited
+ * config from producing an unusable panel.
  */
 fun SwitcherSettings.sanitized(): SwitcherSettings = copy(
     showDelayMs = showDelayMs.coerceAtLeast(0L),
@@ -108,33 +108,29 @@ fun SwitcherSettings.sanitized(): SwitcherSettings = copy(
     repeatInitialDelayMs = repeatInitialDelayMs.coerceAtLeast(0L),
     repeatIntervalMs = repeatIntervalMs.coerceAtLeast(1L),
     maxWidthPercent = maxWidthPercent.coerceIn(0.3, 1.0),
-    maxWidthDp = maxWidthDp.coerceIn(400.0, 3000.0),
+    maxIconsPerRow = maxIconsPerRow.coerceIn(1, 50),
     selectionExpandDelayMs = selectionExpandDelayMs.coerceAtLeast(0L),
     cellSizePercent = cellSizePercent.coerceIn(50, 200),
 )
 
 /**
- * Persisted user configuration. Versioned so we can migrate gracefully if the
- * schema changes — older configs missing fields will get defaults via
- * `ignoreUnknownKeys` / kotlinx-serialization defaults.
+ * Persisted user configuration. Versioned so we can migrate gracefully if
+ * the schema changes — older configs missing fields will get defaults via
+ * `ignoreUnknownKeys` / kotlinx-serialization defaults. v4 split the
+ * single-window `windowFrame` / `inspectorWidth` / `inspectorVisible`
+ * triple into per-window frames for the now-separate Settings and
+ * Inspector windows, and replaced the px-cap mode with an
+ * icons-per-row cap; the old fields are no longer read.
  */
 @Serializable
 data class AppConfig(
-    val schemaVersion: Int = 3,
+    val schemaVersion: Int = 4,
     val filters: FilteringRules = FilteringRules(),
-    /** Window position + height + the *settings-only* width — the width
-     *  the window collapses to when the inspector is hidden. Resizing
-     *  while the inspector is visible changes [inspectorWidth] instead. */
-    val windowFrame: WindowFrame? = null,
-    /** Width added to [windowFrame.width] when the inspector pane is shown.
-     *  Toggling the inspector grows/shrinks the window by exactly this
-     *  amount, instantly — no animation. */
-    val inspectorWidth: Double = 480.0,
+    /** Settings window position + size. `null` until the first move/resize. */
+    val settingsWindowFrame: WindowFrame? = null,
+    /** Inspector window position + size. `null` until the first move/resize. */
+    val inspectorWindowFrame: WindowFrame? = null,
     val switcher: SwitcherSettings = SwitcherSettings(),
-    /** Whether the right-side inspector panel is visible. When false the
-     *  sidebar (Settings + Filters) takes the full window width and the
-     *  window title drops "Inspector". */
-    val inspectorVisible: Boolean = true,
     /** Whether the menubar status item is installed. When false the user
      *  reaches Settings via Dock-icon click / Spotlight-relaunch (which
      *  trigger `applicationShouldHandleReopen`). */
