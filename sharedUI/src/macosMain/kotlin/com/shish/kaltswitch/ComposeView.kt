@@ -145,6 +145,7 @@ fun AttachSettingsView(window: NSWindow): ComposeNSViewDelegate = ComposeNSViewD
             val currentSpaceOnly by store.currentSpaceOnly.collectAsState()
             val accentColor by store.accentColor.collectAsState()
             val filters by store.filters.collectAsState()
+            val badgeRules by store.badgeRules.collectAsState()
             SettingsContent(
                 switcherSettings = switcherSettings,
                 onSwitcherSettingsChange = { store.setSwitcherSettings(it) },
@@ -158,6 +159,8 @@ fun AttachSettingsView(window: NSWindow): ComposeNSViewDelegate = ComposeNSViewD
                 onAccentColorChange = { store.setAccentColor(it) },
                 filters = filters,
                 onFiltersChange = { store.setFilters(it) },
+                badgeRules = badgeRules,
+                onBadgeRulesChange = { store.setBadgeRules(it) },
             )
         }
     },
@@ -212,6 +215,7 @@ fun AttachSwitcherOverlay(window: NSWindow): ComposeNSViewDelegate = ComposeNSVi
         val systemAccentRgb by store.systemAccentRgb.collectAsState()
         val switcherSettings by store.switcherSettings.collectAsState()
         val axTrusted by store.axTrusted.collectAsState()
+        val badgeRules by store.badgeRules.collectAsState()
         val current = ui
         if (current != null) {
             ProvideAccent(resolveAccent(accentColor, systemAccentRgb)) {
@@ -220,6 +224,7 @@ fun AttachSwitcherOverlay(window: NSWindow): ComposeNSViewDelegate = ComposeNSVi
                     iconsByPid = icons,
                     switcherSettings = switcherSettings,
                     axTrusted = axTrusted,
+                    badgeRules = badgeRules,
                     onNavigate = { switcherController.onNavigate(it) },
                     onEsc = { switcherController.onEsc() },
                     onShortcut = { switcherController.onShortcut(it) },

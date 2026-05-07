@@ -8,6 +8,7 @@ import com.shish.kaltswitch.model.ActivationEvent
 import com.shish.kaltswitch.model.ActivationLog
 import com.shish.kaltswitch.model.App
 import com.shish.kaltswitch.model.AppActivationPolicy
+import com.shish.kaltswitch.model.BadgeRules
 import com.shish.kaltswitch.model.FilteringRules
 import com.shish.kaltswitch.model.Pid
 import com.shish.kaltswitch.model.Window
@@ -45,6 +46,15 @@ class WorldStore(initial: World = World(ActivationLog(), emptyMap(), emptyMap())
 
     fun setFilters(f: FilteringRules) {
         _filters.value = f
+    }
+
+    /** Title-pattern → (text, colour) badge rules driving the Settings →
+     *  Badges tab and the custom-badge pill rendered in the switcher overlay. */
+    private val _badgeRules = MutableStateFlow(BadgeRules())
+    val badgeRules: StateFlow<BadgeRules> = _badgeRules.asStateFlow()
+
+    fun setBadgeRules(b: BadgeRules) {
+        _badgeRules.value = b
     }
 
     private val _switcherSettings = MutableStateFlow(SwitcherSettings())
@@ -326,6 +336,7 @@ class WorldStore(initial: World = World(ActivationLog(), emptyMap(), emptyMap())
      */
     fun applyConfig(cfg: AppConfig) {
         setFilters(cfg.filters)
+        setBadgeRules(cfg.badges)
         setSettingsWindowFrame(cfg.settingsWindowFrame)
         setInspectorWindowFrame(cfg.inspectorWindowFrame)
         setSwitcherSettings(cfg.switcher)
@@ -367,11 +378,13 @@ class WorldStore(initial: World = World(ActivationLog(), emptyMap(), emptyMap())
             launchAtLogin,
             currentSpaceOnly,
             accentColor,
-        ) { base, launchAtLogin, currentSpaceOnly, accent ->
+            badgeRules,
+        ) { base, launchAtLogin, currentSpaceOnly, accent, badges ->
             base.copy(
                 launchAtLogin = launchAtLogin,
                 currentSpaceOnly = currentSpaceOnly,
                 accentColor = accent,
+                badges = badges,
             )
         }
     }

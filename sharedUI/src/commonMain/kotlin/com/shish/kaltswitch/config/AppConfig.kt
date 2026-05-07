@@ -1,5 +1,6 @@
 package com.shish.kaltswitch.config
 
+import com.shish.kaltswitch.model.BadgeRules
 import com.shish.kaltswitch.model.FilteringRules
 import kotlinx.serialization.SerialName
 import kotlinx.serialization.Serializable
@@ -135,12 +136,14 @@ fun SwitcherSettings.sanitized(): SwitcherSettings = copy(
  * single-window `windowFrame` / `inspectorWidth` / `inspectorVisible`
  * triple into per-window frames for the now-separate Settings and
  * Inspector windows, and replaced the px-cap mode with an
- * icons-per-row cap; the old fields are no longer read.
+ * icons-per-row cap; the old fields are no longer read. v5 adds the
+ * title-matching badge rules (Settings → Badges tab).
  */
 @Serializable
 data class AppConfig(
-    val schemaVersion: Int = 4,
+    val schemaVersion: Int = 5,
     val filters: FilteringRules = FilteringRules(),
+    val badges: BadgeRules = BadgeRules(),
     /** Settings window position + size. `null` until the first move/resize. */
     val settingsWindowFrame: WindowFrame? = null,
     /** Inspector window position + size. `null` until the first move/resize. */

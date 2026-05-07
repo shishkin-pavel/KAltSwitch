@@ -67,7 +67,7 @@ class WorldStoreTest {
     fun applyConfig_seedsEveryPersistedField() = runTest {
         val store = WorldStore()
         val cfg = AppConfig(
-            schemaVersion = 4,
+            schemaVersion = 5,
             filters = FilteringRules(),
             settingsWindowFrame = WindowFrame(x = 100.0, y = 200.0, width = 640.0, height = 540.0),
             inspectorWindowFrame = WindowFrame(x = 800.0, y = 100.0, width = 720.0, height = 600.0),
@@ -83,7 +83,7 @@ class WorldStoreTest {
         // Round-trip via configFlow: first emission is the current snapshot.
         val snapshot = store.configFlow().first()
         // schemaVersion isn't part of the round-trip (configFlow uses default).
-        assertEquals(cfg.copy(schemaVersion = 4), snapshot)
+        assertEquals(cfg.copy(schemaVersion = AppConfig().schemaVersion), snapshot)
     }
 
     @Test

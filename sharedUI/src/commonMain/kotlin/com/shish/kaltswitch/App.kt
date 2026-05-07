@@ -38,6 +38,7 @@ import com.shish.kaltswitch.config.SwitcherPlacement
 import com.shish.kaltswitch.config.SwitcherSettings
 import com.shish.kaltswitch.model.AppActivationPolicy
 import com.shish.kaltswitch.model.AppView
+import com.shish.kaltswitch.model.BadgeRules
 import com.shish.kaltswitch.model.FilteredSnapshot
 import com.shish.kaltswitch.model.FilteringRules
 import com.shish.kaltswitch.model.TriFilter
@@ -70,6 +71,8 @@ fun SettingsContent(
     onAccentColorChange: (AccentColorChoice) -> Unit,
     filters: FilteringRules,
     onFiltersChange: (FilteringRules) -> Unit,
+    badgeRules: BadgeRules,
+    onBadgeRulesChange: (BadgeRules) -> Unit,
 ) {
     var selectedTab by rememberSaveable { mutableStateOf(0) }
     val pal = AppPalette
@@ -85,7 +88,7 @@ fun SettingsContent(
             contentAlignment = Alignment.Center,
         ) {
             NativeTabBar(
-                items = listOf("General", "Rules"),
+                items = listOf("General", "Rules", "Badges"),
                 selectedIndex = selectedTab,
                 onSelect = { selectedTab = it },
             )
@@ -112,6 +115,10 @@ fun SettingsContent(
                 1 -> FilteringRulesPanel(
                     filters = filters,
                     onChange = onFiltersChange,
+                )
+                2 -> BadgeRulesPanel(
+                    rules = badgeRules,
+                    onChange = onBadgeRulesChange,
                 )
             }
         }

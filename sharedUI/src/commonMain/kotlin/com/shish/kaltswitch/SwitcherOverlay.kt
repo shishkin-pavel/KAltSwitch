@@ -85,10 +85,13 @@ import androidx.compose.ui.window.PopupProperties
 import com.shish.kaltswitch.config.MaxSizeMode
 import com.shish.kaltswitch.config.SwitcherSettings
 import com.shish.kaltswitch.icon.rememberAppIcon
+import com.shish.kaltswitch.model.BadgeRules
+import com.shish.kaltswitch.model.ResolvedBadge
 import com.shish.kaltswitch.model.SwitcherEntry
 import com.shish.kaltswitch.model.SwitcherEvent
 import com.shish.kaltswitch.model.SwitcherState
 import com.shish.kaltswitch.model.WindowId
+import com.shish.kaltswitch.model.evaluate
 import com.shish.kaltswitch.switcher.SwitcherUiState
 
 /**
@@ -106,6 +109,7 @@ fun SwitcherOverlay(
     iconsByPid: Map<Int, ByteArray>,
     switcherSettings: SwitcherSettings,
     axTrusted: Boolean,
+    badgeRules: BadgeRules = BadgeRules(),
     onNavigate: (SwitcherEvent) -> Unit,
     onEsc: () -> Unit,
     onShortcut: (SwitcherEntry) -> Unit,
@@ -255,6 +259,7 @@ fun SwitcherOverlay(
                     ui = ui,
                     iconsByPid = iconsByPid,
                     axTrusted = axTrusted,
+                    badgeRules = badgeRules,
                     onPointAt = onPointAt,
                     onCommit = onCommit,
                     onGrantAxClick = onGrantAxClick,
@@ -543,6 +548,40 @@ private fun DockBadge(text: String, modifier: Modifier = Modifier) {
 }
 
 /**
+ * Same pill geometry as [DockBadge] but with a user-chosen [background]
+ * (driven by a Settings → Badges rule). Text colour auto-flips between
+ * black and white by luminance so any background stays legible. When a
+ * dock-notification badge is also set, this pill stacks above it (see
+ * AppCell's slot calculation).
+ */
+@Composable
+private fun CustomBadge(text: String, background: Color, modifier: Modifier = Modifier) {
+    Box(
+        modifier
+            .widthIn(min = 18.dp)
+            .height(16.dp)
+            .clip(RoundedCornerShape(8.dp))
+            .background(background)
+            .padding(horizontal = 5.dp),
+        contentAlignment = Alignment.Center,
+    ) {
+        Text(
+            text,
+            color = contrastingTextColor(background),
+            fontSize = 10.sp,
+            fontWeight = FontWeight.Bold,
+            maxLines = 1,
+            overflow = TextOverflow.Ellipsis,
+        )
+    }
+}
+
+private fun contrastingTextColor(bg: Color): Color {
+    val lum = 0.2126 * bg.red + 0.7152 * bg.green + 0.0722 * bg.blue
+    return if (lum > 0.55) Color.Black else Color.White
+}
+
+/**
  * Backdrop tint for *demoted* apps and windows — apps the inspector's
  * filter rules sent to the secondary bucket, plus the trailing windows of
  * a partially-demoted app. A faint *black* tint over the panel's
@@ -560,6 +599,7 @@ private fun SwitcherPanel(
     ui: SwitcherUiState,
     iconsByPid: Map<Int, ByteArray>,
     axTrusted: Boolean,
+    badgeRules: BadgeRules,
     onPointAt: (appIndex: Int, windowIndex: Int?) -> Unit,
     onCommit: () -> Unit,
     onGrantAxClick: () -> Unit,
@@ -688,6 +728,7 @@ private fun SwitcherPanel(
                                 isHidden = args.isHidden,
                                 isDemoted = args.isDemoted,
                                 badgeText = args.badgeText,
+                                customBadge = args.customBadge,
                                 windows = args.windows,
                                 shownWindowCount = args.shownWindowCount,
                                 isSelected = args.isSelected,
@@ -714,6 +755,7 @@ private fun SwitcherPanel(
                                 appIndex = showIndex,
                                 cursorAppIndex = state.cursor.appIndex,
                                 cursorWindowIndex = state.cursor.windowIndex,
+                                badgeRules = badgeRules,
                                 onPointAt = onPointAt,
                                 onCommit = onCommit,
                             )
@@ -739,6 +781,7 @@ private fun SwitcherPanel(
                                             appIndex = withWindowsCount + demoteIndex,
                                             cursorAppIndex = state.cursor.appIndex,
                                             cursorWindowIndex = state.cursor.windowIndex,
+                                            badgeRules = badgeRules,
                                             onPointAt = onPointAt,
                                             onCommit = onCommit,
                                         )
@@ -820,6 +863,7 @@ private data class AppCellArgs(
     val isHidden: Boolean,
     val isDemoted: Boolean,
     val badgeText: String?,
+    val customBadge: ResolvedBadge?,
     val windows: List<com.shish.kaltswitch.model.Window>,
     val shownWindowCount: Int,
     val isSelected: Boolean,
@@ -837,10 +881,19 @@ private fun cellArgs(
     appIndex: Int,
     cursorAppIndex: Int,
     cursorWindowIndex: Int,
+    badgeRules: BadgeRules,
     onPointAt: (appIndex: Int, windowIndex: Int?) -> Unit,
     onCommit: () -> Unit,
 ): AppCellArgs {
     val isSelected = appIndex == cursorAppIndex
+    // Match the (app, main-window-title) pair against the user's badge rules.
+    // Main window falls back to the first reported window when none is
+    // flagged main (some apps never set kAXMainWindow but still report a
+    // single window). Title is "" for windowless apps — rules that don't
+    // depend on title still get a chance to match (e.g. an `appName ==
+    // Foo` rule will fire on a just-launched windowless Foo).
+    val mainWindow = entry.windows.firstOrNull { it.isMain } ?: entry.windows.firstOrNull()
+    val customBadge = badgeRules.evaluate(entry.app, mainWindow?.title.orEmpty())
     return AppCellArgs(
         name = entry.app.name,
         pid = entry.app.pid,
@@ -848,6 +901,7 @@ private fun cellArgs(
         isHidden = entry.app.isHidden,
         isDemoted = isDemoted,
         badgeText = entry.app.badgeText,
+        customBadge = customBadge,
         windows = entry.windows,
         shownWindowCount = entry.shownWindowCount,
         isSelected = isSelected,
@@ -869,6 +923,7 @@ private fun AppCell(
     isHidden: Boolean,
     isDemoted: Boolean,
     badgeText: String?,
+    customBadge: ResolvedBadge?,
     windows: List<com.shish.kaltswitch.model.Window>,
     shownWindowCount: Int,
     isSelected: Boolean,
@@ -918,22 +973,43 @@ private fun AppCell(
         // crashed at the moment the badge first composed (i.e. the very
         // first time the user hid an app via cmd+H), via Compose's
         // `PaddingElement.<init>` precondition check.
-        // Two badges can sit at the icon's top-right at once:
+        // Up to three badges can sit at the icon's top-right at once:
+        //   - custom badge from a Settings → Badges title-match rule
+        //     (user-coloured pill, e.g. a Firefox profile name);
         //   - dock badge ("5", "•", "999+") when the app's Dock tile has an
         //     `AXStatusLabel` set — typically incoming-attention counters
         //     from Mail / Slack / iMessage / Telegram. macOS draws this in
         //     the same spot, so users already read it as "attention here";
         //   - the hidden-status pictogram ("−") for cmd+H'd apps, kept on
         //     for parity with the inspector.
-        // When both are set we stack them: dock badge overhangs the corner
-        // (offset y = -4), hidden badge sits just below (offset y = +14)
-        // so neither is occluded.
+        // When several are set we stack them top-down — custom > dock >
+        // hidden — so the user-driven badge is always the most prominent.
+        // Each pill steps down 18 dp (16 dp pill height + 2 dp gap) so
+        // neither is occluded.
         Box(contentAlignment = Alignment.TopEnd) {
             AppIconBox(pid = pid, iconBytes = iconBytes, name = name, isDemoted = isDemoted)
+            // Stack at the icon's top-right: custom > dock > hidden. Each
+            // pill is 16 dp tall + 2 dp gap = 18 dp per slot. The topmost
+            // pill overhangs the icon corner by 4 dp; subsequent ones step
+            // down 18 dp at a time so longer chains stay on the icon.
+            val customY = (-4).dp
+            val dockY = if (customBadge != null) 14.dp else (-4).dp
+            val hiddenY = when {
+                customBadge != null && badgeText != null -> 32.dp
+                customBadge != null || badgeText != null -> 14.dp
+                else -> (-4).dp
+            }
+            if (customBadge != null) {
+                CustomBadge(
+                    text = customBadge.text,
+                    background = rgbToColor(customBadge.colorRgb),
+                    modifier = Modifier.offset(x = 6.dp, y = customY),
+                )
+            }
             if (badgeText != null) {
                 DockBadge(
                     text = badgeText,
-                    modifier = Modifier.offset(x = 6.dp, y = (-4).dp),
+                    modifier = Modifier.offset(x = 6.dp, y = dockY),
                 )
             }
             if (isHidden) {
@@ -941,10 +1017,7 @@ private fun AppCell(
                     glyph = "−",
                     background = HiddenBadgeColor,
                     contentColor = Color.White,
-                    modifier = Modifier.offset(
-                        x = 4.dp,
-                        y = if (badgeText != null) 14.dp else (-4).dp,
-                    ),
+                    modifier = Modifier.offset(x = 4.dp, y = hiddenY),
                 )
             }
         }
