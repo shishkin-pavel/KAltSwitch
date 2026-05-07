@@ -5,7 +5,8 @@ import androidx.compose.animation.core.animateDpAsState
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
-import androidx.compose.foundation.gestures.detectHorizontalDragGestures
+import androidx.compose.foundation.gestures.awaitEachGesture
+import androidx.compose.foundation.gestures.awaitFirstDown
 import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -246,43 +247,40 @@ fun NativeSlider(
                 .clip(RoundedCornerShape(2.dp))
                 .background(AccentColor),
         )
-        // Thumb. Drag horizontally OR tap-anywhere on the row.
-        var dragX by remember { mutableStateOf<Float?>(null) }
+        // Thumb — visual only; the unified pointer handler below covers
+        // the entire row, so we don't need a per-thumb drag detector.
+        // Earlier versions had `detectHorizontalDragGestures` on the thumb
+        // and a separate tap-only handler on the full-width row, but the
+        // tap-only Box was declared last and sat on top of the thumb in
+        // z-order — so the thumb's drag handler never received events
+        // and dragging the slider only "snapped" to the press location.
         Box(
             Modifier
                 .offset(x = with(density) { thumbOffsetPx.toDp() })
                 .size(thumbDp)
                 .clip(CircleShape)
                 .background(Color.White)
-                .border(0.5.dp, AppPalette.groupBorder, CircleShape)
-                .pointerInput(Unit) {
-                    detectHorizontalDragGestures(
-                        onDragStart = { offsetIn ->
-                            dragX = thumbOffsetPx + offsetIn.x
-                            reportFromOffset(dragX!!)
-                        },
-                        onDragEnd = { dragX = null },
-                        onDragCancel = { dragX = null },
-                    ) { _, drag ->
-                        val cur = (dragX ?: thumbOffsetPx) + drag
-                        dragX = cur
-                        reportFromOffset(cur)
-                    }
-                },
+                .border(0.5.dp, AppPalette.groupBorder, CircleShape),
         )
-        // Tap-on-track to jump.
+        // Press-and-drag on the entire 22dp row: jump to the press
+        // location on initial down, then track every subsequent pointer
+        // change while the button stays pressed. `awaitEachGesture`
+        // restarts the loop after each release.
         Box(
             Modifier
                 .fillMaxWidth()
                 .height(22.dp)
                 .pointerInput(Unit) {
-                    awaitPointerEventScope {
+                    awaitEachGesture {
+                        val down = awaitFirstDown(requireUnconsumed = false)
+                        reportFromOffset(down.position.x - thumbPx / 2)
+                        down.consume()
                         while (true) {
                             val ev = awaitPointerEvent()
-                            val ch = ev.changes.firstOrNull() ?: continue
-                            if (ch.pressed && ch.previousPressed != ch.pressed) {
-                                reportFromOffset(ch.position.x - thumbPx / 2)
-                            }
+                            val ch = ev.changes.firstOrNull() ?: break
+                            if (!ch.pressed) break
+                            reportFromOffset(ch.position.x - thumbPx / 2)
+                            ch.consume()
                         }
                     }
                 },
