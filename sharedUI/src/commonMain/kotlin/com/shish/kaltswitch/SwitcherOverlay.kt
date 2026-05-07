@@ -90,8 +90,9 @@ import com.shish.kaltswitch.model.ResolvedBadge
 import com.shish.kaltswitch.model.SwitcherEntry
 import com.shish.kaltswitch.model.SwitcherEvent
 import com.shish.kaltswitch.model.SwitcherState
+import com.shish.kaltswitch.model.WindowBadge
 import com.shish.kaltswitch.model.WindowId
-import com.shish.kaltswitch.model.evaluate
+import com.shish.kaltswitch.model.computeBadgeTree
 import com.shish.kaltswitch.switcher.SwitcherUiState
 
 /**
@@ -472,6 +473,7 @@ private fun WindowRowVisual(
     isMinimized: Boolean,
     isFullscreen: Boolean,
     isDemoted: Boolean,
+    customBadge: ResolvedBadge?,
     titleMaxLines: Int,
     titleOverflow: TextOverflow,
     onTextLayout: ((androidx.compose.ui.text.TextLayoutResult) -> Unit)? = null,
@@ -508,6 +510,17 @@ private fun WindowRowVisual(
                 Modifier.weight(1f, fill = true)
             },
         )
+        // Trailing custom badge (from a Settings → Badges title-match
+        // rule that didn't bubble all the way to the app cell). Sits
+        // before the status pictogram so the per-window status indicator
+        // stays at the rightmost edge — matches the icon stack where
+        // status sits above the custom pill.
+        if (customBadge != null) {
+            RowCustomBadge(
+                text = customBadge.text,
+                background = rgbToColor(customBadge.colorRgb),
+            )
+        }
         // Trailing status badge. macOS doesn't simultaneously minimize +
         // fullscreen a window (minimized takes precedence visually if both
         // ever showed up), so we render at most one.
@@ -516,6 +529,32 @@ private fun WindowRowVisual(
         } else if (isFullscreen) {
             StatusBadge(glyph = "⤢", background = FullscreenBadgeColor)
         }
+    }
+}
+
+/**
+ * Compact inline pill for per-window custom badges. Smaller than the
+ * app-icon [CustomBadge] because window rows are themselves only
+ * ~18 dp tall — keeps the badge from overflowing the row.
+ */
+@Composable
+private fun RowCustomBadge(text: String, background: Color, modifier: Modifier = Modifier) {
+    Box(
+        modifier
+            .height(13.dp)
+            .clip(RoundedCornerShape(6.dp))
+            .background(background)
+            .padding(horizontal = 4.dp),
+        contentAlignment = Alignment.Center,
+    ) {
+        Text(
+            text,
+            color = contrastingTextColor(background),
+            fontSize = 9.sp,
+            fontWeight = FontWeight.Bold,
+            maxLines = 1,
+            overflow = TextOverflow.Ellipsis,
+        )
     }
 }
 
@@ -730,6 +769,7 @@ private fun SwitcherPanel(
                                 badgeText = args.badgeText,
                                 customBadge = args.customBadge,
                                 windows = args.windows,
+                                windowBadges = args.windowBadges,
                                 shownWindowCount = args.shownWindowCount,
                                 isSelected = args.isSelected,
                                 selectedWindowIndex = args.selectedWindowIndex,
@@ -865,6 +905,9 @@ private data class AppCellArgs(
     val badgeText: String?,
     val customBadge: ResolvedBadge?,
     val windows: List<com.shish.kaltswitch.model.Window>,
+    /** Per-window badge state in the same order as [windows]. Indices match
+     *  1:1 because `computeBadgeTree` walks `entry.windows` in order. */
+    val windowBadges: List<WindowBadge>,
     val shownWindowCount: Int,
     val isSelected: Boolean,
     val selectedWindowIndex: Int,
@@ -886,14 +929,13 @@ private fun cellArgs(
     onCommit: () -> Unit,
 ): AppCellArgs {
     val isSelected = appIndex == cursorAppIndex
-    // Match the (app, main-window-title) pair against the user's badge rules.
-    // Main window falls back to the first reported window when none is
-    // flagged main (some apps never set kAXMainWindow but still report a
-    // single window). Title is "" for windowless apps — rules that don't
-    // depend on title still get a chance to match (e.g. an `appName ==
-    // Foo` rule will fire on a just-launched windowless Foo).
-    val mainWindow = entry.windows.firstOrNull { it.isMain } ?: entry.windows.firstOrNull()
-    val customBadge = badgeRules.evaluate(entry.app, mainWindow?.title.orEmpty())
+    // Per-window badges with bubble-up: each visible window evaluates rules
+    // against (app, title); when every visible window of the app shares the
+    // same non-null badge it bubbles to the app cell and the windows clear
+    // theirs. Same merge runs at every nested-children level (sheets,
+    // drawers) so a window with two equally-tagged sheets doesn't duplicate
+    // the pill on each child.
+    val tree = computeBadgeTree(badgeRules, entry.app, entry.windows)
     return AppCellArgs(
         name = entry.app.name,
         pid = entry.app.pid,
@@ -901,8 +943,9 @@ private fun cellArgs(
         isHidden = entry.app.isHidden,
         isDemoted = isDemoted,
         badgeText = entry.app.badgeText,
-        customBadge = customBadge,
+        customBadge = tree.displayBadge,
         windows = entry.windows,
+        windowBadges = tree.windows,
         shownWindowCount = entry.shownWindowCount,
         isSelected = isSelected,
         selectedWindowIndex = if (isSelected) cursorWindowIndex else -1,
@@ -925,6 +968,7 @@ private fun AppCell(
     badgeText: String?,
     customBadge: ResolvedBadge?,
     windows: List<com.shish.kaltswitch.model.Window>,
+    windowBadges: List<WindowBadge>,
     shownWindowCount: Int,
     isSelected: Boolean,
     selectedWindowIndex: Int,
@@ -974,37 +1018,27 @@ private fun AppCell(
         // first time the user hid an app via cmd+H), via Compose's
         // `PaddingElement.<init>` precondition check.
         // Up to three badges can sit at the icon's top-right at once:
-        //   - custom badge from a Settings → Badges title-match rule
-        //     (user-coloured pill, e.g. a Firefox profile name);
         //   - dock badge ("5", "•", "999+") when the app's Dock tile has an
         //     `AXStatusLabel` set — typically incoming-attention counters
         //     from Mail / Slack / iMessage / Telegram. macOS draws this in
         //     the same spot, so users already read it as "attention here";
         //   - the hidden-status pictogram ("−") for cmd+H'd apps, kept on
-        //     for parity with the inspector.
-        // When several are set we stack them top-down — custom > dock >
-        // hidden — so the user-driven badge is always the most prominent.
-        // Each pill steps down 18 dp (16 dp pill height + 2 dp gap) so
-        // neither is occluded.
+        //     for parity with the inspector;
+        //   - custom badge bubbled up from window-level rules (Settings →
+        //     Badges; e.g. a Firefox profile name).
+        // System status pills sit at the top so the AppKit-driven
+        // notification slot stays where users already read it; the
+        // user-defined custom pill goes underneath. Each pill steps down
+        // 18 dp (16 dp pill height + 2 dp gap) so the chain stays on the
+        // icon.
         Box(contentAlignment = Alignment.TopEnd) {
             AppIconBox(pid = pid, iconBytes = iconBytes, name = name, isDemoted = isDemoted)
-            // Stack at the icon's top-right: custom > dock > hidden. Each
-            // pill is 16 dp tall + 2 dp gap = 18 dp per slot. The topmost
-            // pill overhangs the icon corner by 4 dp; subsequent ones step
-            // down 18 dp at a time so longer chains stay on the icon.
-            val customY = (-4).dp
-            val dockY = if (customBadge != null) 14.dp else (-4).dp
-            val hiddenY = when {
-                customBadge != null && badgeText != null -> 32.dp
-                customBadge != null || badgeText != null -> 14.dp
+            val dockY = (-4).dp
+            val hiddenY = if (badgeText != null) 14.dp else (-4).dp
+            val customY = when {
+                badgeText != null && isHidden -> 32.dp
+                badgeText != null || isHidden -> 14.dp
                 else -> (-4).dp
-            }
-            if (customBadge != null) {
-                CustomBadge(
-                    text = customBadge.text,
-                    background = rgbToColor(customBadge.colorRgb),
-                    modifier = Modifier.offset(x = 6.dp, y = customY),
-                )
             }
             if (badgeText != null) {
                 DockBadge(
@@ -1018,6 +1052,13 @@ private fun AppCell(
                     background = HiddenBadgeColor,
                     contentColor = Color.White,
                     modifier = Modifier.offset(x = 4.dp, y = hiddenY),
+                )
+            }
+            if (customBadge != null) {
+                CustomBadge(
+                    text = customBadge.text,
+                    background = rgbToColor(customBadge.colorRgb),
+                    modifier = Modifier.offset(x = 6.dp, y = customY),
                 )
             }
         }
@@ -1039,6 +1080,7 @@ private fun AppCell(
             WindowList(
                 appName = name,
                 windows = windows,
+                windowBadges = windowBadges,
                 shownWindowCount = shownWindowCount,
                 isAppSelected = isSelected,
                 selectedWindowIndex = selectedWindowIndex,
@@ -1066,12 +1108,14 @@ private data class WindowRowArgs(
     val isMinimized: Boolean,
     val isFullscreen: Boolean,
     val isDemoted: Boolean,
+    val customBadge: ResolvedBadge?,
     val onHover: () -> Unit,
     val onClick: () -> Unit,
 )
 
 private fun windowRowArgs(
     w: com.shish.kaltswitch.model.Window,
+    badge: WindowBadge?,
     appName: String,
     fullIndex: Int,
     isAppSelected: Boolean,
@@ -1085,6 +1129,7 @@ private fun windowRowArgs(
     isMinimized = w.isMinimized,
     isFullscreen = w.isFullscreen,
     isDemoted = isDemoted,
+    customBadge = badge?.displayBadge,
     onHover = { onHoverWindow(fullIndex) },
     onClick = { onClickWindow(fullIndex) },
 )
@@ -1094,6 +1139,7 @@ private fun windowRowArgs(
 private fun WindowList(
     appName: String,
     windows: List<com.shish.kaltswitch.model.Window>,
+    windowBadges: List<WindowBadge>,
     shownWindowCount: Int,
     isAppSelected: Boolean,
     selectedWindowIndex: Int,
@@ -1102,6 +1148,11 @@ private fun WindowList(
 ) {
     val showWindows = if (shownWindowCount <= 0) emptyList() else windows.take(shownWindowCount)
     val demoteWindows = if (shownWindowCount >= windows.size) emptyList() else windows.drop(shownWindowCount)
+    // Per-window badge state from the bubble-up tree, indexed in lockstep
+    // with [windows]. A pid that's missing from the tree (transient mismatch
+    // mid-emit) just falls back to no badge.
+    val showBadges = if (shownWindowCount <= 0) emptyList() else windowBadges.take(shownWindowCount)
+    val demoteBadges = if (shownWindowCount >= windowBadges.size) emptyList() else windowBadges.drop(shownWindowCount)
     // Cell-local LookaheadScope: window-row animateBounds tracks
     // positions in coordinates rooted at THIS WindowList, not the
     // outer FlowRow scope used by AppCell. That isolation is
@@ -1145,6 +1196,7 @@ private fun WindowList(
                         isMinimized = args.isMinimized,
                         isFullscreen = args.isFullscreen,
                         isDemoted = args.isDemoted,
+                        customBadge = args.customBadge,
                         onHover = args.onHover,
                         onClick = args.onClick,
                     )
@@ -1161,9 +1213,11 @@ private fun WindowList(
                     verticalArrangement = Arrangement.spacedBy(1.dp),
                 ) {
                     showWindows.forEachIndexed { i, w ->
+                        val badge = showBadges.getOrNull(i)
                         rowsByWid.getValue(w.id)(
                             windowRowArgs(
                                 w = w,
+                                badge = badge,
                                 appName = appName,
                                 fullIndex = i,
                                 isAppSelected = isAppSelected,
@@ -1173,6 +1227,14 @@ private fun WindowList(
                                 onClickWindow = onClickWindow,
                             )
                         )
+                        if (badge != null && badge.children.isNotEmpty()) {
+                            ChildWindowSubtree(
+                                appName = appName,
+                                children = w.children,
+                                childBadges = badge.children,
+                                isDemoted = false,
+                            )
+                        }
                     }
                 }
             }
@@ -1187,9 +1249,11 @@ private fun WindowList(
                 ) {
                     demoteWindows.forEachIndexed { i, w ->
                         val fullIndex = i + shownWindowCount
+                        val badge = demoteBadges.getOrNull(i)
                         rowsByWid.getValue(w.id)(
                             windowRowArgs(
                                 w = w,
+                                badge = badge,
                                 appName = appName,
                                 fullIndex = fullIndex,
                                 isAppSelected = isAppSelected,
@@ -1199,11 +1263,107 @@ private fun WindowList(
                                 onClickWindow = onClickWindow,
                             )
                         )
+                        if (badge != null && badge.children.isNotEmpty()) {
+                            ChildWindowSubtree(
+                                appName = appName,
+                                children = w.children,
+                                childBadges = badge.children,
+                                isDemoted = true,
+                            )
+                        }
                     }
                 }
             }
         }
     }
+}
+
+/**
+ * Indented, non-navigable subtree of child windows (sheets, drawers,
+ * popovers — anything reported via `kAXChildWindowsAttribute`). The
+ * container draws a thin vertical line in the indent gutter so the
+ * parent-child relationship reads at a glance, without competing with
+ * the accent-coloured selection bar on the active row.
+ *
+ * Children aren't part of the keyboard-nav index — macOS doesn't
+ * separately focus a sheet from its parent — so these rows render with
+ * no hover/click handlers. They're visual-only; the only reason to draw
+ * them is so a per-window badge that didn't bubble can stay attached
+ * to the right element of the hierarchy.
+ */
+@OptIn(ExperimentalComposeUiApi::class)
+@Composable
+private fun ChildWindowSubtree(
+    appName: String,
+    children: List<com.shish.kaltswitch.model.Window>,
+    childBadges: List<WindowBadge>,
+    isDemoted: Boolean,
+) {
+    if (children.isEmpty()) return
+    Row(Modifier.fillMaxWidth()) {
+        Box(
+            Modifier
+                .padding(start = 4.dp)
+                .width(1.dp)
+                .fillMaxHeight()
+                .background(ChildConnectorColor),
+        )
+        Column(
+            Modifier
+                .weight(1f)
+                .padding(start = 7.dp),
+            verticalArrangement = Arrangement.spacedBy(1.dp),
+        ) {
+            children.forEachIndexed { i, child ->
+                val badge = childBadges.getOrNull(i)
+                ChildWindowRow(
+                    title = effectiveWindowTitle(child.title, appName),
+                    isMinimized = child.isMinimized,
+                    isFullscreen = child.isFullscreen,
+                    isDemoted = isDemoted,
+                    customBadge = badge?.displayBadge,
+                )
+                if (badge != null && badge.children.isNotEmpty()) {
+                    ChildWindowSubtree(
+                        appName = appName,
+                        children = child.children,
+                        childBadges = badge.children,
+                        isDemoted = isDemoted,
+                    )
+                }
+            }
+        }
+    }
+}
+
+/** Subtle gutter line to the left of indented child windows. Same hue
+ *  as `AppPalette.controlTrack` would be in dark mode but kept hard-
+ *  coded since the switcher overlay sits on its own dark plate
+ *  regardless of system appearance. */
+private val ChildConnectorColor = Color(0x33FFFFFF)
+
+@OptIn(ExperimentalComposeUiApi::class)
+@Composable
+private fun ChildWindowRow(
+    title: String,
+    isMinimized: Boolean,
+    isFullscreen: Boolean,
+    isDemoted: Boolean,
+    customBadge: ResolvedBadge?,
+) {
+    // Reuses [WindowRowVisual]'s layout but is never selected and has no
+    // pointer handlers — child windows aren't switchable independently.
+    WindowRowVisual(
+        modifier = Modifier.fillMaxWidth(),
+        title = title,
+        isActive = false,
+        isMinimized = isMinimized,
+        isFullscreen = isFullscreen,
+        isDemoted = isDemoted,
+        customBadge = customBadge,
+        titleMaxLines = 1,
+        titleOverflow = TextOverflow.Ellipsis,
+    )
 }
 
 @Composable
@@ -1262,6 +1422,7 @@ private fun WindowTitleRow(
     isMinimized: Boolean,
     isFullscreen: Boolean,
     isDemoted: Boolean,
+    customBadge: ResolvedBadge?,
     onHover: () -> Unit,
     onClick: () -> Unit,
 ) {
@@ -1376,6 +1537,7 @@ private fun WindowTitleRow(
             isMinimized = isMinimized,
             isFullscreen = isFullscreen,
             isDemoted = isDemoted,
+            customBadge = customBadge,
             titleMaxLines = 1,
             titleOverflow = TextOverflow.Ellipsis,
             onTextLayout = { layout -> truncated = layout.hasVisualOverflow },
@@ -1440,6 +1602,7 @@ private fun WindowTitleRow(
                         isMinimized = isMinimized,
                         isFullscreen = isFullscreen,
                         isDemoted = isDemoted,
+                        customBadge = customBadge,
                         titleMaxLines = 1,
                         titleOverflow = TextOverflow.Visible,
                     )
