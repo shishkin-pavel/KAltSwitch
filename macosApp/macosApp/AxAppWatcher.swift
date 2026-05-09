@@ -133,8 +133,13 @@ final class AxAppWatcher {
     private func refreshAllWindows() {
         let topLevel = (readAttribute(appElement, kAXWindowsAttribute as String) as? [AXUIElement]) ?? []
         let appHash = Int(CFHash(appElement))
-        let byHash: [Int: AXUIElement] = Dictionary(uniqueKeysWithValues:
-            topLevel.map { (Int(CFHash($0)), $0) })
+        // AX occasionally returns the same AXUIElement twice in kAXWindows, and
+        // CFHash collisions are theoretically possible — keep the last value
+        // instead of trapping on duplicates.
+        let byHash: [Int: AXUIElement] = Dictionary(
+            topLevel.map { (Int(CFHash($0)), $0) },
+            uniquingKeysWith: { _, new in new }
+        )
         windowsByHash = byHash
 
         // For each "top-level" window, see whether its AXParent is another top-level
