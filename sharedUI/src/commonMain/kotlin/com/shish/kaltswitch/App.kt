@@ -69,6 +69,10 @@ fun SettingsContent(
     onCurrentSpaceOnlyChange: (Boolean) -> Unit,
     accentColor: AccentColorChoice,
     onAccentColorChange: (AccentColorChoice) -> Unit,
+    panelBgArgb: Long,
+    onPanelBgArgbChange: (Long) -> Unit,
+    demoteBgArgb: Long,
+    onDemoteBgArgbChange: (Long) -> Unit,
     filters: FilteringRules,
     onFiltersChange: (FilteringRules) -> Unit,
     badgeRules: BadgeRules,
@@ -111,6 +115,10 @@ fun SettingsContent(
                     onCurrentSpaceOnlyChange = onCurrentSpaceOnlyChange,
                     accentColor = accentColor,
                     onAccentColorChange = onAccentColorChange,
+                    panelBgArgb = panelBgArgb,
+                    onPanelBgArgbChange = onPanelBgArgbChange,
+                    demoteBgArgb = demoteBgArgb,
+                    onDemoteBgArgbChange = onDemoteBgArgbChange,
                 )
                 1 -> FilteringRulesPanel(
                     filters = filters,
@@ -139,6 +147,10 @@ private fun GeneralSection(
     onCurrentSpaceOnlyChange: (Boolean) -> Unit,
     accentColor: AccentColorChoice,
     onAccentColorChange: (AccentColorChoice) -> Unit,
+    panelBgArgb: Long,
+    onPanelBgArgbChange: (Long) -> Unit,
+    demoteBgArgb: Long,
+    onDemoteBgArgbChange: (Long) -> Unit,
 ) {
     Column(verticalArrangement = Arrangement.spacedBy(14.dp)) {
         NativeGroupBox(title = "Switcher timing") {
@@ -211,6 +223,23 @@ private fun GeneralSection(
             AccentColorRow(
                 choice = accentColor,
                 onChange = onAccentColorChange,
+            )
+        }
+        NativeGroupBox(title = "Switcher overlay colours") {
+            ColorSwatchRow(
+                label = "Panel background",
+                argb = panelBgArgb,
+                onChange = onPanelBgArgbChange,
+                // Alpha below ~0xE0 washes the white-on-dark titles out; the
+                // panel is a heavyweight backdrop, not a translucent tint.
+                showAlpha = false,
+            )
+            NativeRowDivider()
+            ColorSwatchRow(
+                label = "Demoted backdrop",
+                argb = demoteBgArgb,
+                onChange = onDemoteBgArgbChange,
+                showAlpha = true,
             )
         }
     }
@@ -341,28 +370,15 @@ private fun AccentColorRow(
     }
     if (!isSystem) {
         NativeRowDivider()
-        NativeRow(label = "Custom colour") {
-            Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                Box(
-                    Modifier
-                        .width(20.dp)
-                        .height(20.dp)
-                        .clip(RoundedCornerShape(4.dp))
-                        .background(rgbToColor(customRgb)),
-                )
-                Box(Modifier.width(90.dp)) {
-                    NativeTextField(
-                        value = customRgb.toString(16).padStart(6, '0').uppercase(),
-                        onValueChange = { raw ->
-                            val cleaned = raw.trimStart('#').take(6).uppercase()
-                            if (cleaned.length == 6) {
-                                cleaned.toLongOrNull(16)?.let { onChange(AccentColorChoice.Custom(it)) }
-                            }
-                        },
-                    )
-                }
-            }
-        }
+        // The picker speaks in 0xAARRGGBB; accent is RGB-only (opaque
+        // highlight) so we force alpha = FF on the way in and strip it
+        // again on the way out.
+        ColorSwatchRow(
+            label = "Custom colour",
+            argb = 0xFF000000L or customRgb,
+            onChange = { argb -> onChange(AccentColorChoice.Custom(argb and 0xFFFFFFL)) },
+            showAlpha = false,
+        )
     }
 }
 

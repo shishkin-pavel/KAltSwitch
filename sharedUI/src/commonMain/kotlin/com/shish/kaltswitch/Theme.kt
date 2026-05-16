@@ -57,6 +57,28 @@ fun rgbToColor(rgb: Long): Color {
     return Color(red = r, green = g, blue = b)
 }
 
+/** 0xAARRGGBB → [Color] with alpha. Companion to [rgbToColor] for the
+ *  user-configurable overlay backgrounds where transparency is meaningful
+ *  (the demote backdrop is a translucent tint over the panel plate). */
+fun argbToColor(argb: Long): Color {
+    val a = ((argb shr 24) and 0xFFL).toInt()
+    val r = ((argb shr 16) and 0xFFL).toInt()
+    val g = ((argb shr 8) and 0xFFL).toInt()
+    val b = (argb and 0xFFL).toInt()
+    return Color(red = r, green = g, blue = b, alpha = a)
+}
+
+/** Pack a [Color] back into the same `0xAARRGGBB` Long that [argbToColor]
+ *  unpacks. Round-trips through HSV in the colour picker; rounding is to
+ *  the nearest byte (`+ 0.5` before truncation). */
+fun colorToArgb(color: Color): Long {
+    val a = (color.alpha * 255f + 0.5f).toInt().coerceIn(0, 255).toLong()
+    val r = (color.red * 255f + 0.5f).toInt().coerceIn(0, 255).toLong()
+    val g = (color.green * 255f + 0.5f).toInt().coerceIn(0, 255).toLong()
+    val b = (color.blue * 255f + 0.5f).toInt().coerceIn(0, 255).toLong()
+    return (a shl 24) or (r shl 16) or (g shl 8) or b
+}
+
 // ──────────────────────────── AppKit-mimicking palette ────────────────────────────
 
 /**
@@ -131,4 +153,41 @@ val AppPalette: AppPaletteColors
 fun ProvideAppPalette(isDark: Boolean, content: @Composable () -> Unit) {
     val pal = if (isDark) DarkPalette else LightPalette
     CompositionLocalProvider(LocalAppPalette provides pal, content = content)
+}
+
+// ──────────────────────── Switcher overlay user-tunable colours ────────────────────────
+
+/** Background of the switcher overlay's rounded plate. ARGB, opaque by
+ *  default. User-configurable via Settings; defaults match the originally
+ *  hardcoded `Color(0xFF1B1B1F)` so unmodified configs render identically. */
+val SwitcherPanelBg: Color
+    @Composable
+    @ReadOnlyComposable
+    get() = LocalSwitcherPanelBg.current
+
+/** Tint laid over the panel plate inside the demoted-apps block (and over
+ *  the demoted-windows block inside an app cell). ARGB with meaningful
+ *  alpha — the default `0x33000000` is a 20%-black "recessed plate". */
+val SwitcherDemoteBg: Color
+    @Composable
+    @ReadOnlyComposable
+    get() = LocalSwitcherDemoteBg.current
+
+val LocalSwitcherPanelBg = compositionLocalOf { Color(0xFF1B1B1F) }
+val LocalSwitcherDemoteBg = compositionLocalOf { Color(0x33000000) }
+
+/** Provide both switcher backdrop colours at once. Used by the macOS
+ *  Compose host (`AttachSwitcherOverlay`) which collects the persisted
+ *  values from `WorldStore` and wraps the overlay in this provider. */
+@Composable
+fun ProvideSwitcherColors(
+    panelBg: Color,
+    demoteBg: Color,
+    content: @Composable () -> Unit,
+) {
+    CompositionLocalProvider(
+        LocalSwitcherPanelBg provides panelBg,
+        LocalSwitcherDemoteBg provides demoteBg,
+        content = content,
+    )
 }

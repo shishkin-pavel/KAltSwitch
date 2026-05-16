@@ -111,6 +111,24 @@ class WorldStore(initial: World = World(ActivationLog(), emptyMap(), emptyMap())
         _accentColor.value = choice
     }
 
+    /** ARGB-packed switcher panel backdrop. Defaults to the originally
+     *  hardcoded near-black; persisted via [AppConfig.switcherPanelBgArgb]. */
+    private val _switcherPanelBgArgb = MutableStateFlow(0xFF1B1B1FL)
+    val switcherPanelBgArgb: StateFlow<Long> = _switcherPanelBgArgb.asStateFlow()
+
+    fun setSwitcherPanelBgArgb(argb: Long) {
+        _switcherPanelBgArgb.value = argb
+    }
+
+    /** ARGB-packed tint laid over the panel inside the demoted block.
+     *  Alpha is meaningful — the panel plate shows through. */
+    private val _switcherDemoteBgArgb = MutableStateFlow(0x33000000L)
+    val switcherDemoteBgArgb: StateFlow<Long> = _switcherDemoteBgArgb.asStateFlow()
+
+    fun setSwitcherDemoteBgArgb(argb: Long) {
+        _switcherDemoteBgArgb.value = argb
+    }
+
     /** Swift pushes `NSColor.controlAccentColor` packed as 0xRRGGBB whenever
      *  the system colour changes (via `NSSystemColorsDidChangeNotification`).
      *  Null means we haven't read it yet — UI falls back to the Custom default. */
@@ -344,6 +362,8 @@ class WorldStore(initial: World = World(ActivationLog(), emptyMap(), emptyMap())
         setLaunchAtLogin(cfg.launchAtLogin)
         setCurrentSpaceOnly(cfg.currentSpaceOnly)
         setAccentColor(cfg.accentColor)
+        setSwitcherPanelBgArgb(cfg.switcherPanelBgArgb)
+        setSwitcherDemoteBgArgb(cfg.switcherDemoteBgArgb)
     }
 
     /**
@@ -373,17 +393,29 @@ class WorldStore(initial: World = World(ActivationLog(), emptyMap(), emptyMap())
                 showMenubarIcon = menubar,
             )
         }
+        // Fold the three colour flows into one so the outer combine stays at
+        // five arms (combine has a 5-flow overload; adding a third tier just
+        // to spell them out separately would only add nesting noise).
+        val colors = combine(
+            accentColor,
+            switcherPanelBgArgb,
+            switcherDemoteBgArgb,
+        ) { accent, panelBg, demoteBg ->
+            Triple(accent, panelBg, demoteBg)
+        }
         return combine(
             core,
             launchAtLogin,
             currentSpaceOnly,
-            accentColor,
+            colors,
             badgeRules,
-        ) { base, launchAtLogin, currentSpaceOnly, accent, badges ->
+        ) { base, launchAtLogin, currentSpaceOnly, colorsT, badges ->
             base.copy(
                 launchAtLogin = launchAtLogin,
                 currentSpaceOnly = currentSpaceOnly,
-                accentColor = accent,
+                accentColor = colorsT.first,
+                switcherPanelBgArgb = colorsT.second,
+                switcherDemoteBgArgb = colorsT.third,
                 badges = badges,
             )
         }

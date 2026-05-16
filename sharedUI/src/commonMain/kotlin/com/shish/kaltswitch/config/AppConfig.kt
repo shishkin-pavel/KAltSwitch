@@ -137,11 +137,12 @@ fun SwitcherSettings.sanitized(): SwitcherSettings = copy(
  * triple into per-window frames for the now-separate Settings and
  * Inspector windows, and replaced the px-cap mode with an
  * icons-per-row cap; the old fields are no longer read. v5 adds the
- * title-matching badge rules (Settings → Badges tab).
+ * title-matching badge rules (Settings → Badges tab). v6 surfaces the
+ * switcher-overlay panel + demote-block colours.
  */
 @Serializable
 data class AppConfig(
-    val schemaVersion: Int = 5,
+    val schemaVersion: Int = 6,
     val filters: FilteringRules = FilteringRules(),
     val badges: BadgeRules = BadgeRules(),
     /** Settings window position + size. `null` until the first move/resize. */
@@ -163,6 +164,18 @@ data class AppConfig(
      *  with; toggling to [AccentColorChoice.UseSystem] mirrors the macOS
      *  control-accent setting in real time. */
     val accentColor: AccentColorChoice = AccentColorChoice.Custom(0xFFC107),
+    /** ARGB-packed (`0xAARRGGBB`) backdrop of the switcher overlay's
+     *  rounded plate. Default matches the originally-hardcoded
+     *  `Color(0xFF1B1B1F)` — opaque, very dark blueish-black. Alpha
+     *  technically supported but values below ~0xE0 wash out the white-on-
+     *  dark text rendered over it; the UI doesn't expose alpha for this
+     *  field for that reason. */
+    val switcherPanelBgArgb: Long = 0xFF1B1B1F,
+    /** ARGB-packed tint laid over the panel plate behind demoted apps and
+     *  behind demoted windows inside an app cell. Default `0x33000000` =
+     *  20% black; alpha is meaningful (the underlying plate shows through),
+     *  so the picker exposes the alpha slider for this one. */
+    val switcherDemoteBgArgb: Long = 0x33000000,
 )
 
 /**

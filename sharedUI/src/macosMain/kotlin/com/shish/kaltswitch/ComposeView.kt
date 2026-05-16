@@ -144,6 +144,8 @@ fun AttachSettingsView(window: NSWindow): ComposeNSViewDelegate = ComposeNSViewD
             val launchAtLogin by store.launchAtLogin.collectAsState()
             val currentSpaceOnly by store.currentSpaceOnly.collectAsState()
             val accentColor by store.accentColor.collectAsState()
+            val panelBgArgb by store.switcherPanelBgArgb.collectAsState()
+            val demoteBgArgb by store.switcherDemoteBgArgb.collectAsState()
             val filters by store.filters.collectAsState()
             val badgeRules by store.badgeRules.collectAsState()
             SettingsContent(
@@ -157,6 +159,10 @@ fun AttachSettingsView(window: NSWindow): ComposeNSViewDelegate = ComposeNSViewD
                 onCurrentSpaceOnlyChange = { store.setCurrentSpaceOnly(it) },
                 accentColor = accentColor,
                 onAccentColorChange = { store.setAccentColor(it) },
+                panelBgArgb = panelBgArgb,
+                onPanelBgArgbChange = { store.setSwitcherPanelBgArgb(it) },
+                demoteBgArgb = demoteBgArgb,
+                onDemoteBgArgbChange = { store.setSwitcherDemoteBgArgb(it) },
                 filters = filters,
                 onFiltersChange = { store.setFilters(it) },
                 badgeRules = badgeRules,
@@ -216,9 +222,15 @@ fun AttachSwitcherOverlay(window: NSWindow): ComposeNSViewDelegate = ComposeNSVi
         val switcherSettings by store.switcherSettings.collectAsState()
         val axTrusted by store.axTrusted.collectAsState()
         val badgeRules by store.badgeRules.collectAsState()
+        val panelBgArgb by store.switcherPanelBgArgb.collectAsState()
+        val demoteBgArgb by store.switcherDemoteBgArgb.collectAsState()
         val current = ui
         if (current != null) {
             ProvideAccent(resolveAccent(accentColor, systemAccentRgb)) {
+              ProvideSwitcherColors(
+                panelBg = argbToColor(panelBgArgb),
+                demoteBg = argbToColor(demoteBgArgb),
+              ) {
                 SwitcherOverlay(
                     ui = current,
                     iconsByPid = icons,
@@ -241,6 +253,7 @@ fun AttachSwitcherOverlay(window: NSWindow): ComposeNSViewDelegate = ComposeNSVi
                         store.setAxTrusted(granted)
                     },
                 )
+              }
             }
         }
     },

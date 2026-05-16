@@ -620,18 +620,6 @@ private fun contrastingTextColor(bg: Color): Color {
     return if (lum > 0.55) Color.Black else Color.White
 }
 
-/**
- * Backdrop tint for *demoted* apps and windows — apps the inspector's
- * filter rules sent to the secondary bucket, plus the trailing windows of
- * a partially-demoted app. A faint *black* tint over the panel's
- * background reads as a recessed/sunken plate (vs the previous 0x1FFFFFFF
- * "raised" feel which had poor text contrast). Adjacent demoted cells'
- * backdrops touch (via FlowRow `spacedBy(0.dp)` + outer-clip-then-bg
- * modifier order) and share rounded corners only on the block's outer
- * edges (first/last demoted cell), so a sequence reads as one visual block.
- */
-private val DemoteBackdropColor = Color(0x33000000)
-
 @OptIn(ExperimentalLayoutApi::class, ExperimentalComposeUiApi::class)
 @Composable
 private fun SwitcherPanel(
@@ -668,8 +656,10 @@ private fun SwitcherPanel(
             // NSVisualEffectView blur; the blur was removed because
             // we couldn't keep an `NSVisualEffectView` visually in
             // sync with the dynamic panel-resize animation without
-            // rendering bugs (see docs/blur-attempts.md).
-            .background(Color(0xFF1B1B1F))
+            // rendering bugs (see docs/blur-attempts.md). The colour
+            // is user-configurable — read from the Compose-local
+            // populated by `ProvideSwitcherColors` in the macOS host.
+            .background(SwitcherPanelBg)
             .border(1.dp, Color(0x33FFFFFF), RoundedCornerShape(16.dp))
             .padding(horizontal = 16.dp, vertical = 12.dp)
             // Capture the visible plate's bounds (after all sizing
@@ -805,7 +795,7 @@ private fun SwitcherPanel(
                         Box(
                             modifier = Modifier
                                 .clip(RoundedCornerShape(10.dp))
-                                .background(DemoteBackdropColor)
+                                .background(SwitcherDemoteBg)
                                 .padding(horizontal = 4.dp, vertical = 4.dp),
                         ) {
                             FlowRow(
@@ -1243,7 +1233,7 @@ private fun WindowList(
                     Modifier
                         .fillMaxWidth()
                         .clip(RoundedCornerShape(4.dp))
-                        .background(DemoteBackdropColor)
+                        .background(SwitcherDemoteBg)
                         .padding(horizontal = 2.dp, vertical = 2.dp),
                     verticalArrangement = Arrangement.spacedBy(1.dp),
                 ) {
