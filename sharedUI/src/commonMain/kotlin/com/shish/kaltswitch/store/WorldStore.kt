@@ -103,8 +103,9 @@ class WorldStore(initial: World = World(ActivationLog(), emptyMap(), emptyMap())
     }
 
     /** User-selected accent. Resolved to an actual RGB by combining with
-     *  [systemAccentRgb] downstream (see ComposeView.effectiveAccentRgb). */
-    private val _accentColor = MutableStateFlow<AccentColorChoice>(AccentColorChoice.Custom(0xFFC107))
+     *  [systemAccentRgb] downstream (see ComposeView.effectiveAccentRgb).
+     *  The Long is ARGB-packed since v7. */
+    private val _accentColor = MutableStateFlow<AccentColorChoice>(AccentColorChoice.Custom(0xFFFFC107L))
     val accentColor: StateFlow<AccentColorChoice> = _accentColor.asStateFlow()
 
     fun setAccentColor(choice: AccentColorChoice) {
@@ -361,7 +362,20 @@ class WorldStore(initial: World = World(ActivationLog(), emptyMap(), emptyMap())
         setShowMenubarIcon(cfg.showMenubarIcon)
         setLaunchAtLogin(cfg.launchAtLogin)
         setCurrentSpaceOnly(cfg.currentSpaceOnly)
-        setAccentColor(cfg.accentColor)
+        // Migrate legacy v6 RGB accents (alpha-byte == 0 when interpreted as
+        // ARGB) up to opaque. Every shipped pre-v7 config has alpha = 0 in
+        // the stored Long; without this fix-up they'd render fully
+        // transparent and the highlight would disappear. See
+        // [AccentColorChoice] KDoc for the back-compat reasoning.
+        val accent = cfg.accentColor
+        val fixedAccent = if (
+            accent is AccentColorChoice.Custom && (accent.argb ushr 24) == 0L
+        ) {
+            AccentColorChoice.Custom(0xFF000000L or accent.argb)
+        } else {
+            accent
+        }
+        setAccentColor(fixedAccent)
         setSwitcherPanelBgArgb(cfg.switcherPanelBgArgb)
         setSwitcherDemoteBgArgb(cfg.switcherDemoteBgArgb)
     }

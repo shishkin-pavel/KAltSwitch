@@ -45,7 +45,7 @@ fun ProvideAccent(color: Color?, content: @Composable () -> Unit) {
  * flashing white.
  */
 fun resolveAccent(choice: AccentColorChoice, systemAccentRgb: Long?): Color = when (choice) {
-    is AccentColorChoice.Custom -> rgbToColor(choice.rgb)
+    is AccentColorChoice.Custom -> argbToColor(choice.argb)
     AccentColorChoice.UseSystem -> systemAccentRgb?.let(::rgbToColor) ?: DefaultAccent
 }
 

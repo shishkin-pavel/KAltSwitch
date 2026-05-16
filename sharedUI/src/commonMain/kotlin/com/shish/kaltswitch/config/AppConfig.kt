@@ -9,9 +9,20 @@ import kotlinx.serialization.json.Json
 /**
  * User's choice for the highlight / selection colour. `UseSystem` defers
  * to `NSColor.controlAccentColor` (Swift refreshes the value on
- * `NSSystemColorsDidChangeNotification`); `Custom` carries an opaque
- * 0xRRGGBB hex (alpha is implicit 0xFF — there's no use case for a
- * translucent accent yet).
+ * `NSSystemColorsDidChangeNotification`); `Custom` carries an
+ * `0xAARRGGBB` hex.
+ *
+ * Up through v6 `Custom` stored a 24-bit RGB long (alpha implicit FF).
+ * v7 widens to ARGB so the picker's alpha slider applies to the accent
+ * too. The JSON field name stays `"rgb"` for back-compat (kotlinx
+ * `@SerialName`), and `WorldStore.applyConfig` upgrades legacy values
+ * whose alpha-byte is zero — every shipped config falls into that
+ * bucket because the v6 default was `0xFFC107` (alpha = 00 when
+ * interpreted as ARGB), and `WorldStore.applyConfig` forces alpha to
+ * FF in that case so the highlight doesn't disappear on first load.
+ * The cost is that a *new* user who deliberately picks alpha = 0 has
+ * the value re-asserted to opaque on the next load — fully transparent
+ * accent is functionally invisible, so this is the correct trade.
  */
 @Serializable
 sealed interface AccentColorChoice {
@@ -21,7 +32,7 @@ sealed interface AccentColorChoice {
 
     @Serializable
     @SerialName("custom")
-    data class Custom(val rgb: Long) : AccentColorChoice
+    data class Custom(@SerialName("rgb") val argb: Long) : AccentColorChoice
 }
 
 /**
@@ -138,11 +149,12 @@ fun SwitcherSettings.sanitized(): SwitcherSettings = copy(
  * Inspector windows, and replaced the px-cap mode with an
  * icons-per-row cap; the old fields are no longer read. v5 adds the
  * title-matching badge rules (Settings → Badges tab). v6 surfaces the
- * switcher-overlay panel + demote-block colours.
+ * switcher-overlay panel + demote-block colours. v7 widens
+ * `AccentColorChoice.Custom` from RGB to ARGB.
  */
 @Serializable
 data class AppConfig(
-    val schemaVersion: Int = 6,
+    val schemaVersion: Int = 7,
     val filters: FilteringRules = FilteringRules(),
     val badges: BadgeRules = BadgeRules(),
     /** Settings window position + size. `null` until the first move/resize. */
@@ -162,8 +174,9 @@ data class AppConfig(
     val currentSpaceOnly: Boolean = false,
     /** Highlight colour. Default is the warm yellow-orange the app shipped
      *  with; toggling to [AccentColorChoice.UseSystem] mirrors the macOS
-     *  control-accent setting in real time. */
-    val accentColor: AccentColorChoice = AccentColorChoice.Custom(0xFFC107),
+     *  control-accent setting in real time. ARGB-packed since v7 — the
+     *  picker's alpha slider applies. */
+    val accentColor: AccentColorChoice = AccentColorChoice.Custom(0xFFFFC107),
     /** ARGB-packed (`0xAARRGGBB`) backdrop of the switcher overlay's
      *  rounded plate. Default matches the originally-hardcoded
      *  `Color(0xFF1B1B1F)` — opaque, very dark blueish-black. Alpha

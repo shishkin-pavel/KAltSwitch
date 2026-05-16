@@ -230,16 +230,12 @@ private fun GeneralSection(
                 label = "Panel background",
                 argb = panelBgArgb,
                 onChange = onPanelBgArgbChange,
-                // Alpha below ~0xE0 washes the white-on-dark titles out; the
-                // panel is a heavyweight backdrop, not a translucent tint.
-                showAlpha = false,
             )
             NativeRowDivider()
             ColorSwatchRow(
                 label = "Demoted backdrop",
                 argb = demoteBgArgb,
                 onChange = onDemoteBgArgbChange,
-                showAlpha = true,
             )
         }
     }
@@ -359,25 +355,21 @@ private fun AccentColorRow(
     onChange: (AccentColorChoice) -> Unit,
 ) {
     val isSystem = choice is AccentColorChoice.UseSystem
-    val customRgb = (choice as? AccentColorChoice.Custom)?.rgb ?: 0xFFC107L
+    val customArgb = (choice as? AccentColorChoice.Custom)?.argb ?: 0xFFFFC107L
     NativeRow(label = "Use system colour") {
         NativeToggle(
             checked = isSystem,
             onCheckedChange = { wantSystem ->
-                onChange(if (wantSystem) AccentColorChoice.UseSystem else AccentColorChoice.Custom(customRgb))
+                onChange(if (wantSystem) AccentColorChoice.UseSystem else AccentColorChoice.Custom(customArgb))
             },
         )
     }
     if (!isSystem) {
         NativeRowDivider()
-        // The picker speaks in 0xAARRGGBB; accent is RGB-only (opaque
-        // highlight) so we force alpha = FF on the way in and strip it
-        // again on the way out.
         ColorSwatchRow(
             label = "Custom colour",
-            argb = 0xFF000000L or customRgb,
-            onChange = { argb -> onChange(AccentColorChoice.Custom(argb and 0xFFFFFFL)) },
-            showAlpha = false,
+            argb = customArgb,
+            onChange = { argb -> onChange(AccentColorChoice.Custom(argb)) },
         )
     }
 }

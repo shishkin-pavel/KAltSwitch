@@ -12,12 +12,14 @@ import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.text.BasicTextField
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
@@ -33,98 +35,36 @@ import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.text.TextRange
+import androidx.compose.ui.text.TextStyle
+import androidx.compose.ui.text.font.FontFamily
+import androidx.compose.ui.text.input.TextFieldValue
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import kotlin.math.abs
 
 /**
- * Compose-native HSV(+A) colour picker. Saturation-value plane, hue
- * track, optional alpha track, and a hex text field — all driven from a
- * single `0xAARRGGBB` Long. Matches the rest of the AppKit-mimicking
- * controls in look (rounded corners, hairline border, the same thumb
- * style as [NativeSlider]).
+ * Settings-row pairing: a label, a tappable colour swatch, and a fully
+ * editable hex field side by side. Tapping the swatch toggles an inline
+ * panel containing the HSV+alpha sliders and one editable hex field per
+ * channel ("a", "r", "g", "b"). Both the collapsed hex field and the
+ * inline picker emit through the same [onChange], so external state
+ * stays the single source of truth.
  *
- * Hue is held in *local* state, not derived from [argb], so saturation
- * crossing zero (which kills the hue component of an RGB colour) doesn't
- * snap the picker back to red. [argb] is the source of truth on input
- * (external mutation reseeds local state); the picker's emissions go
- * through [onChange] and don't bounce back through the LaunchedEffect
- * because the equality check rejects identical round-trips.
- */
-@Composable
-fun ColorPicker(
-    argb: Long,
-    onChange: (Long) -> Unit,
-    showAlpha: Boolean = true,
-    modifier: Modifier = Modifier,
-) {
-    val initial = remember { argbToHsva(argb) }
-    var h by remember { mutableStateOf(initial.h) }
-    var s by remember { mutableStateOf(initial.s) }
-    var v by remember { mutableStateOf(initial.v) }
-    var a by remember { mutableStateOf(if (showAlpha) initial.a else 1f) }
-
-    LaunchedEffect(argb) {
-        if (hsvaToArgb(h, s, v, a) != argb) {
-            val incoming = argbToHsva(argb)
-            // Keep the local hue when the incoming colour has saturation 0
-            // (greyscale carries no hue) — otherwise dragging S to 0 and
-            // back would reset to red.
-            if (incoming.s > 0f) h = incoming.h
-            s = incoming.s
-            v = incoming.v
-            a = if (showAlpha) incoming.a else 1f
-        }
-    }
-
-    fun emit() {
-        onChange(hsvaToArgb(h, s, v, if (showAlpha) a else 1f))
-    }
-
-    Column(modifier, verticalArrangement = Arrangement.spacedBy(8.dp)) {
-        SvSquare(hue = h, s = s, v = v) { ns, nv ->
-            s = ns; v = nv; emit()
-        }
-        HueSlider(hue = h) { nh ->
-            h = nh; emit()
-        }
-        if (showAlpha) {
-            AlphaSlider(hue = h, s = s, v = v, alpha = a) { na ->
-                a = na; emit()
-            }
-        }
-        Row(
-            verticalAlignment = Alignment.CenterVertically,
-            horizontalArrangement = Arrangement.spacedBy(8.dp),
-        ) {
-            ColorSwatch(argb = hsvaToArgb(h, s, v, if (showAlpha) a else 1f), size = 28.dp)
-            Box(Modifier.width(if (showAlpha) 110.dp else 90.dp)) {
-                HexField(
-                    argb = hsvaToArgb(h, s, v, if (showAlpha) a else 1f),
-                    showAlpha = showAlpha,
-                    onChange = onChange,
-                )
-            }
-        }
-    }
-}
-
-/**
- * Settings-row pairing: a label, a tappable colour swatch, and the hex
- * text alongside it. Tapping the swatch toggles an inline panel
- * containing [ColorPicker]. Both the swatch and the inline picker emit
- * through the same [onChange] so external state stays the single source
- * of truth.
+ * The picker is permanently alpha-aware now — there is no `showAlpha`
+ * knob. Call sites that store opaque-only values (the accent up through
+ * v6 was 24-bit RGB) need to widen their storage to ARGB first; see
+ * [AccentColorChoice.Custom]'s KDoc for the migration story.
  */
 @Composable
 fun ColorSwatchRow(
     label: String,
     argb: Long,
     onChange: (Long) -> Unit,
-    showAlpha: Boolean = true,
 ) {
     var expanded by rememberSaveable(label) { mutableStateOf(false) }
     Column {
@@ -145,13 +85,14 @@ fun ColorSwatchRow(
                     Box(
                         Modifier
                             .matchParentSize()
-                            .border(0.5.dp, AppPalette.groupBorder, RoundedCornerShape(4.dp))
+                            .border(0.5.dp, AppPalette.groupBorder, RoundedCornerShape(4.dp)),
                     )
                 }
-                NativeText(
-                    formatArgbHex(argb, showAlpha),
-                    fontSize = 12.sp,
-                    color = AppPalette.textSecondary,
+                OverwriteHexField(
+                    value = formatArgbHex(argb),
+                    length = 8,
+                    onValidChange = { hex -> hex.toLongOrNull(16)?.let(onChange) },
+                    modifier = Modifier.width(108.dp),
                 )
             }
         }
@@ -160,11 +101,79 @@ fun ColorSwatchRow(
                 Modifier.fillMaxWidth().padding(top = 4.dp, bottom = 8.dp),
                 contentAlignment = Alignment.Center,
             ) {
-                ColorPicker(
-                    argb = argb,
-                    onChange = onChange,
-                    showAlpha = showAlpha,
-                )
+                ColorPicker(argb = argb, onChange = onChange)
+            }
+        }
+    }
+}
+
+/**
+ * Compose-native HSV+alpha colour picker. Saturation-value plane, hue
+ * track, alpha track, and four per-channel hex fields ("a", "r", "g",
+ * "b") — all driven from a single `0xAARRGGBB` Long.
+ *
+ * Hue is held in *local* state, not derived from [argb], so saturation
+ * crossing zero (which kills the hue component of an RGB colour) doesn't
+ * snap the picker back to red. [argb] is the source of truth on input
+ * (external mutation reseeds local state); the picker's emissions go
+ * through [onChange] and don't bounce back through the LaunchedEffect
+ * because the equality check rejects identical round-trips.
+ */
+@Composable
+fun ColorPicker(
+    argb: Long,
+    onChange: (Long) -> Unit,
+    modifier: Modifier = Modifier,
+) {
+    val initial = remember { argbToHsva(argb) }
+    var h by remember { mutableStateOf(initial.h) }
+    var s by remember { mutableStateOf(initial.s) }
+    var v by remember { mutableStateOf(initial.v) }
+    var a by remember { mutableStateOf(initial.a) }
+
+    LaunchedEffect(argb) {
+        if (hsvaToArgb(h, s, v, a) != argb) {
+            val incoming = argbToHsva(argb)
+            // Keep the local hue when the incoming colour has saturation 0
+            // (greyscale carries no hue) — otherwise dragging S to 0 and
+            // back would reset to red.
+            if (incoming.s > 0f) h = incoming.h
+            s = incoming.s
+            v = incoming.v
+            a = incoming.a
+        }
+    }
+
+    fun emit() {
+        onChange(hsvaToArgb(h, s, v, a))
+    }
+
+    Column(modifier, verticalArrangement = Arrangement.spacedBy(8.dp)) {
+        SvSquare(hue = h, s = s, v = v) { ns, nv ->
+            s = ns; v = nv; emit()
+        }
+        HueSlider(hue = h) { nh ->
+            h = nh; emit()
+        }
+        AlphaSlider(hue = h, s = s, v = v, alpha = a) { na ->
+            a = na; emit()
+        }
+        Row(
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(6.dp),
+        ) {
+            // ARGB byte order: alpha, red, green, blue.
+            ChannelField("a", ((argb ushr 24) and 0xFFL).toInt()) { v ->
+                onChange((argb and 0x00FFFFFFL) or (v.toLong() shl 24))
+            }
+            ChannelField("r", ((argb ushr 16) and 0xFFL).toInt()) { v ->
+                onChange((argb and 0xFF00FFFFL) or (v.toLong() shl 16))
+            }
+            ChannelField("g", ((argb ushr 8) and 0xFFL).toInt()) { v ->
+                onChange((argb and 0xFFFF00FFL) or (v.toLong() shl 8))
+            }
+            ChannelField("b", (argb and 0xFFL).toInt()) { v ->
+                onChange((argb and 0xFFFFFF00L) or v.toLong())
             }
         }
     }
@@ -212,14 +221,14 @@ private fun SvSquare(
         // Saturation 0 → white at the left edge, fading to pure hue.
         Box(
             Modifier.matchParentSize().background(
-                Brush.horizontalGradient(listOf(Color.White, Color.Transparent))
-            )
+                Brush.horizontalGradient(listOf(Color.White, Color.Transparent)),
+            ),
         )
         // Value layer: top stays bright, bottom fades to black.
         Box(
             Modifier.matchParentSize().background(
-                Brush.verticalGradient(listOf(Color.Transparent, Color.Black))
-            )
+                Brush.verticalGradient(listOf(Color.Transparent, Color.Black)),
+            ),
         )
         val indicatorXDp = with(density) { (s * maxWidth.toPx()).toDp() }
         val indicatorYDp = with(density) { ((1f - v) * maxHeight.toPx()).toDp() }
@@ -265,7 +274,7 @@ private fun HueSlider(hue: Float, onChange: (Float) -> Unit) {
                 .height(trackHeight)
                 .clip(RoundedCornerShape(trackHeight / 2))
                 .background(Brush.horizontalGradient(HueStops))
-                .border(0.5.dp, AppPalette.groupBorder, RoundedCornerShape(trackHeight / 2))
+                .border(0.5.dp, AppPalette.groupBorder, RoundedCornerShape(trackHeight / 2)),
         )
         val thumbXDp = with(density) { (hue / 360f * maxWidth.toPx()).toDp() }
         SliderThumb(centerXDp = thumbXDp, fill = argbToColor(hsvaToArgb(hue, 1f, 1f, 1f)))
@@ -306,7 +315,7 @@ private fun AlphaSlider(hue: Float, s: Float, v: Float, alpha: Float, onChange: 
                 .clip(RoundedCornerShape(trackHeight / 2))
                 .drawBehind { drawCheckerboard() }
                 .background(Brush.horizontalGradient(listOf(clear, opaque)))
-                .border(0.5.dp, AppPalette.groupBorder, RoundedCornerShape(trackHeight / 2))
+                .border(0.5.dp, AppPalette.groupBorder, RoundedCornerShape(trackHeight / 2)),
         )
         val thumbXDp = with(density) { (alpha * maxWidth.toPx()).toDp() }
         SliderThumb(centerXDp = thumbXDp, fill = opaque.copy(alpha = alpha))
@@ -323,7 +332,7 @@ private fun ColorIndicator(offsetXDp: Dp, offsetYDp: Dp) {
             .size(ringDp)
             .clip(CircleShape)
             .border(2.dp, Color.White, CircleShape)
-            .border(0.5.dp, Color.Black.copy(alpha = 0.55f), CircleShape)
+            .border(0.5.dp, Color.Black.copy(alpha = 0.55f), CircleShape),
     )
 }
 
@@ -338,47 +347,188 @@ private fun SliderThumb(centerXDp: Dp, fill: Color) {
             .drawBehind { drawCheckerboard() }
             .background(fill)
             .border(2.dp, Color.White, CircleShape)
-            .border(0.5.dp, Color.Black.copy(alpha = 0.55f), CircleShape)
+            .border(0.5.dp, Color.Black.copy(alpha = 0.55f), CircleShape),
     )
 }
 
+/**
+ * One labelled byte-wide hex field (e.g. `a: FF`). Sits in the row of
+ * four channel inputs the expanded picker renders under its sliders.
+ */
 @Composable
-private fun ColorSwatch(argb: Long, size: Dp = 24.dp) {
-    Box(
-        Modifier
-            .size(size)
-            .clip(RoundedCornerShape(4.dp))
-            .border(0.5.dp, AppPalette.groupBorder, RoundedCornerShape(4.dp)),
+private fun ChannelField(label: String, value: Int, onChange: (Int) -> Unit) {
+    Row(
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(3.dp),
     ) {
-        Box(Modifier.matchParentSize().drawBehind { drawCheckerboard() })
-        Box(Modifier.matchParentSize().background(argbToColor(argb)))
+        NativeText(
+            "$label:",
+            fontSize = 12.sp,
+            color = AppPalette.textSecondary,
+        )
+        OverwriteHexField(
+            value = value.toString(16).padStart(2, '0').uppercase(),
+            length = 2,
+            onValidChange = { hex -> hex.toIntOrNull(16)?.let(onChange) },
+            modifier = Modifier.width(34.dp),
+        )
     }
 }
 
+/**
+ * Hex text field that behaves like the keyboard's Insert key is on:
+ * typing a character at the cursor *replaces* the character there
+ * rather than shifting the existing chars right. The field stays
+ * exactly [length] chars at all times; backspace and delete move the
+ * cursor without changing text (otherwise the field would shrink and
+ * we'd need a separate "now what" state).
+ *
+ * Built on top of [BasicTextField] with a [TextFieldValue] so we can
+ * inspect both the old and new cursor positions on every change.
+ * Plain `BasicTextField(value: String, ...)` doesn't surface selection,
+ * which makes the insert→overwrite conversion impossible to do in
+ * `onValueChange` alone.
+ */
 @Composable
-private fun HexField(argb: Long, showAlpha: Boolean, onChange: (Long) -> Unit) {
-    NativeTextField(
-        value = formatArgbHex(argb, showAlpha),
-        onValueChange = { raw ->
-            val want = if (showAlpha) 8 else 6
-            val cleaned = raw.trimStart('#').take(want).uppercase()
-            if (cleaned.length == want) {
-                cleaned.toLongOrNull(16)?.let { parsed ->
-                    val final = if (showAlpha) parsed else (0xFF000000L or parsed)
-                    onChange(final)
+private fun OverwriteHexField(
+    value: String,
+    length: Int,
+    onValidChange: (String) -> Unit,
+    modifier: Modifier = Modifier,
+) {
+    var tfv by remember(length) {
+        mutableStateOf(TextFieldValue(value, TextRange(0)))
+    }
+    // External resync: when the parent pushes a new `value` (e.g. SV
+    // square dragged → ARGB recomputed → hex restringified), update
+    // our text without trampling the cursor unless we have to.
+    LaunchedEffect(value) {
+        if (tfv.text != value) {
+            val cursor = tfv.selection.start.coerceIn(0, value.length)
+            tfv = TextFieldValue(value, TextRange(cursor))
+        }
+    }
+    val pal = AppPalette
+    Box(
+        modifier
+            .heightIn(min = 22.dp)
+            .clip(RoundedCornerShape(4.dp))
+            .background(pal.controlFill)
+            .border(0.5.dp, pal.groupBorder, RoundedCornerShape(4.dp))
+            .padding(horizontal = 6.dp, vertical = 3.dp),
+    ) {
+        BasicTextField(
+            value = tfv,
+            onValueChange = { newTfv ->
+                val rewritten = overwriteHex(
+                    oldText = tfv.text,
+                    oldSelection = tfv.selection,
+                    newText = newTfv.text,
+                    newSelection = newTfv.selection,
+                    length = length,
+                )
+                tfv = rewritten
+                if (rewritten.text != value && rewritten.text.length == length) {
+                    onValidChange(rewritten.text)
                 }
-            }
-        },
-    )
-}
-
-private fun formatArgbHex(argb: Long, showAlpha: Boolean): String {
-    return if (showAlpha) {
-        argb.toString(16).padStart(8, '0').uppercase()
-    } else {
-        (argb and 0xFFFFFFL).toString(16).padStart(6, '0').uppercase()
+            },
+            singleLine = true,
+            cursorBrush = SolidColor(pal.textPrimary),
+            textStyle = TextStyle(
+                color = pal.textPrimary,
+                fontSize = 13.sp,
+                fontFamily = FontFamily.Monospace,
+            ),
+            modifier = Modifier.fillMaxWidth(),
+        )
     }
 }
+
+/**
+ * Pure logic for [OverwriteHexField]. Given the field's prior text +
+ * selection and the new text + selection that `BasicTextField` is
+ * proposing, compute the [TextFieldValue] we actually want to commit.
+ *
+ * Cases handled:
+ *  - text unchanged → caret move only, accept newSelection.
+ *  - oldSelection had a range (user replaced a span) → splice the
+ *    typed chars in over the start of the span, keep the rest of old
+ *    text after, so the total stays [length] long.
+ *  - collapsed selection + insert (newText longer) → splice the typed
+ *    chars in over the chars at/after the caret, dropping the same
+ *    number of old chars to keep the field [length] long.
+ *  - collapsed selection + delete (newText shorter) → keep old text,
+ *    move the caret per newSelection (so backspace looks like the
+ *    caret stepped left without erasing anything).
+ *
+ * Non-hex characters are filtered out before splicing — pasting "blue"
+ * effectively types nothing and leaves the field untouched.
+ */
+private fun overwriteHex(
+    oldText: String,
+    oldSelection: TextRange,
+    newText: String,
+    newSelection: TextRange,
+    length: Int,
+): TextFieldValue {
+    if (oldText == newText) {
+        return TextFieldValue(oldText, newSelection)
+    }
+    fun String.hexUp(): String = filter { c ->
+        c in '0'..'9' || c in 'a'..'f' || c in 'A'..'F'
+    }.uppercase()
+
+    val oldStart = oldSelection.start.coerceAtMost(oldText.length)
+    val oldEnd = oldSelection.end.coerceAtMost(oldText.length)
+
+    if (oldStart != oldEnd) {
+        // The user had a span selected and BasicTextField just replaced it
+        // with `inserted`. Splice `inserted` over the chars at [start..),
+        // keeping the trailing portion of oldText so total length stays
+        // pinned at `length`.
+        val insertedEnd = (newSelection.start).coerceAtLeast(oldStart)
+        val inserted = newText.substring(oldStart, insertedEnd.coerceAtMost(newText.length)).hexUp()
+        val before = oldText.substring(0, oldStart)
+        val tailStart = (oldStart + inserted.length).coerceAtMost(oldText.length)
+        val after = oldText.substring(tailStart)
+        val combined = (before + inserted + after).take(length)
+        val final = if (combined.length < length) {
+            combined.padEnd(length, '0')
+        } else combined
+        val cursor = (oldStart + inserted.length).coerceIn(0, length)
+        return TextFieldValue(final, TextRange(cursor))
+    }
+
+    val delta = newText.length - oldText.length
+    if (delta > 0) {
+        // Insert: splice inserted chars over the chars at/after the caret.
+        val inserted = newText.substring(oldStart, oldStart + delta).hexUp()
+        if (inserted.isEmpty()) {
+            return TextFieldValue(oldText, oldSelection)
+        }
+        val before = oldText.substring(0, oldStart)
+        val tailStart = (oldStart + inserted.length).coerceAtMost(oldText.length)
+        val after = oldText.substring(tailStart)
+        val combined = (before + inserted + after).take(length)
+        val final = if (combined.length < length) {
+            combined.padEnd(length, '0')
+        } else combined
+        val cursor = (oldStart + inserted.length).coerceIn(0, length)
+        return TextFieldValue(final, TextRange(cursor))
+    }
+    if (delta < 0) {
+        // Backspace / Delete. Preserve text length; just adopt the new
+        // caret position so the cursor visually steps.
+        val cursor = newSelection.start.coerceIn(0, oldText.length)
+        return TextFieldValue(oldText, TextRange(cursor))
+    }
+    // Same length, different bytes — e.g. an IME replaced a digit.
+    val sanitized = newText.hexUp().take(length).padEnd(length, '0')
+    return TextFieldValue(sanitized, newSelection)
+}
+
+private fun formatArgbHex(argb: Long): String =
+    argb.toString(16).padStart(8, '0').uppercase()
 
 // ─────────────────────────── Drawing helpers ───────────────────────────
 
