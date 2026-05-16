@@ -243,8 +243,6 @@ final class AxAppWatcher {
     }
 
     private func makeWindow(from axWin: AXUIElement) -> Window? {
-        subscribePerWindow(axWin)
-        let title = (readAttribute(axWin, kAXTitleAttribute as String) as? String) ?? ""
         // Role / subrole values come from AX with the "AX" prefix
         // ("AXWindow", "AXStandardWindow", "AXSheet"). We *don't* strip
         // the prefix on the way in — what AX returns is what the user
@@ -252,6 +250,18 @@ final class AxAppWatcher {
         // RolePredicate(Eq, "AXWindow") rule. Better to expose the real
         // names than to silently rewrite them.
         let role = readAttribute(axWin, kAXRoleAttribute as String) as? String
+        // Reject anything that isn't a real window-like element. AX
+        // notifications subscribed on a window bubble — when a child
+        // AXStaticText / AXImage changes, kAXTitleChanged fires on our
+        // subscribed window *with `element` set to the child*. Without
+        // this guard, `pushWindowFromElement` would upsert that child
+        // as a "window" of the app (role: AXStaticText). Slack hits
+        // this constantly because its message rows are AXStaticText
+        // whose AXTitle is the message body, which changes on every
+        // edit / scroll / mention update.
+        guard let role, windowLikeRoles.contains(role) else { return nil }
+        subscribePerWindow(axWin)
+        let title = (readAttribute(axWin, kAXTitleAttribute as String) as? String) ?? ""
         let subrole = readAttribute(axWin, kAXSubroleAttribute as String) as? String
         let isMin = (readAttribute(axWin, kAXMinimizedAttribute as String) as? Bool) ?? false
         // kAXFullscreenAttribute isn't a public constant; the underlying name is "AXFullScreen".
