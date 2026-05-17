@@ -481,10 +481,15 @@ private fun WindowRowVisual(
     val bg = if (isActive) AccentColor else Color.Transparent
     val fg = when {
         isActive -> Color.Black
-        // Demoted titles share the normal-row colour; the demote cue
-        // is the backdrop, not the text dim — the previous 0x8A was
-        // unreadable against any backdrop tint.
-        else -> Color(0xFFBBBBBB)
+        // Per-row demote cue. The bucket-wide grey backdrop only covers
+        // top-level Demote rows; pinned children classified as Demote
+        // (e.g. a Firefox PiP pinned under the main window) sit inside
+        // their parent's indented subtree, well outside the bucket — they
+        // need their own dim. Mirrors the Inspector's
+        // `dimmedFor(Demote) = alpha 0.65`, since the user expects the two
+        // surfaces to agree on what "demoted" looks like.
+        isDemoted -> Color(0xFFEEEEEE).copy(alpha = 0.55f)
+        else -> Color(0xFFEEEEEE)
     }
     Row(
         modifier
@@ -760,9 +765,10 @@ private fun SwitcherPanel(
                                 customBadge = args.customBadge,
                                 windows = args.windows,
                                 windowBadges = args.windowBadges,
-                                shownWindowCount = args.shownWindowCount,
+                                shownTopWindowCount = args.shownTopWindowCount,
+                                demotedWindowIds = args.demotedWindowIds,
                                 isSelected = args.isSelected,
-                                selectedWindowIndex = args.selectedWindowIndex,
+                                selectedWindowId = args.selectedWindowId,
                                 onHoverApp = args.onHoverApp,
                                 onHoverWindow = args.onHoverWindow,
                                 onClickApp = args.onClickApp,
@@ -784,7 +790,7 @@ private fun SwitcherPanel(
                                 isDemoted = false,
                                 appIndex = showIndex,
                                 cursorAppIndex = state.cursor.appIndex,
-                                cursorWindowIndex = state.cursor.windowIndex,
+                                selectedWindowId = state.selectedWindowId,
                                 badgeRules = badgeRules,
                                 onPointAt = onPointAt,
                                 onCommit = onCommit,
@@ -810,7 +816,7 @@ private fun SwitcherPanel(
                                             isDemoted = true,
                                             appIndex = withWindowsCount + demoteIndex,
                                             cursorAppIndex = state.cursor.appIndex,
-                                            cursorWindowIndex = state.cursor.windowIndex,
+                                            selectedWindowId = state.selectedWindowId,
                                             badgeRules = badgeRules,
                                             onPointAt = onPointAt,
                                             onCommit = onCommit,
@@ -898,9 +904,22 @@ private data class AppCellArgs(
     /** Per-window badge state in the same order as [windows]. Indices match
      *  1:1 because `computeBadgeTree` walks `entry.windows` in order. */
     val windowBadges: List<WindowBadge>,
-    val shownWindowCount: Int,
+    /** Visual partition only: number of leading top-level rows in the
+     *  "Show" bucket. Comes from `AppEntry.shownTopWindowCount`. The
+     *  keyboard-scope split (`AppEntry.shownWindowCount`) lives on the
+     *  controller side and is irrelevant for rendering. */
+    val shownTopWindowCount: Int,
+    /** Identities of every window (root or nested child) the filter pipeline
+     *  classified as `Demote`. Each rendered row consults this set to pick
+     *  its tint, so a Demote child of a Show parent still reads as demoted
+     *  — see `AppEntry.demotedWindowIds` for the source. */
+    val demotedWindowIds: Set<WindowId>,
     val isSelected: Boolean,
-    val selectedWindowIndex: Int,
+    /** Identity of the currently-highlighted window, or `null` when the
+     *  cursor sits on the app cell. Comparing by id makes highlight work
+     *  for pinned children rendered inside `ChildWindowSubtree` (which
+     *  have no top-level row index of their own). */
+    val selectedWindowId: WindowId?,
     val onHoverApp: () -> Unit,
     val onHoverWindow: (Int) -> Unit,
     val onClickApp: () -> Unit,
@@ -913,7 +932,7 @@ private fun cellArgs(
     isDemoted: Boolean,
     appIndex: Int,
     cursorAppIndex: Int,
-    cursorWindowIndex: Int,
+    selectedWindowId: WindowId?,
     badgeRules: BadgeRules,
     onPointAt: (appIndex: Int, windowIndex: Int?) -> Unit,
     onCommit: () -> Unit,
@@ -936,9 +955,10 @@ private fun cellArgs(
         customBadge = tree.displayBadge,
         windows = entry.windows,
         windowBadges = tree.windows,
-        shownWindowCount = entry.shownWindowCount,
+        shownTopWindowCount = entry.shownTopWindowCount,
+        demotedWindowIds = entry.demotedWindowIds,
         isSelected = isSelected,
-        selectedWindowIndex = if (isSelected) cursorWindowIndex else -1,
+        selectedWindowId = if (isSelected) selectedWindowId else null,
         onHoverApp = { onPointAt(appIndex, null) },
         onHoverWindow = { wi -> onPointAt(appIndex, wi) },
         onClickApp = { onPointAt(appIndex, null); onCommit() },
@@ -959,9 +979,10 @@ private fun AppCell(
     customBadge: ResolvedBadge?,
     windows: List<com.shish.kaltswitch.model.Window>,
     windowBadges: List<WindowBadge>,
-    shownWindowCount: Int,
+    shownTopWindowCount: Int,
+    demotedWindowIds: Set<WindowId>,
     isSelected: Boolean,
-    selectedWindowIndex: Int,
+    selectedWindowId: WindowId?,
     onHoverApp: () -> Unit,
     onHoverWindow: (Int) -> Unit,
     onClickApp: () -> Unit,
@@ -1071,9 +1092,10 @@ private fun AppCell(
                 appName = name,
                 windows = windows,
                 windowBadges = windowBadges,
-                shownWindowCount = shownWindowCount,
+                shownTopWindowCount = shownTopWindowCount,
+                demotedWindowIds = demotedWindowIds,
                 isAppSelected = isSelected,
-                selectedWindowIndex = selectedWindowIndex,
+                selectedWindowId = selectedWindowId,
                 onHoverWindow = onHoverWindow,
                 onClickWindow = onClickWindow,
             )
@@ -1109,16 +1131,16 @@ private fun windowRowArgs(
     appName: String,
     fullIndex: Int,
     isAppSelected: Boolean,
-    selectedWindowIndex: Int,
-    isDemoted: Boolean,
+    selectedWindowId: WindowId?,
+    demotedWindowIds: Set<WindowId>,
     onHoverWindow: (Int) -> Unit,
     onClickWindow: (Int) -> Unit,
 ): WindowRowArgs = WindowRowArgs(
     title = effectiveWindowTitle(w.title, appName),
-    isActive = isAppSelected && fullIndex == selectedWindowIndex,
+    isActive = isAppSelected && w.id == selectedWindowId,
     isMinimized = w.isMinimized,
     isFullscreen = w.isFullscreen,
-    isDemoted = isDemoted,
+    isDemoted = w.id in demotedWindowIds,
     customBadge = badge?.displayBadge,
     onHover = { onHoverWindow(fullIndex) },
     onClick = { onClickWindow(fullIndex) },
@@ -1130,19 +1152,20 @@ private fun WindowList(
     appName: String,
     windows: List<com.shish.kaltswitch.model.Window>,
     windowBadges: List<WindowBadge>,
-    shownWindowCount: Int,
+    shownTopWindowCount: Int,
+    demotedWindowIds: Set<WindowId>,
     isAppSelected: Boolean,
-    selectedWindowIndex: Int,
+    selectedWindowId: WindowId?,
     onHoverWindow: (Int) -> Unit,
     onClickWindow: (Int) -> Unit,
 ) {
-    val showWindows = if (shownWindowCount <= 0) emptyList() else windows.take(shownWindowCount)
-    val demoteWindows = if (shownWindowCount >= windows.size) emptyList() else windows.drop(shownWindowCount)
+    val showWindows = if (shownTopWindowCount <= 0) emptyList() else windows.take(shownTopWindowCount)
+    val demoteWindows = if (shownTopWindowCount >= windows.size) emptyList() else windows.drop(shownTopWindowCount)
     // Per-window badge state from the bubble-up tree, indexed in lockstep
     // with [windows]. A pid that's missing from the tree (transient mismatch
     // mid-emit) just falls back to no badge.
-    val showBadges = if (shownWindowCount <= 0) emptyList() else windowBadges.take(shownWindowCount)
-    val demoteBadges = if (shownWindowCount >= windowBadges.size) emptyList() else windowBadges.drop(shownWindowCount)
+    val showBadges = if (shownTopWindowCount <= 0) emptyList() else windowBadges.take(shownTopWindowCount)
+    val demoteBadges = if (shownTopWindowCount >= windowBadges.size) emptyList() else windowBadges.drop(shownTopWindowCount)
     // Cell-local LookaheadScope: window-row animateBounds tracks
     // positions in coordinates rooted at THIS WindowList, not the
     // outer FlowRow scope used by AppCell. That isolation is
@@ -1211,8 +1234,8 @@ private fun WindowList(
                                 appName = appName,
                                 fullIndex = i,
                                 isAppSelected = isAppSelected,
-                                selectedWindowIndex = selectedWindowIndex,
-                                isDemoted = false,
+                                selectedWindowId = selectedWindowId,
+                                demotedWindowIds = demotedWindowIds,
                                 onHoverWindow = onHoverWindow,
                                 onClickWindow = onClickWindow,
                             )
@@ -1222,7 +1245,9 @@ private fun WindowList(
                                 appName = appName,
                                 children = w.children,
                                 childBadges = badge.children,
-                                isDemoted = false,
+                                demotedWindowIds = demotedWindowIds,
+                                isAppSelected = isAppSelected,
+                                selectedWindowId = selectedWindowId,
                             )
                         }
                     }
@@ -1238,7 +1263,7 @@ private fun WindowList(
                     verticalArrangement = Arrangement.spacedBy(1.dp),
                 ) {
                     demoteWindows.forEachIndexed { i, w ->
-                        val fullIndex = i + shownWindowCount
+                        val fullIndex = i + shownTopWindowCount
                         val badge = demoteBadges.getOrNull(i)
                         rowsByWid.getValue(w.id)(
                             windowRowArgs(
@@ -1247,8 +1272,8 @@ private fun WindowList(
                                 appName = appName,
                                 fullIndex = fullIndex,
                                 isAppSelected = isAppSelected,
-                                selectedWindowIndex = selectedWindowIndex,
-                                isDemoted = true,
+                                selectedWindowId = selectedWindowId,
+                                demotedWindowIds = demotedWindowIds,
                                 onHoverWindow = onHoverWindow,
                                 onClickWindow = onClickWindow,
                             )
@@ -1258,7 +1283,9 @@ private fun WindowList(
                                 appName = appName,
                                 children = w.children,
                                 childBadges = badge.children,
-                                isDemoted = true,
+                                demotedWindowIds = demotedWindowIds,
+                                isAppSelected = isAppSelected,
+                                selectedWindowId = selectedWindowId,
                             )
                         }
                     }
@@ -1269,17 +1296,22 @@ private fun WindowList(
 }
 
 /**
- * Indented, non-navigable subtree of child windows (sheets, drawers,
- * popovers — anything reported via `kAXChildWindowsAttribute`). The
- * container draws a thin vertical line in the indent gutter so the
- * parent-child relationship reads at a glance, without competing with
- * the accent-coloured selection bar on the active row.
+ * Indented subtree of child windows (sheets, drawers, pinned windows,
+ * etc.). A thin vertical line in the indent gutter makes the parent-child
+ * relationship readable.
  *
- * Children aren't part of the keyboard-nav index — macOS doesn't
- * separately focus a sheet from its parent — so these rows render with
- * no hover/click handlers. They're visual-only; the only reason to draw
- * them is so a per-window badge that didn't bubble can stay attached
- * to the right element of the hierarchy.
+ * Each tree level applies the same Show/Demote split the top-level cell
+ * uses: kept-Show siblings render inline, kept-Demote siblings sit inside
+ * a tinted Column (`SwitcherDemoteBg`) so the demote bucket reads as a
+ * unified block at every depth — a Demote-classified PiP pinned under a
+ * Show parent therefore shows the same grey backdrop a top-level demoted
+ * window would. Children of `filteredSwitcherSnapshot` arrive pre-sorted
+ * Show-then-Demote (see `classifyWindow`), so the prefix length is just
+ * the run of non-demoted ids.
+ *
+ * Pinned children are keyboard-selectable (cmd+`/arrows step into them),
+ * so the active highlight uses identity match — mouse hover/click still
+ * goes through the parent for now.
  */
 @OptIn(ExperimentalComposeUiApi::class)
 @Composable
@@ -1287,9 +1319,16 @@ private fun ChildWindowSubtree(
     appName: String,
     children: List<com.shish.kaltswitch.model.Window>,
     childBadges: List<WindowBadge>,
-    isDemoted: Boolean,
+    demotedWindowIds: Set<WindowId>,
+    isAppSelected: Boolean,
+    selectedWindowId: WindowId?,
 ) {
     if (children.isEmpty()) return
+    val shownPrefix = children.takeWhile { it.id !in demotedWindowIds }.size
+    val showChildren = children.take(shownPrefix)
+    val demoteChildren = children.drop(shownPrefix)
+    val showBadges = childBadges.take(shownPrefix)
+    val demoteBadges = childBadges.drop(shownPrefix)
     Row(Modifier.fillMaxWidth()) {
         Box(
             Modifier
@@ -1302,26 +1341,79 @@ private fun ChildWindowSubtree(
             Modifier
                 .weight(1f)
                 .padding(start = 7.dp),
-            verticalArrangement = Arrangement.spacedBy(1.dp),
+            verticalArrangement = Arrangement.spacedBy(2.dp),
         ) {
-            children.forEachIndexed { i, child ->
-                val badge = childBadges.getOrNull(i)
-                ChildWindowRow(
-                    title = effectiveWindowTitle(child.title, appName),
-                    isMinimized = child.isMinimized,
-                    isFullscreen = child.isFullscreen,
-                    isDemoted = isDemoted,
-                    customBadge = badge?.displayBadge,
-                )
-                if (badge != null && badge.children.isNotEmpty()) {
-                    ChildWindowSubtree(
+            if (showChildren.isNotEmpty()) {
+                Column(
+                    Modifier.fillMaxWidth(),
+                    verticalArrangement = Arrangement.spacedBy(1.dp),
+                ) {
+                    ChildRows(
                         appName = appName,
-                        children = child.children,
-                        childBadges = badge.children,
-                        isDemoted = isDemoted,
+                        children = showChildren,
+                        badges = showBadges,
+                        demotedWindowIds = demotedWindowIds,
+                        isAppSelected = isAppSelected,
+                        selectedWindowId = selectedWindowId,
                     )
                 }
             }
+            if (demoteChildren.isNotEmpty()) {
+                Column(
+                    Modifier
+                        .fillMaxWidth()
+                        .clip(RoundedCornerShape(4.dp))
+                        .background(SwitcherDemoteBg)
+                        .padding(horizontal = 2.dp, vertical = 2.dp),
+                    verticalArrangement = Arrangement.spacedBy(1.dp),
+                ) {
+                    ChildRows(
+                        appName = appName,
+                        children = demoteChildren,
+                        badges = demoteBadges,
+                        demotedWindowIds = demotedWindowIds,
+                        isAppSelected = isAppSelected,
+                        selectedWindowId = selectedWindowId,
+                    )
+                }
+            }
+        }
+    }
+}
+
+/** Render a flat list of child rows (one bucket — Show or Demote — of a
+ *  parent's children). Pulled out so [ChildWindowSubtree]'s two buckets
+ *  share the row-emit logic without duplicating the recursion into deeper
+ *  subtrees. */
+@OptIn(ExperimentalComposeUiApi::class)
+@Composable
+private fun ChildRows(
+    appName: String,
+    children: List<com.shish.kaltswitch.model.Window>,
+    badges: List<WindowBadge>,
+    demotedWindowIds: Set<WindowId>,
+    isAppSelected: Boolean,
+    selectedWindowId: WindowId?,
+) {
+    children.forEachIndexed { i, child ->
+        val badge = badges.getOrNull(i)
+        ChildWindowRow(
+            title = effectiveWindowTitle(child.title, appName),
+            isActive = isAppSelected && child.id == selectedWindowId,
+            isMinimized = child.isMinimized,
+            isFullscreen = child.isFullscreen,
+            isDemoted = child.id in demotedWindowIds,
+            customBadge = badge?.displayBadge,
+        )
+        if (badge != null && badge.children.isNotEmpty()) {
+            ChildWindowSubtree(
+                appName = appName,
+                children = child.children,
+                childBadges = badge.children,
+                demotedWindowIds = demotedWindowIds,
+                isAppSelected = isAppSelected,
+                selectedWindowId = selectedWindowId,
+            )
         }
     }
 }
@@ -1336,17 +1428,20 @@ private val ChildConnectorColor = Color(0x33FFFFFF)
 @Composable
 private fun ChildWindowRow(
     title: String,
+    isActive: Boolean,
     isMinimized: Boolean,
     isFullscreen: Boolean,
     isDemoted: Boolean,
     customBadge: ResolvedBadge?,
 ) {
-    // Reuses [WindowRowVisual]'s layout but is never selected and has no
-    // pointer handlers — child windows aren't switchable independently.
+    // Reuses [WindowRowVisual]'s layout. Since pinning, child rows can be
+    // keyboard-selected (cmd+`/arrows walk into them), so the active flag
+    // is honoured here too. Mouse hover/click still goes through the
+    // parent's onPointAt — first-class child clicking is a follow-up.
     WindowRowVisual(
         modifier = Modifier.fillMaxWidth(),
         title = title,
-        isActive = false,
+        isActive = isActive,
         isMinimized = isMinimized,
         isFullscreen = isFullscreen,
         isDemoted = isDemoted,

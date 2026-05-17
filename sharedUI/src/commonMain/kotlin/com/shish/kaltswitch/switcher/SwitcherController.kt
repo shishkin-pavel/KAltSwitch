@@ -212,24 +212,28 @@ class SwitcherController(
         val cur = _ui.value ?: return
         val snapshot = cur.state.snapshot
         if (snapshot.all.isEmpty()) return
-        // Last index inside the *Show* range — the hot-key path's scope.
-        // cmd+shift+tab from closed should land on the oldest *Show* app, not
-        // wander into the Demote bucket.
-        val lastCursor = when (entry) {
-            SwitcherEntry.App -> SwitcherCursor(
-                appIndex = (snapshot.shownAppCount - 1).coerceAtLeast(0),
-                windowIndex = 0,
-            )
+        // Land on the oldest entry within the hot-key path's Show scope.
+        // cmd+shift+tab from closed should reach the oldest Show app, not
+        // wander into the Demote bucket. Identity-based so a Show app's
+        // pinned children (themselves Show) are eligible window-stops too.
+        val nextState = when (entry) {
+            SwitcherEntry.App -> {
+                val app = snapshot.withWindows.lastOrNull() ?: return
+                cur.state.copy(
+                    selectedAppPid = app.app.pid,
+                    selectedWindowId = app.shownNavigableWindows.firstOrNull()?.id,
+                )
+            }
             SwitcherEntry.Window -> {
-                val first = snapshot.all[0]
-                SwitcherCursor(
-                    appIndex = 0,
-                    windowIndex = (first.shownWindowCount - 1).coerceAtLeast(0),
+                val app = snapshot.withWindows.firstOrNull() ?: return
+                cur.state.copy(
+                    selectedAppPid = app.app.pid,
+                    selectedWindowId = app.shownNavigableWindows.lastOrNull()?.id,
                 )
             }
         }
-        log("[ctl] placeOnLastInRecency entry=$entry cursor=$lastCursor")
-        _ui.value = cur.copy(state = cur.state.withCursor(lastCursor), previewedWindowId = null)
+        log("[ctl] placeOnLastInRecency entry=$entry identity=(${nextState.selectedAppPid},${nextState.selectedWindowId})")
+        _ui.value = cur.copy(state = nextState, previewedWindowId = null)
     }
 
     /**
@@ -306,11 +310,26 @@ class SwitcherController(
         }
         val items = cur.state.snapshot.all
         if (appIndex !in items.indices) return
-        val windows = items[appIndex].windows
+        val app = items[appIndex]
+        // The overlay still reports `windowIndex` as the top-level row index
+        // (children aren't mouse-targets yet). The cursor, however, indexes
+        // into the navigable (DFS) list — translate by identity so a click
+        // on a top-level row resolves to the same window the cursor would
+        // select. Anchor on `app.windows[windowIndex].id` then look it up in
+        // `navigableWindows`.
+        val navigable = app.navigableWindows
         val resolvedWindowIndex = when {
-            windows.isEmpty() -> 0
-            windowIndex != null -> windowIndex.coerceIn(0, windows.size - 1)
-            appIndex == cur.state.cursor.appIndex -> cur.state.cursor.windowIndex.coerceIn(0, windows.size - 1)
+            navigable.isEmpty() -> 0
+            windowIndex != null -> {
+                // Clamp into the top-level row range first (callers report
+                // index against `app.windows`, not `navigableWindows`), then
+                // translate to navigable index by identity.
+                val clampedTop = windowIndex.coerceIn(0, app.windows.lastIndex.coerceAtLeast(0))
+                val rootWid = app.windows.getOrNull(clampedTop)?.id
+                if (rootWid != null) navigable.indexOfFirst { it.id == rootWid }.coerceAtLeast(0)
+                else 0
+            }
+            appIndex == cur.state.cursor.appIndex -> cur.state.cursor.windowIndex.coerceIn(0, navigable.size - 1)
             else -> 0
         }
         val nextCursor = SwitcherCursor(appIndex, resolvedWindowIndex)
@@ -407,8 +426,10 @@ class SwitcherController(
     private fun openSession(entry: SwitcherEntry) {
         val world = store.state.value
         val filters = store.filters.value
+        val pinning = store.pinning.value
         val snapshot = world.filteredSwitcherSnapshot(
             filters = filters,
+            pinning = pinning,
             currentSpaceOnly = store.currentSpaceOnly.value,
             visibleSpaceIds = store.visibleSpaceIds.value,
         )
@@ -467,11 +488,13 @@ class SwitcherController(
             combine(
                 store.state,
                 store.filters,
+                store.pinning,
                 store.currentSpaceOnly,
                 store.visibleSpaceIds,
-            ) { world, filters, currentSpaceOnly, visibleSpaceIds ->
+            ) { world, filters, pinning, currentSpaceOnly, visibleSpaceIds ->
                 world.filteredSwitcherSnapshot(
                     filters = filters,
+                    pinning = pinning,
                     currentSpaceOnly = currentSpaceOnly,
                     visibleSpaceIds = visibleSpaceIds,
                 )

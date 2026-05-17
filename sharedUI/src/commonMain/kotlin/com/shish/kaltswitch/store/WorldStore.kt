@@ -11,6 +11,7 @@ import com.shish.kaltswitch.model.AppActivationPolicy
 import com.shish.kaltswitch.model.BadgeRules
 import com.shish.kaltswitch.model.FilteringRules
 import com.shish.kaltswitch.model.Pid
+import com.shish.kaltswitch.model.PinningRules
 import com.shish.kaltswitch.model.Window
 import com.shish.kaltswitch.model.WindowId
 import com.shish.kaltswitch.model.World
@@ -55,6 +56,16 @@ class WorldStore(initial: World = World(ActivationLog(), emptyMap(), emptyMap())
 
     fun setBadgeRules(b: BadgeRules) {
         _badgeRules.value = b
+    }
+
+    /** Predicate-based pinning rules: matching top-level windows are
+     *  re-parented under the most recently activated root of the same app.
+     *  Consumed by [World.applyPinning] inside `snapshot()`. */
+    private val _pinning = MutableStateFlow(PinningRules())
+    val pinning: StateFlow<PinningRules> = _pinning.asStateFlow()
+
+    fun setPinning(p: PinningRules) {
+        _pinning.value = p
     }
 
     private val _switcherSettings = MutableStateFlow(SwitcherSettings())
@@ -356,6 +367,7 @@ class WorldStore(initial: World = World(ActivationLog(), emptyMap(), emptyMap())
     fun applyConfig(cfg: AppConfig) {
         setFilters(cfg.filters)
         setBadgeRules(cfg.badges)
+        setPinning(cfg.pinning)
         setSettingsWindowFrame(cfg.settingsWindowFrame)
         setInspectorWindowFrame(cfg.inspectorWindowFrame)
         setSwitcherSettings(cfg.switcher)
@@ -417,20 +429,25 @@ class WorldStore(initial: World = World(ActivationLog(), emptyMap(), emptyMap())
         ) { accent, panelBg, demoteBg ->
             Triple(accent, panelBg, demoteBg)
         }
+        // Pair badge + pinning rules so the outer combine stays within its
+        // 5-arm overload. Both are predicate-rule collections without their
+        // own colour/numeric arms — sharing one slot reads fine.
+        val ruleExtras = combine(badgeRules, pinning) { b, p -> b to p }
         return combine(
             core,
             launchAtLogin,
             currentSpaceOnly,
             colors,
-            badgeRules,
-        ) { base, launchAtLogin, currentSpaceOnly, colorsT, badges ->
+            ruleExtras,
+        ) { base, launchAtLogin, currentSpaceOnly, colorsT, extras ->
             base.copy(
                 launchAtLogin = launchAtLogin,
                 currentSpaceOnly = currentSpaceOnly,
                 accentColor = colorsT.first,
                 switcherPanelBgArgb = colorsT.second,
                 switcherDemoteBgArgb = colorsT.third,
-                badges = badges,
+                badges = extras.first,
+                pinning = extras.second,
             )
         }
     }

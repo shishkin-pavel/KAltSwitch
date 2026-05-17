@@ -179,10 +179,11 @@ data class FilteredSnapshot(
  */
 fun World.filteredSnapshot(
     filters: FilteringRules,
+    pinning: PinningRules = PinningRules(),
     currentSpaceOnly: Boolean = false,
     visibleSpaceIds: List<Long> = emptyList(),
 ): FilteredSnapshot {
-    val raw = snapshot()
+    val raw = snapshot(pinning)
     val all = raw.withWindows + raw.windowless
 
     val show = mutableListOf<AppView>()
@@ -283,21 +284,59 @@ private fun modeOrder(v: WindowView): Int = modeOrder(v.mode)
  */
 fun World.filteredSwitcherSnapshot(
     filters: FilteringRules,
+    pinning: PinningRules = PinningRules(),
     currentSpaceOnly: Boolean = false,
     visibleSpaceIds: List<Long> = emptyList(),
 ): SwitcherSnapshot {
-    val fs = filteredSnapshot(filters, currentSpaceOnly, visibleSpaceIds)
+    val fs = filteredSnapshot(filters, pinning, currentSpaceOnly, visibleSpaceIds)
     fun toEntry(av: AppView): AppEntry {
         val visible = av.windows.filter { it.mode != TriFilter.Hide }
-        val shownWindowCount = visible.count { it.mode == TriFilter.Show }
+        // `shownWindowCount` now counts the leading prefix of the navigable
+        // (DFS-flat) list that sits under Show-classified roots — pinned
+        // children inherit their root's scope. Demote-classified children of
+        // a Show root therefore stay in the Shown range (cmd+` visits them);
+        // children of a Demote root stay in All-only. Simple rule: walk
+        // leading Show top-level views and sum (1 + kept descendants).
+        val shownTop = visible.count { it.mode == TriFilter.Show }
+        val demotedIds = HashSet<WindowId>()
+        for (v in visible) collectDemotedIds(v, demotedIds)
         return AppEntry(
             app = av.app,
-            windows = visible.map { it.window },
-            shownWindowCount = shownWindowCount,
+            windows = visible.map { it.toSwitcherWindow() },
+            shownTopWindowCount = shownTop,
+            demotedWindowIds = demotedIds,
         )
+        // shownWindowCount is a derived property on AppEntry now (size of
+        // shownNavigableWindows) — no need to pre-compute it here.
     }
     return SwitcherSnapshot(
         withWindows = fs.show.map(::toEntry),
         windowless = fs.demote.map(::toEntry),
     )
+}
+
+/**
+ * Project a classified [WindowView] back to a plain [Window] for the
+ * switcher, propagating classification into the nested child tree:
+ *  - `Hide` children are dropped (the switcher never renders them).
+ *  - `Show` and `Demote` children are kept; order already reflects
+ *    `classifyWindow`'s `Show before Demote before Hide` sort, so a
+ *    demoted child naturally appears after its sibling Show children
+ *    under the same parent.
+ *
+ * Caller is responsible for filtering Hide *roots* before invoking this —
+ * the function asserts only that the receiver itself is being rendered.
+ */
+private fun WindowView.toSwitcherWindow(): Window {
+    val keptChildren = children
+        .filter { it.mode != TriFilter.Hide }
+        .map { it.toSwitcherWindow() }
+    return window.copy(children = keptChildren)
+}
+
+/** Walk [v] and its non-Hide descendants, adding ids of Demote-classified
+ *  windows to [out]. Used to seed `AppEntry.demotedWindowIds`. */
+private fun collectDemotedIds(v: WindowView, out: MutableSet<WindowId>) {
+    if (v.mode == TriFilter.Demote) out.add(v.window.id)
+    for (c in v.children) if (c.mode != TriFilter.Hide) collectDemotedIds(c, out)
 }

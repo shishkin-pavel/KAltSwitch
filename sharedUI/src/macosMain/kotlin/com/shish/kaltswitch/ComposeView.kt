@@ -148,6 +148,7 @@ fun AttachSettingsView(window: NSWindow): ComposeNSViewDelegate = ComposeNSViewD
             val demoteBgArgb by store.switcherDemoteBgArgb.collectAsState()
             val filters by store.filters.collectAsState()
             val badgeRules by store.badgeRules.collectAsState()
+            val pinningRules by store.pinning.collectAsState()
             SettingsContent(
                 switcherSettings = switcherSettings,
                 onSwitcherSettingsChange = { store.setSwitcherSettings(it) },
@@ -167,6 +168,8 @@ fun AttachSettingsView(window: NSWindow): ComposeNSViewDelegate = ComposeNSViewD
                 onFiltersChange = { store.setFilters(it) },
                 badgeRules = badgeRules,
                 onBadgeRulesChange = { store.setBadgeRules(it) },
+                pinningRules = pinningRules,
+                onPinningRulesChange = { store.setPinning(it) },
             )
         }
     },
@@ -185,6 +188,7 @@ fun AttachInspectorView(window: NSWindow): ComposeNSViewDelegate = ComposeNSView
             val activeAppPid by store.activeAppPid.collectAsState()
             val activeWindowId by store.activeWindowId.collectAsState()
             val filters by store.filters.collectAsState()
+            val pinning by store.pinning.collectAsState()
             val currentSpaceOnly by store.currentSpaceOnly.collectAsState()
             val visibleSpaceIds by store.visibleSpaceIds.collectAsState()
             InspectorContent(
@@ -193,6 +197,7 @@ fun AttachInspectorView(window: NSWindow): ComposeNSViewDelegate = ComposeNSView
                 activeAppPid = activeAppPid,
                 activeWindowId = activeWindowId,
                 filters = filters,
+                pinning = pinning,
                 currentSpaceOnly = currentSpaceOnly,
                 visibleSpaceIds = visibleSpaceIds,
                 onGrantAxClick = {

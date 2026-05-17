@@ -73,7 +73,7 @@ data class SwitcherState(
         get() {
             val app = selectedAppEntry ?: return null
             val wid = selectedWindowId ?: return null
-            return app.windows.firstOrNull { it.id == wid }
+            return app.navigableWindows.firstOrNull { it.id == wid }
         }
 
     /**
@@ -89,7 +89,7 @@ data class SwitcherState(
             if (appIndex < 0) return SwitcherCursor(0, 0)
             val app = snapshot.all[appIndex]
             val windowIndex = if (selectedWindowId == null) 0
-            else app.windows.indexOfFirst { it.id == selectedWindowId }
+            else app.navigableWindows.indexOfFirst { it.id == selectedWindowId }
                 .takeIf { it >= 0 } ?: 0
             return SwitcherCursor(appIndex, windowIndex)
         }
@@ -103,43 +103,54 @@ sealed interface SwitcherEvent {
 }
 
 /**
- * Default cursor on switcher open. Shown-scope by default — the Carbon hot
- * key path is the canonical entry, and we want it to land on a visible (Show)
- * item even when the inspector is configured to demote a lot of apps:
- *   - App entry  → app[1].window[0] (second-most-recent Show app, its newest window).
- *   - Window entry → app[0].window[1] (current app, its second-most-recent Show window).
+ * Default cursor identity on switcher open. Shown-scope by default — the
+ * Carbon hot-key path is the canonical entry, and we want it to land on a
+ * visible (Show) item even when the user has demoted lots of apps:
+ *   - App entry → second-most-recent Show app, its newest navigable window
+ *     (clamped to the only available app when there's just one).
+ *   - Window entry → current app, its second-most-recent Show window.
  *
- * Both fall back to the closest available cell when the scope's range is
- * smaller than the index (e.g. only one Show app → cursor stays on app[0]).
+ * Returns `(null, null)` when the snapshot is empty so an empty switcher
+ * session has a well-defined "no selection" identity.
  */
-fun SwitcherSnapshot.defaultCursor(
+internal fun SwitcherSnapshot.defaultIdentity(
     entry: SwitcherEntry,
     scope: NavScope = NavScope.Shown,
-): SwitcherCursor {
-    val items = all
-    if (items.isEmpty()) return SwitcherCursor(0, 0)
+): Pair<Pid?, WindowId?> {
+    val apps = scopedApps(scope)
+    if (apps.isEmpty()) return null to null
     return when (entry) {
         SwitcherEntry.App -> {
-            val maxIndex = appLastIndexInScope(scope)
-            SwitcherCursor(
-                appIndex = 1.coerceAtMost(maxIndex),
-                windowIndex = 0,
-            )
+            val app = apps.getOrNull(1) ?: apps.first()
+            app.app.pid to app.scopedNavigable(scope).firstOrNull()?.id
         }
         SwitcherEntry.Window -> {
-            val first = items[0]
-            val maxIndex = first.windowLastIndexInScope(scope)
-            SwitcherCursor(
-                appIndex = 0,
-                windowIndex = 1.coerceAtMost(maxIndex),
-            )
+            val app = apps.first()
+            val wins = app.scopedNavigable(scope)
+            val wid = wins.getOrNull(1)?.id ?: wins.firstOrNull()?.id
+            app.app.pid to wid
         }
     }
 }
 
+/** Index-based wrapper around [defaultIdentity] kept for tests / debug surfaces
+ *  that still want a numeric cursor. New code should reach for the identity
+ *  fields on [SwitcherState] directly. */
+fun SwitcherSnapshot.defaultCursor(
+    entry: SwitcherEntry,
+    scope: NavScope = NavScope.Shown,
+): SwitcherCursor {
+    val (pid, wid) = defaultIdentity(entry, scope)
+    if (pid == null) return SwitcherCursor(0, 0)
+    val appIdx = all.indexOfFirst { it.app.pid == pid }.coerceAtLeast(0)
+    val winIdx = wid?.let { id ->
+        all[appIdx].navigableWindows.indexOfFirst { it.id == id }
+    } ?: 0
+    return SwitcherCursor(appIdx, winIdx.coerceAtLeast(0))
+}
+
 fun openSwitcher(snapshot: SwitcherSnapshot, entry: SwitcherEntry): SwitcherState {
-    val initialCursor = snapshot.defaultCursor(entry)
-    val (pid, wid) = snapshot.identityAt(initialCursor)
+    val (pid, wid) = snapshot.defaultIdentity(entry)
     return SwitcherState(
         snapshot = snapshot,
         entry = entry,
@@ -148,69 +159,88 @@ fun openSwitcher(snapshot: SwitcherSnapshot, entry: SwitcherEntry): SwitcherStat
     )
 }
 
-/** Resolve `(appIndex, windowIndex)` to (pid, windowId?) against this snapshot.
- *  Returns `(null, null)` when the snapshot is empty so an empty switcher session
- *  has a well-defined "no selection" identity. */
+/** Resolve a numeric cursor to its (pid, windowId?) identity against this
+ *  snapshot. `windowIndex` indexes into the app's [AppEntry.navigableWindows]
+ *  (DFS over roots + pinned children). Returns `(null, null)` for an out-of-
+ *  range cursor so an empty session has a well-defined no-selection identity. */
 internal fun SwitcherSnapshot.identityAt(cursor: SwitcherCursor): Pair<Pid?, WindowId?> {
     val app = all.getOrNull(cursor.appIndex) ?: return null to null
-    val wid = app.windows.getOrNull(cursor.windowIndex)?.id
+    val wid = app.navigableWindows.getOrNull(cursor.windowIndex)?.id
     return app.app.pid to wid
 }
 
+/** Set the cursor by numeric index, translating to the persisted identity.
+ *  Kept for the mouse-pointAt path (which speaks indices) and for tests; the
+ *  keyboard `apply()` works on identity directly. */
+fun SwitcherState.withCursor(cursor: SwitcherCursor): SwitcherState {
+    val (pid, wid) = snapshot.identityAt(cursor)
+    return copy(selectedAppPid = pid, selectedWindowId = wid)
+}
+
 /**
- * Apply a navigation event under the given scope. Wraps around at the scope's
- * edges. Changing apps resets `windowIndex` to 0 (most-recent window of the
- * newly-selected app).
+ * Apply a navigation event under the given scope. Identity-based: the
+ * cursor advances by index *within the scoped list* and wraps at the edges,
+ * but the persisted state remains (pid, windowId). Changing apps lands the
+ * cursor on the new app's newest navigable window (or its app-level cell
+ * when the app is windowless / its windows are all out-of-scope).
  *
- * If the cursor sits *outside* the scope's range when a hot-key event fires
- * (e.g. user used the arrow keys to step into a demoted app, then hit
- * cmd+tab), the cursor snaps to the start/end of the in-scope range — same
- * effect as a fresh open. That matches the user expectation of "cmd+tab
+ * `NavScope.Shown` operates on `withWindows` + each app's
+ * `shownNavigableWindows` (Show entries DFS, Demote subtrees pruned).
+ * `NavScope.All` operates on `all` apps + each app's `navigableWindows`
+ * (full DFS, Show siblings before Demote siblings per level — already
+ * baked in by `classifyWindow`'s child sort).
+ *
+ * If the cursor sits on an item that the scope doesn't include (e.g. user
+ * arrow-keyed to a demoted PiP, then hit cmd+tab), the next/prev still
+ * wraps inside the scope — same effect as a fresh open, matches "cmd+tab
  * keeps me in Show; arrows can wander".
  */
 fun SwitcherState.apply(
     event: SwitcherEvent,
     scope: NavScope = NavScope.All,
-): SwitcherState {
-    val items = snapshot.all
-    if (items.isEmpty()) return this
-    val current = cursor
-
-    return when (event) {
-        SwitcherEvent.NextApp -> {
-            val maxIdx = snapshot.appLastIndexInScope(scope)
-            if (maxIdx < 0) return this
-            val next = nextInRange(current.appIndex, 0, maxIdx)
-            withCursor(SwitcherCursor(appIndex = next, windowIndex = 0))
-        }
-        SwitcherEvent.PrevApp -> {
-            val maxIdx = snapshot.appLastIndexInScope(scope)
-            if (maxIdx < 0) return this
-            val prev = prevInRange(current.appIndex, 0, maxIdx)
-            withCursor(SwitcherCursor(appIndex = prev, windowIndex = 0))
-        }
-        SwitcherEvent.NextWindow -> {
-            val app = items.getOrNull(current.appIndex) ?: return this
-            val maxIdx = app.windowLastIndexInScope(scope)
-            if (maxIdx < 0) this
-            else withCursor(current.copy(windowIndex = nextInRange(current.windowIndex, 0, maxIdx)))
-        }
-        SwitcherEvent.PrevWindow -> {
-            val app = items.getOrNull(current.appIndex) ?: return this
-            val maxIdx = app.windowLastIndexInScope(scope)
-            if (maxIdx < 0) this
-            else withCursor(current.copy(windowIndex = prevInRange(current.windowIndex, 0, maxIdx)))
-        }
-    }
+): SwitcherState = when (event) {
+    SwitcherEvent.NextApp -> stepApp(scope, forward = true)
+    SwitcherEvent.PrevApp -> stepApp(scope, forward = false)
+    SwitcherEvent.NextWindow -> stepWindow(scope, forward = true)
+    SwitcherEvent.PrevWindow -> stepWindow(scope, forward = false)
 }
 
-/** Set the cursor by index, translating to the persisted (pid, windowId)
- *  identity against the current snapshot. The switcher state is index-driven
- *  for navigation events but identity-stored, so callers from [apply] / hover
- *  / [SwitcherController.placeOnLastInRecency] all flow through one helper. */
-fun SwitcherState.withCursor(cursor: SwitcherCursor): SwitcherState {
-    val (pid, wid) = snapshot.identityAt(cursor)
-    return copy(selectedAppPid = pid, selectedWindowId = wid)
+private fun SwitcherState.stepApp(scope: NavScope, forward: Boolean): SwitcherState {
+    val apps = snapshot.scopedApps(scope)
+    if (apps.isEmpty()) return this
+    val currentIdx = apps.indexOfFirst { it.app.pid == selectedAppPid }
+    val nextApp = apps[stepIndex(currentIdx, apps.size, forward)]
+    return copy(
+        selectedAppPid = nextApp.app.pid,
+        selectedWindowId = nextApp.scopedNavigable(scope).firstOrNull()?.id,
+    )
+}
+
+private fun SwitcherState.stepWindow(scope: NavScope, forward: Boolean): SwitcherState {
+    val app = selectedAppEntry ?: return this
+    val windows = app.scopedNavigable(scope)
+    if (windows.isEmpty()) return this
+    val currentIdx = windows.indexOfFirst { it.id == selectedWindowId }
+    return copy(selectedWindowId = windows[stepIndex(currentIdx, windows.size, forward)].id)
+}
+
+/** Cyclic step: advance/retreat by one within `[0, size)`, wrapping at the
+ *  edges. A `current` of -1 (out of scope) lands at the start (forward) or
+ *  end (backward) — same as the previous "snap to range edge" rule. */
+private fun stepIndex(current: Int, size: Int, forward: Boolean): Int {
+    if (size <= 0) return 0
+    if (current < 0) return if (forward) 0 else size - 1
+    return if (forward) (current + 1).mod(size) else (current - 1 + size).mod(size)
+}
+
+internal fun SwitcherSnapshot.scopedApps(scope: NavScope): List<AppEntry> = when (scope) {
+    NavScope.Shown -> withWindows
+    NavScope.All -> all
+}
+
+internal fun AppEntry.scopedNavigable(scope: NavScope): List<Window> = when (scope) {
+    NavScope.Shown -> shownNavigableWindows
+    NavScope.All -> navigableWindows
 }
 
 /**
@@ -278,21 +308,25 @@ private fun pickWindowNeighbour(
     newApp: AppEntry,
     disappearedWid: WindowId,
 ): WindowId? {
-    if (newApp.windows.isEmpty()) return null
-    val oldWindows = oldApp?.windows.orEmpty()
-    val oldIndex = oldWindows.indexOfFirst { it.id == disappearedWid }
+    // Operate on the navigable list so pinned children participate in the
+    // neighbour walk — closing a child window should jump to its sibling /
+    // parent the same way closing a top-level window jumps to its neighbour.
+    val newNav = newApp.navigableWindows
+    if (newNav.isEmpty()) return null
+    val newIds = newNav.mapTo(HashSet()) { it.id }
+    val oldNav = oldApp?.navigableWindows.orEmpty()
+    val oldIndex = oldNav.indexOfFirst { it.id == disappearedWid }
     if (oldIndex >= 0) {
-        // Look right first (visual right-neighbour matches what the user saw).
-        for (i in (oldIndex + 1) until oldWindows.size) {
-            val cand = oldWindows[i].id
-            if (newApp.windows.any { it.id == cand }) return cand
+        for (i in (oldIndex + 1) until oldNav.size) {
+            val cand = oldNav[i].id
+            if (cand in newIds) return cand
         }
         for (i in (oldIndex - 1) downTo 0) {
-            val cand = oldWindows[i].id
-            if (newApp.windows.any { it.id == cand }) return cand
+            val cand = oldNav[i].id
+            if (cand in newIds) return cand
         }
     }
-    return newApp.windows.first().id
+    return newNav.first().id
 }
 
 private fun pickAppNeighbour(
@@ -315,28 +349,18 @@ private fun pickAppNeighbour(
     return null
 }
 
-/** Last valid app index inside [scope] in [SwitcherSnapshot.all]. -1 if empty. */
+/** Last valid app index inside [scope] in [SwitcherSnapshot.all]. -1 if empty.
+ *  Retained for callers that still want a numeric range; new code reaches
+ *  for [scopedApps] directly. */
 fun SwitcherSnapshot.appLastIndexInScope(scope: NavScope): Int = when (scope) {
     NavScope.Shown -> shownAppCount - 1
     NavScope.All -> all.lastIndex
 }
 
-/** Last valid window index inside [scope] in [AppEntry.windows]. -1 if empty. */
+/** Last valid window index inside [scope] in [AppEntry.navigableWindows].
+ *  Retained for callers that still want a numeric range; new code reaches
+ *  for [scopedNavigable] directly. */
 fun AppEntry.windowLastIndexInScope(scope: NavScope): Int = when (scope) {
     NavScope.Shown -> shownWindowCount - 1
-    NavScope.All -> windows.lastIndex
-}
-
-private fun nextInRange(current: Int, min: Int, max: Int): Int {
-    val size = max - min + 1
-    if (size <= 0) return current
-    return if (current < min || current > max) min
-    else (current - min + 1).mod(size) + min
-}
-
-private fun prevInRange(current: Int, min: Int, max: Int): Int {
-    val size = max - min + 1
-    if (size <= 0) return current
-    return if (current < min || current > max) max
-    else (current - min - 1 + size).mod(size) + min
+    NavScope.All -> navigableWindows.lastIndex
 }

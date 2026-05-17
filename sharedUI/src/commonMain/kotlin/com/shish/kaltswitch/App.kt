@@ -41,6 +41,7 @@ import com.shish.kaltswitch.model.AppView
 import com.shish.kaltswitch.model.BadgeRules
 import com.shish.kaltswitch.model.FilteredSnapshot
 import com.shish.kaltswitch.model.FilteringRules
+import com.shish.kaltswitch.model.PinningRules
 import com.shish.kaltswitch.model.TriFilter
 import com.shish.kaltswitch.model.WindowId
 import com.shish.kaltswitch.model.WindowView
@@ -77,6 +78,8 @@ fun SettingsContent(
     onFiltersChange: (FilteringRules) -> Unit,
     badgeRules: BadgeRules,
     onBadgeRulesChange: (BadgeRules) -> Unit,
+    pinningRules: PinningRules,
+    onPinningRulesChange: (PinningRules) -> Unit,
 ) {
     var selectedTab by rememberSaveable { mutableStateOf(0) }
     val pal = AppPalette
@@ -92,7 +95,7 @@ fun SettingsContent(
             contentAlignment = Alignment.Center,
         ) {
             NativeTabBar(
-                items = listOf("General", "Rules", "Badges"),
+                items = listOf("General", "Rules", "Badges", "Pinning"),
                 selectedIndex = selectedTab,
                 onSelect = { selectedTab = it },
             )
@@ -127,6 +130,10 @@ fun SettingsContent(
                 2 -> BadgeRulesPanel(
                     rules = badgeRules,
                     onChange = onBadgeRulesChange,
+                )
+                3 -> PinningRulesPanel(
+                    rules = pinningRules,
+                    onChange = onPinningRulesChange,
                 )
             }
         }
@@ -389,13 +396,14 @@ fun InspectorContent(
     activeAppPid: Int? = null,
     activeWindowId: WindowId? = null,
     filters: FilteringRules = FilteringRules(),
+    pinning: PinningRules = PinningRules(),
     currentSpaceOnly: Boolean = false,
     visibleSpaceIds: List<Long> = emptyList(),
     onGrantAxClick: () -> Unit = {},
 ) {
     val pal = AppPalette
-    val snapshot = remember(world, filters, currentSpaceOnly, visibleSpaceIds) {
-        world.filteredSnapshot(filters, currentSpaceOnly, visibleSpaceIds)
+    val snapshot = remember(world, filters, pinning, currentSpaceOnly, visibleSpaceIds) {
+        world.filteredSnapshot(filters, pinning, currentSpaceOnly, visibleSpaceIds)
     }
     Column(
         Modifier

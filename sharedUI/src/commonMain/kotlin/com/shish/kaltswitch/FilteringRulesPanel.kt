@@ -186,7 +186,7 @@ private fun RuleCard(
 }
 
 @Composable
-private fun NameField(
+internal fun NameField(
     value: String,
     placeholder: String,
     onChange: (String) -> Unit,
@@ -201,7 +201,7 @@ private fun NameField(
 }
 
 @Composable
-private fun PredicateRow(
+internal fun PredicateRow(
     predicate: Predicate,
     onChange: (Predicate) -> Unit,
     onDelete: () -> Unit,
@@ -419,7 +419,7 @@ private fun ValueTextField(
 }
 
 @Composable
-private fun AddPredicateButton(onAdd: (PredicateKind) -> Unit) {
+internal fun AddPredicateButton(onAdd: (PredicateKind) -> Unit) {
     var expanded by remember { mutableStateOf(false) }
     Box {
         Row(
@@ -452,7 +452,7 @@ private fun AddPredicateButton(onAdd: (PredicateKind) -> Unit) {
 }
 
 @Composable
-private fun ArrowButton(glyph: String, enabled: Boolean, onClick: () -> Unit) {
+internal fun ArrowButton(glyph: String, enabled: Boolean, onClick: () -> Unit) {
     val bg = if (enabled) AppPalette.controlTrack else AppPalette.controlFill
     val fg = if (enabled) AppPalette.textPrimary else AppPalette.textSecondary
     Box(
@@ -468,7 +468,7 @@ private fun ArrowButton(glyph: String, enabled: Boolean, onClick: () -> Unit) {
 }
 
 @Composable
-private fun IconButton(glyph: String, onClick: () -> Unit, color: Color) {
+internal fun IconButton(glyph: String, onClick: () -> Unit, color: Color) {
     Box(
         Modifier
             .size(22.dp)
@@ -503,7 +503,7 @@ private fun SegmentChip(text: String, selected: Boolean, onClick: () -> Unit) {
  * dropdown. The `create()` factory mints an instance with sane defaults so
  * the user can immediately see the row in the editor.
  */
-private enum class PredicateKind(val label: String, val create: () -> Predicate) {
+internal enum class PredicateKind(val label: String, val create: () -> Predicate) {
     BundleId("Bundle ID", { BundleIdPredicate() }),
     AppName("App name", { AppNamePredicate() }),
     IsHidden("Is hidden", { IsHiddenPredicate() }),
@@ -613,7 +613,7 @@ private fun ruleSummary(rule: Rule): String {
     return if (parts.size > 3) "$head · …" else head
 }
 
-private fun summarisePredicate(p: Predicate): String {
+internal fun summarisePredicate(p: Predicate): String {
     val core = when (p) {
         is BundleIdPredicate -> stringSummary("bundleId", p.op, p.value)
         is AppNamePredicate -> stringSummary("name", p.op, p.value)

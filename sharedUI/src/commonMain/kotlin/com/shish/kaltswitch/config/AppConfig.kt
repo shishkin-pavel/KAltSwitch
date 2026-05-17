@@ -2,6 +2,7 @@ package com.shish.kaltswitch.config
 
 import com.shish.kaltswitch.model.BadgeRules
 import com.shish.kaltswitch.model.FilteringRules
+import com.shish.kaltswitch.model.PinningRules
 import kotlinx.serialization.SerialName
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.json.Json
@@ -150,13 +151,16 @@ fun SwitcherSettings.sanitized(): SwitcherSettings = copy(
  * icons-per-row cap; the old fields are no longer read. v5 adds the
  * title-matching badge rules (Settings → Badges tab). v6 surfaces the
  * switcher-overlay panel + demote-block colours. v7 widens
- * `AccentColorChoice.Custom` from RGB to ARGB.
+ * `AccentColorChoice.Custom` from RGB to ARGB. v8 adds the pinning rules
+ * (Settings → Pinning tab) — re-parent matching windows under the most
+ * recently activated root of the same app.
  */
 @Serializable
 data class AppConfig(
-    val schemaVersion: Int = 7,
+    val schemaVersion: Int = 8,
     val filters: FilteringRules = FilteringRules(),
     val badges: BadgeRules = BadgeRules(),
+    val pinning: PinningRules = PinningRules(),
     /** Settings window position + size. `null` until the first move/resize. */
     val settingsWindowFrame: WindowFrame? = null,
     /** Inspector window position + size. `null` until the first move/resize. */

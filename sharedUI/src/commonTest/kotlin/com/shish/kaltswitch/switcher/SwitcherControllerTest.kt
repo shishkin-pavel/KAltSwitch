@@ -852,7 +852,12 @@ class SwitcherControllerTest {
         val w1 = Window(id = 1, pid = 1, title = "show 1")
         val w2 = Window(id = 2, pid = 1, title = "show 2")
         val w3 = Window(id = 3, pid = 1, title = "demote 3")
-        val entry = AppEntry(app, windows = listOf(w1, w2, w3), shownWindowCount = 2)
+        val entry = AppEntry(
+            app,
+            windows = listOf(w1, w2, w3),
+            shownTopWindowCount = 2,
+            demotedWindowIds = setOf(w3.id),
+        )
         val snapshot = SwitcherSnapshot(withWindows = listOf(entry), windowless = emptyList())
         var state = openSwitcher(snapshot, SwitcherEntry.Window).withCursor(SwitcherCursor(0, 0))
         // NextWindow Shown wraps within [0, 1].
