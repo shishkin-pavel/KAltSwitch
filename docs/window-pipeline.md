@@ -290,27 +290,82 @@ fires `onCommitActivation(pid, windowId)` when the user releases cmd.
 `macosApp/macosApp/AppRegistry.swift::commit(pid:windowId:)`
 
 On commit we want to: (a) make the target app frontmost, (b) raise the
-specific window the user picked, (c) switch macOS Spaces if the target
-window lives on another one. The full sequence:
+specific window the user picked, (c) flip the screen to the target
+window's Space if it isn't currently visible. The full sequence:
 
-1. **Resolve `CGWindowID`** for the target. AX side first:
-   `watcher.cgWindowId(forAxWindowId:)`. If null, the row was phantom-
-   only — fall back to `phantomCgWindowId(pid, windowId)` (a small map
-   `CGWindowListWatcher` maintains for exactly this reason). The phantom
-   table's existence is the entire reason we needed the per-pid
-   `cgWindowIdByPidByPhantomId` cache on the watcher.
-2. **`bringAppToFront(pid, cgWindowId)`** — `SkyLight.swift`. Calls the
+1. **Resolve `CGWindowID`** for the target via a 3-tier chain:
+   1. `watcher.cgWindowId(forAxWindowId:)` — AX-side, via the live
+      `AXUIElement` in `windowsByHash` + `_AXUIElementGetWindow`.
+      Works for windows AX currently sees.
+   2. `phantomCgWindowId(pid, windowId)` — the
+      `CGWindowListWatcher.cgWindowIdByPidByPhantomId` map keyed by
+      cgwid-as-id (CG-only entries use their cgwid as Window.id).
+   3. `store.cgWindowIdFor(pid, windowId)` — the final fallback. Reads
+      the `Window.cgWindowId` field from the unified store. Covers the
+      cross-source case: a window AX discovered (so its `id` is an
+      AX-CFHash), AX later retracted on a Space change, the store still
+      holds the entry with `sources={CG}` and the original cgwid intact.
+2. **Decide cross-Space switch.** `swipeToSpaceFor(cgWindowId:)`
+   compares the target's `spaceIdsFor(...)` against
+   `currentVisibleSpaceIds()`. If the window's Space is already
+   visible, no swipe; activation proceeds synchronously. Otherwise:
+   - Find the owning display via `displayIdentifierForSpace`.
+   - Compute `delta = targetIndex - currentIndex` in that display's
+     `Spaces` array.
+   - Hand `(count = |delta|, rightward = delta > 0,
+     displayBounds = CGDisplayBounds(...))` to a `SwipeOrchestrator`,
+     return `true` so `commit` defers activation.
+
+   `commit` bumps `commitToken` and stashes the activation closure;
+   the orchestrator's completion checks the token and runs the
+   closure only if it still matches (a superseding cmd+tab through
+   another cross-Space target cancels the older pending activation).
+3. **Dock-swipe sequence (cross-Space only).** `SwipeOrchestrator`:
+   1. Posts one synthetic 3-finger Space-swipe via the private
+      `kCGSEventDockControl` + `kIOHIDEventTypeDockSwipe` CGEvent
+      fields, `CGEventPost(.cgSessionEventTap, ...)`. The Dock
+      processes it as if a real trackpad gesture, runs the standard
+      swoosh animation.
+   2. If the cursor isn't on the target display, briefly warps it to
+      that display's centre (Dock binds the swipe to whichever display
+      has the cursor) and warps back to `saved + delta` immediately
+      after — the cursor never visually leaves its starting position.
+      Reference: `iss` and `InstantSpaceSwitcher` use the same private
+      field indices.
+   3. Listens for `NSWorkspace.activeSpaceDidChangeNotification` (the
+      reliable "swoosh complete" signal), advances to the next swipe
+      if `count > 1`, or fires the completion after an 80 ms settle.
+      A 250 ms per-swipe safety timeout fallback advances the sequence
+      if the notification is ever dropped.
+
+   `CGSManagedDisplaySetCurrentSpace` was the obvious-looking approach,
+   but it's silently neutralised on recent macOS — flips an internal
+   pointer without animating and pulls target-Space windows onto the
+   current Space instead of switching. alt-tab-macos documents the
+   same finding in their `experimentations/PrivateApis.swift`. The
+   synthetic dock-swipe is the workaround.
+4. **`bringAppToFront(pid, cgWindowId)`** — `SkyLight.swift`. Calls the
    private `_SLPSSetFrontProcessWithOptions(psn, cgWindowId,
    .userGenerated)` plus a Hammerspoon-style byte-record event to nail
    key-window status to *this* CGWindowID rather than the previous
-   focused one in the same process. **If the window lives on a different
-   space, the WindowServer switches space implicitly** — that's why the
-   activation path tolerates "no live AX element on the current space".
-3. **`watcher.makeWindowMain(windowId)`** — AX-only. Sets
+   focused one in the same process.
+5. **`watcher.makeWindowMain(windowId)`** — AX-only. Sets
    `kAXMainAttribute` + `kAXRaiseAction`. No-op for phantom commits.
-4. **`NSRunningApplication.activate()`** — the free public fallback. If
+6. **`NSRunningApplication.activate()`** — the free public fallback. If
    the private SkyLight call breaks in a future macOS, this keeps focus
    moving along the supported path.
+
+**Race recovery.** `HotkeyController` samples
+`NSEvent.modifierFlags.contains(.command)` inside its
+`DispatchQueue.main.async` block and forwards it to
+`SwitcherController.onShortcut(..., modifierHeld:)`. The CGEventTap
+modifier-release dispatch and the Carbon-hotkey dispatch race onto
+main with different latencies (~50 ms vs ~5–20 ms), so for sub-100 ms
+cmd-holds the release used to land before the openSession and leave
+the panel stuck until Esc. Now `onShortcut` checks `modifierHeld` on
+the first-press branch and auto-commits on the default cursor if
+cmd is already gone — same outcome as a properly-ordered
+press/release pair.
 
 ---
 
@@ -321,7 +376,8 @@ window lives on another one. The full sequence:
 | A window is *missing* from the switcher.                          | (a) AX trust? `[reg] AX trusted = …`. (b) Is the row in `[cgwl/emit]` for the latest refresh? (c) Is a rule hiding it?       |
 | The switcher shows a row that *isn't* a real window.              | `[cgwl/emit]` for that pid → check `isOnscreen` / `cgLayer` / `ownerName` / size. Then write a rule to hide it.              |
 | Off-space windows aren't showing up.                              | (a) `[cgwl/emit]` should have a row with `onscreen=0 onSpace=0`. (b) `currentSpaceOnly` setting must be off.                  |
-| Cmd-tab to an off-space row activates the wrong window.           | `AppRegistry.commit` log: `cg=…` should be non-zero. If zero, the phantom cgWindowId map didn't have it.                     |
+| Cmd-tab to an off-space row activates the wrong window.           | `AppRegistry.commit` log: `[reg] cgwid-resolve` should land non-nil from one of `fromAx`/`fromPhantom`/`fromStore`. If all nil → the store has no cgwid for that windowId. |
+| Cmd-tab to off-space target doesn't flip the Space (window pulled). | `[space-swipe]` should log `posting N swipe(s)` followed by `activeSpaceDidChange → visible now=[...]`. No `[space-swipe]` line → `spaceIdsFor` returned empty or the target Space is already visible. |
 | Same window appears twice.                                        | One of the sources doesn't have `cgWindowId` populated → merge can't dedup. Check `_AXUIElementGetWindow` return path.       |
 | All apps appear in the inspector but none in the switcher.        | Likely a rule with outcome `Hide` matching too broadly. Search `[ctl] openSession` output for the app set actually shipped. |
 
