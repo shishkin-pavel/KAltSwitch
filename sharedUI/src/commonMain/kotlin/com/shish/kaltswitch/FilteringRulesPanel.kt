@@ -1,6 +1,7 @@
 package com.shish.kaltswitch
 
 import androidx.compose.foundation.background
+import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -42,8 +43,14 @@ import com.shish.kaltswitch.model.ActivationPolicyPredicate
 import com.shish.kaltswitch.model.AppNamePredicate
 import com.shish.kaltswitch.model.AreaPredicate
 import com.shish.kaltswitch.model.BundleIdPredicate
+import com.shish.kaltswitch.model.CgAlphaPredicate
+import com.shish.kaltswitch.model.CgLayerPredicate
 import com.shish.kaltswitch.model.FilteringRules
+import com.shish.kaltswitch.model.HasSpaceIdsPredicate
 import com.shish.kaltswitch.model.HeightPredicate
+import com.shish.kaltswitch.model.IsOnVisibleSpacePredicate
+import com.shish.kaltswitch.model.IsOnscreenPredicate
+import com.shish.kaltswitch.model.OwnerNamePredicate
 import com.shish.kaltswitch.model.IsFinishedLaunchingPredicate
 import com.shish.kaltswitch.model.IsFocusedPredicate
 import com.shish.kaltswitch.model.IsFullscreenPredicate
@@ -77,29 +84,194 @@ fun FilteringRulesPanel(
 ) {
     Column(modifier, verticalArrangement = Arrangement.spacedBy(10.dp)) {
         for ((index, rule) in filters.rules.withIndex()) {
-            RuleCard(
-                rule = rule,
-                onChange = { updated ->
-                    onChange(filters.copy(rules = filters.rules.toMutableList().also { it[index] = updated }))
-                },
-                onDelete = {
-                    onChange(filters.copy(rules = filters.rules.toMutableList().also { it.removeAt(index) }))
-                },
-                onMoveUp = if (index == 0) null else {
-                    {
-                        onChange(filters.copy(rules = filters.rules.swapped(index, index - 1)))
-                    }
-                },
-                onMoveDown = if (index == filters.rules.lastIndex) null else {
-                    {
-                        onChange(filters.copy(rules = filters.rules.swapped(index, index + 1)))
-                    }
-                },
-            )
+            val onMoveUp: (() -> Unit)? = if (index == 0) null else {
+                { onChange(filters.copy(rules = filters.rules.swapped(index, index - 1))) }
+            }
+            val onMoveDown: (() -> Unit)? = if (index == filters.rules.lastIndex) null else {
+                { onChange(filters.copy(rules = filters.rules.swapped(index, index + 1))) }
+            }
+            val onEnabledChange: (Boolean) -> Unit = { newEnabled ->
+                onChange(filters.copy(rules = filters.rules.toMutableList().also {
+                    it[index] = rule.copy(enabled = newEnabled)
+                }))
+            }
+            if (rule.builtIn) {
+                // Built-in rules are immutable to the user — only their
+                // enabled flag and position in the chain are editable.
+                // Rendered compactly so the long built-in section
+                // doesn't bury the user's own rules.
+                BuiltInRuleCard(
+                    rule = rule,
+                    onEnabledChange = onEnabledChange,
+                    onMoveUp = onMoveUp,
+                    onMoveDown = onMoveDown,
+                )
+            } else {
+                RuleCard(
+                    rule = rule,
+                    onChange = { updated ->
+                        onChange(filters.copy(rules = filters.rules.toMutableList().also { it[index] = updated }))
+                    },
+                    onDelete = {
+                        onChange(filters.copy(rules = filters.rules.toMutableList().also { it.removeAt(index) }))
+                    },
+                    onMoveUp = onMoveUp,
+                    onMoveDown = onMoveDown,
+                )
+            }
         }
         AddRuleButton(onClick = {
             onChange(filters.copy(rules = filters.rules + Rule(id = newId())))
         })
+    }
+}
+
+/**
+ * Read-only card for [Rule.builtIn] rules. Distinct border colour
+ * (accent-tinted) tells the user at a glance that this is shipped
+ * default behaviour they can't reword — only enable / disable and
+ * reorder. Predicates render as static chips via [summarisePredicate];
+ * the outcome shows as a single colour-coded chip; the name is plain
+ * text (no editable affordance). Toggling [Rule.enabled] still goes
+ * through the normal `onChange` path so the rule chain reacts the
+ * same way it does for user rules.
+ */
+@Composable
+private fun BuiltInRuleCard(
+    rule: Rule,
+    onEnabledChange: (Boolean) -> Unit,
+    onMoveUp: (() -> Unit)?,
+    onMoveDown: (() -> Unit)?,
+) {
+    val borderColor = AccentColor.copy(alpha = 0.55f)
+    Column(
+        Modifier
+            .fillMaxWidth()
+            .clip(RoundedCornerShape(8.dp))
+            .background(AppPalette.groupBg)
+            .border(
+                width = 1.dp,
+                color = borderColor,
+                shape = RoundedCornerShape(8.dp),
+            )
+            .padding(10.dp),
+        verticalArrangement = Arrangement.spacedBy(6.dp),
+    ) {
+        Row(
+            Modifier.fillMaxWidth(),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(6.dp),
+        ) {
+            ArrowButton("▲", enabled = onMoveUp != null, onClick = { onMoveUp?.invoke() })
+            ArrowButton("▼", enabled = onMoveDown != null, onClick = { onMoveDown?.invoke() })
+            // Name as plain text — no NameField, no placeholder. ifBlank
+            // falls back to the auto-summary for older default-* rules
+            // that shipped without an explicit name.
+            NativeText(
+                text = rule.name.ifBlank { ruleSummary(rule).ifBlank { "Unnamed rule" } },
+                color = AppPalette.textPrimary,
+                fontSize = 12.sp,
+                fontWeight = FontWeight.Medium,
+                modifier = Modifier.weight(1f),
+            )
+            OutcomeChip(rule.outcome)
+            BuiltInBadge()
+            NativeToggle(checked = rule.enabled, onCheckedChange = onEnabledChange)
+        }
+        // Predicate summary line: one chip per predicate, inert. Skips
+        // disabled predicates because they don't fire — same convention
+        // [ruleSummary] uses. Empty list (defensive — every built-in
+        // ships with at least one predicate) renders nothing rather
+        // than an empty row.
+        val active = rule.predicates.filter { it.enabled }
+        if (active.isNotEmpty()) {
+            Row(
+                Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.spacedBy(4.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                NativeText("predicates:", color = AppPalette.textSecondary, fontSize = 10.sp)
+                for (p in active) {
+                    PredicateChip(summarisePredicate(p))
+                }
+            }
+        }
+    }
+}
+
+/** Outcome accent — single source of truth for the green / amber / red
+ *  tint that travels with each `TriFilter` value across the rule chips,
+ *  inspector plates, and classifier-attribution badges. Keeping the
+ *  function uninlined means any future tweak (e.g. switching to a
+ *  palette-driven colour set) touches one place. */
+private fun outcomeColor(outcome: TriFilter): Color = when (outcome) {
+    TriFilter.Show -> Color(0xFF60C065)
+    TriFilter.Demote -> Color(0xFFE0A040)
+    TriFilter.Hide -> Color(0xFFE57373)
+}
+
+@Composable
+private fun OutcomeChip(outcome: TriFilter) {
+    val color = outcomeColor(outcome)
+    Box(
+        Modifier
+            .clip(RoundedCornerShape(3.dp))
+            .background(color.copy(alpha = 0.18f))
+            .padding(horizontal = 6.dp, vertical = 2.dp),
+    ) {
+        NativeText(outcome.name, color = color, fontSize = 10.sp, fontWeight = FontWeight.Medium)
+    }
+}
+
+/**
+ * Clickable outcome chip for user rules. Selected state matches the
+ * read-only [OutcomeChip] tone-for-tone — that's the parity the user
+ * asked for so the two card variants don't feel like different control
+ * dialects. Unselected uses a muted gray tint so the row reads as
+ * "three options, this one is active".
+ */
+@Composable
+private fun OutcomeSegmentChip(outcome: TriFilter, selected: Boolean, onClick: () -> Unit) {
+    val color = outcomeColor(outcome)
+    val bg = if (selected) color.copy(alpha = 0.18f) else AppPalette.controlTrack
+    val fg = if (selected) color else AppPalette.textSecondary
+    Box(
+        Modifier
+            .clip(RoundedCornerShape(3.dp))
+            .background(bg)
+            .clickable(onClick = onClick)
+            .padding(horizontal = 6.dp, vertical = 2.dp),
+    ) {
+        NativeText(
+            outcome.name,
+            color = fg,
+            fontSize = 10.sp,
+            fontWeight = if (selected) FontWeight.Medium else FontWeight.Normal,
+        )
+    }
+}
+
+@Composable
+private fun BuiltInBadge() {
+    Box(
+        Modifier
+            .clip(RoundedCornerShape(3.dp))
+            .background(AccentColor.copy(alpha = 0.18f))
+            .padding(horizontal = 6.dp, vertical = 2.dp),
+    ) {
+        NativeText("BUILT-IN", color = AccentColor, fontSize = 9.sp, fontWeight = FontWeight.SemiBold)
+    }
+}
+
+@Composable
+private fun PredicateChip(text: String) {
+    Box(
+        Modifier
+            .clip(RoundedCornerShape(3.dp))
+            .background(AppPalette.textSecondary.copy(alpha = 0.12f))
+            .padding(horizontal = 5.dp, vertical = 2.dp),
+    ) {
+        NativeText(text, color = AppPalette.textSecondary, fontSize = 10.sp)
     }
 }
 
@@ -141,6 +313,17 @@ private fun RuleCard(
                 onChange = { onChange(rule.copy(name = it)) },
                 modifier = Modifier.weight(1f),
             )
+            // Outcome selector inline with the name — symmetric with the
+            // read-only [OutcomeChip] that built-in rules render in this
+            // same slot. Three chips, click-to-select; no "Outcome:" label
+            // — the chip colours speak for themselves.
+            for (option in TriFilter.entries) {
+                OutcomeSegmentChip(
+                    outcome = option,
+                    selected = option == rule.outcome,
+                    onClick = { onChange(rule.copy(outcome = option)) },
+                )
+            }
             NativeToggle(
                 checked = rule.enabled,
                 onCheckedChange = { onChange(rule.copy(enabled = it)) },
@@ -150,16 +333,6 @@ private fun RuleCard(
                 onClick = onDelete,
                 color = Color(0xFFE57373),
             )
-        }
-
-        // Outcome
-        Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-            NativeText("Outcome:", color = AppPalette.textSecondary, fontSize = 11.sp)
-            for (option in TriFilter.entries) {
-                SegmentChip(option.name, selected = option == rule.outcome) {
-                    onChange(rule.copy(outcome = option))
-                }
-            }
         }
 
         // Predicates
@@ -288,13 +461,25 @@ private fun PredicateOperatorAndValue(
         is ActivationPolicyPredicate -> PolicyEditor(predicate.value, modifier) { v ->
             onChange(predicate.copy(value = v))
         }
+        is OwnerNamePredicate -> StringEditor(predicate.op, predicate.value, modifier) { op, v ->
+            onChange(predicate.copy(op = op, value = v))
+        }
+        is CgLayerPredicate -> NumberEditor(predicate.op, predicate.value, modifier) { op, v ->
+            onChange(predicate.copy(op = op, value = v))
+        }
+        is CgAlphaPredicate -> NumberEditor(predicate.op, predicate.value, modifier) { op, v ->
+            onChange(predicate.copy(op = op, value = v))
+        }
         is IsHiddenPredicate,
         is IsFinishedLaunchingPredicate,
         is IsMinimizedPredicate,
         is IsFullscreenPredicate,
         is IsFocusedPredicate,
         is IsMainPredicate,
-        is NoVisibleWindowsPredicate -> Box(modifier)   // nullary — nothing to edit
+        is NoVisibleWindowsPredicate,
+        is IsOnscreenPredicate,
+        is IsOnVisibleSpacePredicate,
+        is HasSpaceIdsPredicate -> Box(modifier)   // nullary — nothing to edit
     }
 }
 
@@ -520,6 +705,14 @@ internal enum class PredicateKind(val label: String, val create: () -> Predicate
     Height("Height (px)", { HeightPredicate() }),
     Area("Area (px²)", { AreaPredicate() }),
     NoVisibleWindows("No visible windows", { NoVisibleWindowsPredicate() }),
+    // CG-only — phantom windows from CGWindowListCopyWindowInfo. See
+    // model/Predicate.kt for semantics.
+    IsOnscreen("Is on screen (CG)", { IsOnscreenPredicate() }),
+    IsOnVisibleSpace("On visible space (CG)", { IsOnVisibleSpacePredicate() }),
+    CgLayer("CG layer", { CgLayerPredicate() }),
+    CgAlpha("CG alpha", { CgAlphaPredicate() }),
+    OwnerName("CG owner name", { OwnerNamePredicate() }),
+    HasSpaceIds("Has space data (CG)", { HasSpaceIdsPredicate() }),
 }
 
 private fun kindOf(p: Predicate): PredicateKind = when (p) {
@@ -539,6 +732,12 @@ private fun kindOf(p: Predicate): PredicateKind = when (p) {
     is HeightPredicate -> PredicateKind.Height
     is AreaPredicate -> PredicateKind.Area
     is NoVisibleWindowsPredicate -> PredicateKind.NoVisibleWindows
+    is IsOnscreenPredicate -> PredicateKind.IsOnscreen
+    is IsOnVisibleSpacePredicate -> PredicateKind.IsOnVisibleSpace
+    is CgLayerPredicate -> PredicateKind.CgLayer
+    is CgAlphaPredicate -> PredicateKind.CgAlpha
+    is OwnerNamePredicate -> PredicateKind.OwnerName
+    is HasSpaceIdsPredicate -> PredicateKind.HasSpaceIds
 }
 
 private fun Predicate.withEnabled(v: Boolean): Predicate = when (this) {
@@ -558,6 +757,12 @@ private fun Predicate.withEnabled(v: Boolean): Predicate = when (this) {
     is HeightPredicate -> copy(enabled = v)
     is AreaPredicate -> copy(enabled = v)
     is NoVisibleWindowsPredicate -> copy(enabled = v)
+    is IsOnscreenPredicate -> copy(enabled = v)
+    is IsOnVisibleSpacePredicate -> copy(enabled = v)
+    is CgLayerPredicate -> copy(enabled = v)
+    is CgAlphaPredicate -> copy(enabled = v)
+    is OwnerNamePredicate -> copy(enabled = v)
+    is HasSpaceIdsPredicate -> copy(enabled = v)
 }
 
 private fun Predicate.withInverted(v: Boolean): Predicate = when (this) {
@@ -577,6 +782,12 @@ private fun Predicate.withInverted(v: Boolean): Predicate = when (this) {
     is HeightPredicate -> copy(inverted = v)
     is AreaPredicate -> copy(inverted = v)
     is NoVisibleWindowsPredicate -> copy(inverted = v)
+    is IsOnscreenPredicate -> copy(inverted = v)
+    is IsOnVisibleSpacePredicate -> copy(inverted = v)
+    is CgLayerPredicate -> copy(inverted = v)
+    is CgAlphaPredicate -> copy(inverted = v)
+    is OwnerNamePredicate -> copy(inverted = v)
+    is HasSpaceIdsPredicate -> copy(inverted = v)
 }
 
 private fun stringOpLabel(op: StringOp): String = when (op) {
@@ -631,6 +842,12 @@ internal fun summarisePredicate(p: Predicate): String {
         is HeightPredicate -> "height ${numberOpLabel(p.op)} ${formatNumber(p.value)}"
         is AreaPredicate -> "area ${numberOpLabel(p.op)} ${formatNumber(p.value)}"
         is NoVisibleWindowsPredicate -> "no visible windows"
+        is IsOnscreenPredicate -> "is on screen"
+        is IsOnVisibleSpacePredicate -> "on visible space"
+        is CgLayerPredicate -> "cgLayer ${numberOpLabel(p.op)} ${formatNumber(p.value)}"
+        is CgAlphaPredicate -> "cgAlpha ${numberOpLabel(p.op)} ${formatNumber(p.value)}"
+        is OwnerNamePredicate -> stringSummary("ownerName", p.op, p.value)
+        is HasSpaceIdsPredicate -> "has space data"
     }
     return if (p.inverted) "not $core" else core
 }

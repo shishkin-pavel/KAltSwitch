@@ -175,9 +175,9 @@ class SwitcherController(
      * ignored — they all look identical to fresh presses at the Carbon API
      * level, so we differentiate via the keyUp signal from the panel.
      */
-    fun onShortcut(entry: SwitcherEntry, reverse: Boolean = false) {
+    fun onShortcut(entry: SwitcherEntry, reverse: Boolean = false, modifierHeld: Boolean = true) {
         val combo = entry to reverse
-        log("[diag-ctl] onShortcut ENTER entry=$entry reverse=$reverse currentSession=${_ui.value != null} held=$heldShortcut")
+        log("[diag-ctl] onShortcut ENTER entry=$entry reverse=$reverse modifierHeld=$modifierHeld currentSession=${_ui.value != null} held=$heldShortcut")
         if (heldShortcut == combo) {
             log("[ctl] shortcut entry=$entry reverse=$reverse SKIPPED (auto-repeat)")
             return  // OS auto-repeat — pressJob drives navigation.
@@ -189,6 +189,23 @@ class SwitcherController(
             openSession(entry)
             if (reverse) {
                 placeOnLastInRecency(entry)
+            }
+            // The CGEventTap dispatch that delivers the modifier-release
+            // and the Carbon-hotkey dispatch that delivers `onShortcut`
+            // race each other onto the main thread. For sub-100 ms
+            // cmd-holds the release handler runs *before* this
+            // openSession — see the NO-OP branch in [onModifierReleased].
+            // The session would then stay visible until the user
+            // pressed Esc. Authoritative current-state probe: if cmd
+            // is no longer pressed by the time this handler runs, the
+            // user already committed to the shortcut's default action
+            // (cmd+tab → most recent app, cmd+` → most recent window
+            // of current app, shift variants in reverse). Auto-commit
+            // on the default cursor that [openSession] just landed on.
+            if (!modifierHeld) {
+                log("[ctl] modifier already released at openSession — auto-commit on default cursor")
+                _ui.value?.let { commit(it) }
+                return
             }
         } else {
             val event = if (reverse) reverseEventFor(entry) else forwardEventFor(entry)
@@ -361,6 +378,11 @@ class SwitcherController(
     fun onModifierReleased() {
         val cur = _ui.value
         if (cur == null) {
+            // Race-recovery for the "modifier release arrived before
+            // openSession on main" case is handled in [onShortcut] —
+            // it samples `modifierHeld` at call time and auto-commits
+            // if cmd is no longer pressed. So here we just drop the
+            // stale notification on the floor.
             log("[diag-ctl] onModifierReleased NO-OP (no session)")
             return
         }

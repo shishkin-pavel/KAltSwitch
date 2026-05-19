@@ -681,7 +681,7 @@ class SwitcherControllerTest {
         assertEquals(21L, before?.selectedWindowId)
 
         // Add a new window to Safari (NOT the selected app).
-        store.upsertWindow(Window(id = 13, pid = 1, title = "Safari C"))
+        store.upsertAxWindow(window = Window(id = 13, pid = 1, title = "Safari C"))
         runCurrent()
 
         val after = ctl.ui.value?.state
@@ -698,11 +698,11 @@ class SwitcherControllerTest {
         ctl.onShortcut(SwitcherEntry.App)  // selects IDE/21
         advanceTimeBy(50)
 
-        // IDE opens a new window. setWindows replaces the full list — keep
-        // the existing windows + the new one at the head.
-        store.setWindows(
+        // IDE opens a new window. applyAxSnapshot reconciles the per-pid
+        // AX-known set — keep the existing windows + the new one at the head.
+        store.applyAxSnapshot(
             pid = 2,
-            windows = listOf(
+            axWindows = listOf(
                 Window(id = 23, pid = 2, title = "IDE C"),  // brand new
                 Window(id = 21, pid = 2, title = "IDE A"),
                 Window(id = 22, pid = 2, title = "IDE B"),
@@ -726,9 +726,9 @@ class SwitcherControllerTest {
 
         // IDE/21 disappears. Right-neighbour in the old window order was
         // IDE/22, which is still alive → cursor moves there.
-        store.setWindows(
+        store.applyAxSnapshot(
             pid = 2,
-            windows = listOf(Window(id = 22, pid = 2, title = "IDE B")),
+            axWindows = listOf(Window(id = 22, pid = 2, title = "IDE B")),
         )
         // `runCurrent()` runs everything scheduled at the current virtual time
         // — that's what flushes the collector's pending resume after the
@@ -785,7 +785,7 @@ class SwitcherControllerTest {
         advanceTimeBy(50)
 
         // Close a Safari window (different app, different window).
-        store.setWindows(pid = 1, windows = listOf(Window(id = 11, pid = 1, title = "Safari A")))
+        store.applyAxSnapshot(pid = 1, axWindows = listOf(Window(id = 11, pid = 1, title = "Safari A")))
         runCurrent()
 
         val after = ctl.ui.value?.state

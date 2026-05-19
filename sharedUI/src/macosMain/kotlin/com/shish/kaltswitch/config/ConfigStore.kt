@@ -2,6 +2,7 @@
 
 package com.shish.kaltswitch.config
 
+import com.shish.kaltswitch.model.withSeedDefaults
 import kotlinx.cinterop.ObjCObjectVar
 import kotlinx.cinterop.alloc
 import kotlinx.cinterop.memScoped
@@ -36,12 +37,22 @@ object ConfigStore {
         // `decodeFromString` gets an `NSString` that doesn't satisfy `String`.
         @Suppress("USELESS_CAST")
         val text = NSString.create(data = data, encoding = NSUTF8StringEncoding) as String? ?: return null
-        return try {
+        val parsed = try {
             configJson.decodeFromString(AppConfig.serializer(), text)
         } catch (t: Throwable) {
             NSLog("KAltSwitch: failed to parse config: ${t.message}")
-            null
+            return null
         }
+        // Inject any seed rules the persisted config is missing. Without this,
+        // users who customised their rule list before a newly-shipped default
+        // would never see it — their `rules` list is fully populated and the
+        // data-class default never fires. See `FilteringRules.withSeedDefaults`.
+        val merged = parsed.copy(filters = parsed.filters.withSeedDefaults())
+        val added = merged.filters.rules.size - parsed.filters.rules.size
+        if (added > 0) {
+            NSLog("KAltSwitch: appended %d new default rules to persisted config", added.toLong())
+        }
+        return merged
     }
 
     fun save(config: AppConfig) {

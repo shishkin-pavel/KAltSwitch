@@ -19,6 +19,15 @@ final class AxAppWatcher {
 
     /// AX windows we've already subscribed to, keyed by CFHash of the AXUIElement.
     private var perWindowSubscribed = Set<Int>()
+    /// `CFHash(axUIElement) → CGWindowID` for windows we've subscribed
+    /// to per-window AX notifications on. Populated in
+    /// [subscribePerWindow] (the AXUIElement is alive then —
+    /// `_AXUIElementGetWindow` answers correctly). Read by the
+    /// `kAXUIElementDestroyed` handler: we can't resolve the CGWindowID
+    /// after destruction (the AX server might be unresponsive on the
+    /// dying proxy), so the cache is the only way to know which
+    /// WindowServer window the destroyed AX element was proxying.
+    private var cgWindowIdByAxHash: [Int: CGWindowID] = [:]
     /// Live AXUIElement references for every top-level window currently known,
     /// keyed by `CFHash(axWin)` (which is also the WindowId we publish to the
     /// store). Looked up on raise / commit to find the element to act on.
@@ -30,6 +39,56 @@ final class AxAppWatcher {
     /// flip back from `.regular` to `.accessory` when their last window
     /// closes, and that mutation has no workspace-level signal.
     var onWindowsChanged: ((pid_t) -> Void)?
+
+    /// Narrower variant of [onWindowsChanged]: fires **only** when the
+    /// set of `cgWindowId`s for this pid actually changed between two
+    /// `refreshAllWindows` runs — i.e. an AX window was created or
+    /// destroyed. Title / focus / minimise mutations don't trigger it.
+    ///
+    /// AppRegistry hooks this to kick a `CGWindowListWatcher.refresh()`
+    /// so the CG-phantom map drops the just-closed window's entry
+    /// immediately. Without it, the user sees the row briefly fall back
+    /// to "app name" (because the AX-side window with the real title
+    /// just disappeared and the phantom — title-less, courtesy of
+    /// `kCGWindowName` requiring Screen Recording permission — takes
+    /// its place until the 2 s background timer ticks).
+    var onCgWindowIdSetChanged: ((pid_t) -> Void)?
+
+    /// `cgWindowId`s observed by AX on the most recent
+    /// `refreshAllWindows`. Compared against the freshly-built set to
+    /// decide whether [onCgWindowIdSetChanged] should fire — empty on
+    /// first refresh so the very first call always reports the
+    /// transition `{} → currentSet`.
+    private var lastCgWindowIdSet: Set<UInt32> = []
+
+    /// CGWindowIDs we just authoritatively dropped via WindowServer
+    /// probe in [handleAxElementDestroyed]. Maps cgwid → expiry
+    /// (`Date().timeIntervalSince1970` deadline).
+    ///
+    /// After a real close, the app's `kAXWindowsAttribute` keeps
+    /// listing the dead window for ~0.5–1.5 s before its own AX tree
+    /// catches up. Anything that triggers a `refreshAllWindows` in
+    /// that window — our own destroyed-handler fall-through (now
+    /// removed), the OS-emitted `kAXFocusedWindowChangedNotification`
+    /// that follows the close, a `kAXTitleChangedNotification` from
+    /// some other window — would otherwise re-emit a stale
+    /// `applyAxSnapshot` that re-adds the just-dropped window with
+    /// `sources={AX}`, making the row reappear in the switcher for
+    /// the full duration of the AX lag.
+    ///
+    /// The tombstone short-circuits that: `refreshAllWindows` and
+    /// `pushWindowFromElement` filter out any window whose cgwid is
+    /// in this map, so the drop sticks until the app's AX tree
+    /// genuinely converges on "this window is gone".
+    ///
+    /// TTL is conservative: 2 s comfortably covers every app I've
+    /// measured (Slack/Electron worst-case ≈ 1.2 s, native apps <
+    /// 200 ms). CGWindowIDs aren't recycled by WindowServer within
+    /// that window in practice, so the false-positive risk
+    /// (suppressing a *new* AX window that happened to be assigned
+    /// the same cgwid) is essentially zero.
+    private var droppedCgWidTombstones: [CGWindowID: TimeInterval] = [:]
+    private let droppedCgWidTombstoneTTL: TimeInterval = 2.0
 
     init(pid: pid_t, store: WorldStore) {
         self.pid = pid
@@ -105,10 +164,12 @@ final class AxAppWatcher {
         // App hidden/shown is handled by NSWorkspace.didHide/didUnhide on the
         // AppRegistry side, so we don't subscribe to those here.
         switch name {
+        case kAXUIElementDestroyedNotification as String:
+            handleAxElementDestroyed(element)
+
         case kAXApplicationActivatedNotification as String,
              kAXMainWindowChangedNotification as String,
-             kAXFocusedWindowChangedNotification as String,
-             kAXUIElementDestroyedNotification as String:
+             kAXFocusedWindowChangedNotification as String:
             refreshAllWindows()
             syncActiveStateFromSystem(store: store)
 
@@ -129,6 +190,94 @@ final class AxAppWatcher {
     }
 
     // MARK: - Window queries
+
+    /// Fast-path response to `kAXUIElementDestroyedNotification`.
+    ///
+    /// The notification fires when the *AX-server-side proxy* dies, which
+    /// is **not** the same thing as the WindowServer destroying the
+    /// underlying window. Apps recycle their AX trees on all sorts of
+    /// transitions (fullscreen toggle, Slack / Electron AX-state resets,
+    /// resume-from-AppNap) and emit destroyed events for windows that
+    /// are still very much alive.
+    ///
+    /// To disambiguate without paying the latency of a full
+    /// `refreshAllWindows` + off-main CG refresh round-trip (~80–150 ms
+    /// total), we:
+    /// 1. Resolve the destroyed AX element's `cgWindowId` from
+    ///    [cgWindowIdByAxHash] — cached at subscribe time, since
+    ///    `_AXUIElementGetWindow` can stall on the dying proxy.
+    /// 2. Ask the WindowServer directly via [aliveCgWindowIds] (one
+    ///    Mach IPC, sub-millisecond) whether that one `cgWindowId` is
+    ///    still alive.
+    /// 3. If gone → call the store's [WorldStore.dropWindowsByCgWindowIds]
+    ///    so the row disappears in the very next render — no waiting for
+    ///    the background CG poll. Plant a tombstone (see
+    ///    [droppedCgWidTombstones]) so any AX snapshot that runs in the
+    ///    next ~2 s and still lists the dead window can't re-add it.
+    /// 4. If alive → AX-recycle case. Trigger `refreshAllWindows` so
+    ///    the recycled AXUIElement re-attaches.
+    /// 5. Either case → `syncActiveStateFromSystem` to keep the
+    ///    active-pointer coherent (a destroyed focused window must
+    ///    clear that pointer).
+    ///
+    /// We do **not** call `refreshAllWindows` on the agrees-drop
+    /// path. The drop is authoritative; the surviving windows don't
+    /// need an immediate re-snapshot just because one of their
+    /// siblings died, and forcing one was the bug — the app's
+    /// `kAXWindowsAttribute` is stale for ~1 s after a close, so a
+    /// refresh inside that window would re-add the just-dropped
+    /// window with `sources={AX}` (see `droppedCgWidTombstones`
+    /// docstring for details).
+    private func handleAxElementDestroyed(_ element: AXUIElement) {
+        let axHash = Int(CFHash(element))
+        let destroyedCgWid = cgWindowIdByAxHash.removeValue(forKey: axHash)
+        if let cgWid = destroyedCgWid {
+            // Ask WindowServer about exactly this one window. Single-element
+            // batch keeps the cost minimal and the diagnostic noise quiet
+            // (one `[ax/destroy]` line per actual close vs N lines for
+            // app-wide quit, which the subsequent kAXUIElementDestroyed
+            // events also each trigger one of).
+            let alive = aliveCgWindowIds([cgWid])
+            if !alive.contains(cgWid) {
+                log("[ax/destroy] pid=\(pid) cgwid=\(cgWid) → drop (WindowServer agrees)")
+                store.dropWindowsByCgWindowIds(
+                    pid: pid,
+                    cgWindowIds: [KotlinLong(value: Int64(cgWid))]
+                )
+                tombstoneDroppedCgWid(cgWid)
+                syncActiveStateFromSystem(store: store)
+                return
+            }
+            // Window is still alive in WindowServer — AX is just
+            // recycling its proxy. Don't drop; the imminent
+            // refreshAllWindows + kAXWindowCreated path will
+            // re-attach a fresh AX element.
+            log("[ax/destroy] pid=\(pid) cgwid=\(cgWid) → AX-recycle (window alive)")
+        }
+        // Either the AX-recycle case (window alive in WindowServer)
+        // or the no-cached-cgwid case (rare — destroyed-event for an
+        // element we never resolved a cgwid for). In both, the
+        // standard full-refresh path is the right thing: pick up the
+        // recycled AXUIElement / reconcile the AX snapshot, then
+        // refresh active pointers.
+        refreshAllWindows()
+        syncActiveStateFromSystem(store: store)
+    }
+
+    /// Plant a tombstone for `cgWid`. See [droppedCgWidTombstones].
+    private func tombstoneDroppedCgWid(_ cgWid: CGWindowID) {
+        droppedCgWidTombstones[cgWid] = Date().timeIntervalSince1970 + droppedCgWidTombstoneTTL
+    }
+
+    /// Currently-live tombstones; also prunes expired entries. The
+    /// dictionary is short — at most a handful of entries at any one
+    /// time (only windows closed in the last 2 s) — so the
+    /// rebuild-on-read pattern is cheaper than a separate timer.
+    private func liveDroppedCgWidTombstones() -> Set<CGWindowID> {
+        let now = Date().timeIntervalSince1970
+        droppedCgWidTombstones = droppedCgWidTombstones.filter { $0.value > now }
+        return Set(droppedCgWidTombstones.keys)
+    }
 
     private func refreshAllWindows() {
         let topLevel = (readAttribute(appElement, kAXWindowsAttribute as String) as? [AXUIElement]) ?? []
@@ -163,11 +312,58 @@ final class AxAppWatcher {
                 out.append(win)
             }
         }
-        store.setWindows(pid: pid, windows: out)
+        // Filter out windows whose cgwid we just authoritatively
+        // dropped — see [droppedCgWidTombstones]. The app's AX tree
+        // takes up to ~1.5 s to catch up after a close, so without
+        // this filter `kAXFocusedWindowChangedNotification` (always
+        // fired by the OS after a close) would re-add the dead
+        // window via `applyAxSnapshot`.
+        let tomb = liveDroppedCgWidTombstones()
+        if !tomb.isEmpty {
+            let kept = out.filter { win in
+                guard let cg = win.cgWindowId?.int64Value else { return true }
+                let cgU32 = UInt32(truncatingIfNeeded: cg)
+                if tomb.contains(cgU32) {
+                    log("[ax/snapshot] pid=\(pid) cgwid=\(cgU32) suppressed (tombstoned)")
+                    return false
+                }
+                return true
+            }
+            out = kept
+        }
+        store.applyAxSnapshot(pid: pid, axWindows: out)
         // Notify the registry: the windowed/windowless transition may have
         // shifted activationPolicy (Bitwarden et al. flip back to .accessory
         // when their last window closes — no workspace event for that).
         onWindowsChanged?(pid)
+
+        // Did the actual *set* of cgWindowIds change (not just attributes)?
+        // Walk the tree, collect every non-nil cgWindowId, compare. AX
+        // emits refreshAllWindows on every notification — title change,
+        // focus change, AXMain shift — so this check is what keeps us
+        // from kicking a CG refresh on each of those.
+        let newSet = collectCgWindowIds(out)
+        if newSet != lastCgWindowIdSet {
+            lastCgWindowIdSet = newSet
+            onCgWindowIdSetChanged?(pid)
+        }
+    }
+
+    /// Recursive cgWindowId harvest over a [Window] tree. Skips null
+    /// entries (`_AXUIElementGetWindow` occasionally fails) — they
+    /// can't contribute to the dedup decision anyway. Walks children
+    /// because AX puts sheets / drawers / popovers there and they
+    /// have their own CGWindowIDs.
+    private func collectCgWindowIds(_ windows: [Window]) -> Set<UInt32> {
+        var out: Set<UInt32> = []
+        func visit(_ w: Window) {
+            if let cg = w.cgWindowId?.int64Value, cg != 0 {
+                out.insert(UInt32(truncatingIfNeeded: cg))
+            }
+            for c in w.children { visit(c) }
+        }
+        for w in windows { visit(w) }
+        return out
     }
 
     /// Build a Window with its children = (typed-attribute children) + (top-level
@@ -192,13 +388,32 @@ final class AxAppWatcher {
             width: base.width,
             height: base.height,
             children: base.children + extras,
-            spaceIds: base.spaceIds
+            spaceIds: base.spaceIds,
+            cgWindowId: base.cgWindowId,
+            isOnscreen: base.isOnscreen,
+            isOnVisibleSpace: base.isOnVisibleSpace,
+            cgLayer: base.cgLayer,
+            cgAlpha: base.cgAlpha,
+            ownerName: base.ownerName,
+            sources: base.sources
         )
     }
 
     private func pushWindowFromElement(_ axWin: AXUIElement) {
         guard let win = makeWindow(from: axWin) else { return }
-        store.upsertWindow(window: win)
+        // Same tombstone gate as `refreshAllWindows`. The app can
+        // emit per-window AX events (title change, miniaturize) on
+        // a window whose `kAXUIElementDestroyed` we just processed
+        // — its AX-server side stays alive briefly after the row
+        // disappears from `kAXWindowsAttribute`.
+        if let cg = win.cgWindowId?.int64Value {
+            let cgU32 = UInt32(truncatingIfNeeded: cg)
+            if liveDroppedCgWidTombstones().contains(cgU32) {
+                log("[ax/upsert] pid=\(pid) cgwid=\(cgU32) suppressed (tombstoned)")
+                return
+            }
+        }
+        store.upsertAxWindow(window: win)
     }
 
     /// Collect window-like children attached to a window. macOS doesn't have one
@@ -240,6 +455,13 @@ final class AxAppWatcher {
             _ = AXObserverAddNotification(observer, axWin, notif as CFString, selfPtr)
         }
         perWindowSubscribed.insert(key)
+        // Cache cgWindowId for the destroyed-handler's fast-path. Resolved
+        // here because the AX element is alive — `_AXUIElementGetWindow`
+        // on a destroyed element can stall or return stale results.
+        var cgWid: CGWindowID = 0
+        if _AXUIElementGetWindow(axWin, &cgWid) == .success, cgWid != 0 {
+            cgWindowIdByAxHash[key] = cgWid
+        }
     }
 
     private func makeWindow(from axWin: AXUIElement) -> Window? {
@@ -293,12 +515,20 @@ final class AxAppWatcher {
         // classifier treats that as "no space data available, skip the
         // current-space filter for this window" so a transient AX failure
         // doesn't make a window vanish from the switcher.
+        //
+        // The CGWindowID is now also persisted on the Kotlin Window model
+        // (`cgWindowId`) so phantom rows from the cross-space enumerator
+        // (CGWindowListWatcher) can be de-duplicated against AX rows by
+        // the same key.
         var cgWid: CGWindowID = 0
         let spaceIds: [Int64]
+        let cgWindowId: KotlinLong?
         if _AXUIElementGetWindow(axWin, &cgWid) == .success, cgWid != 0 {
             spaceIds = spaceIdsFor(cgWindowId: cgWid)
+            cgWindowId = KotlinLong(value: Int64(cgWid))
         } else {
             spaceIds = []
+            cgWindowId = nil
         }
         return Window(
             id: id,
@@ -315,7 +545,19 @@ final class AxAppWatcher {
             width: w,
             height: h,
             children: children,
-            spaceIds: spaceIds.map { KotlinLong(value: $0) }
+            spaceIds: spaceIds.map { KotlinLong(value: $0) },
+            cgWindowId: cgWindowId,
+            // CG-only fields stay nil on AX-derived rows. The CG enumerator
+            // owns these — see CGWindowListWatcher.
+            isOnscreen: nil,
+            isOnVisibleSpace: nil,
+            cgLayer: nil,
+            cgAlpha: nil,
+            ownerName: nil,
+            // Source bit is set by the store on every mutator (`applyAxSnapshot`
+            // / `upsertAxWindow` add `WindowSource.AX`). Passing empty here
+            // keeps the Swift side ignorant of source-bookkeeping rules.
+            sources: Set<WindowSource>()
         )
     }
 

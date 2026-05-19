@@ -14,6 +14,7 @@ import com.shish.kaltswitch.model.Pid
 import com.shish.kaltswitch.model.PinningRules
 import com.shish.kaltswitch.model.Window
 import com.shish.kaltswitch.model.WindowId
+import com.shish.kaltswitch.model.WindowSource
 import com.shish.kaltswitch.model.World
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -30,7 +31,22 @@ import kotlinx.coroutines.flow.update
  * is atomic.
  */
 class WorldStore(initial: World = World(ActivationLog(), emptyMap(), emptyMap())) {
-    private val _state = MutableStateFlow(initial)
+    // Initial-state convenience: any Window pre-populated through the
+    // [World] constructor — typical in unit tests and at startup-before-
+    // first-snapshot — is treated as **AX-known**. Without this the
+    // first `applyAxSnapshot` call wouldn't retract those windows (the
+    // retraction branch is gated on `AX in sources`), and the tests'
+    // "setWindows replaces the AX list" intent would silently break.
+    // Production paths never go through the constructor with non-empty
+    // windowsByPid — they call mutators that set sources themselves —
+    // so the normalisation is a no-op in the live build.
+    private val _state = MutableStateFlow(
+        initial.copy(
+            windowsByPid = initial.windowsByPid.mapValues { (_, ws) ->
+                ws.map(::ensureAxSourceRecursively)
+            },
+        ),
+    )
     val state: StateFlow<World> = _state.asStateFlow()
 
     private val _axTrusted = MutableStateFlow(true)
@@ -245,6 +261,52 @@ class WorldStore(initial: World = World(ActivationLog(), emptyMap(), emptyMap())
         }
     }
 
+    // ─────────────────────── Window storage (one heap, per-source membership) ───────────────────────
+    //
+    // `World.windowsByPid` is the live, authoritative window map. No
+    // derived-merge step: every Window in here is a single record that
+    // tracks **which native subsystems currently see it** via the
+    // [Window.sources] set. Mutators add or remove membership; a window
+    // is dropped exactly when its [Window.sources] becomes empty.
+    //
+    // Two source-views feed in today:
+    //
+    //  * **AX** (`AxAppWatcher` per pid). Provides title, role, subrole,
+    //    minimised / fullscreen / focused / main, child-window tree,
+    //    AX-derived geometry. Reactive (event-driven via per-process
+    //    AXObserver). [applyAxSnapshot] is the per-pid full-snapshot
+    //    update; [upsertAxWindow] is the per-window patch path for
+    //    title-changed / minimised-toggled / etc.
+    //
+    //  * **CG** (`CGWindowListWatcher`). Provides isOnscreen, isOn-
+    //    VisibleSpace, cgLayer, cgAlpha, ownerName, and cross-space
+    //    visibility (`CGWindowListCopyWindowInfo` sees windows on every
+    //    space, unlike AX). Pull-driven on a 2 s background poll.
+    //    [applyCgSnapshot] is the only mutator.
+    //
+    // Both source-paths are symmetric: a "missing from new snapshot"
+    // entry removes that source from `sources`. The drop happens iff
+    // sources collapses to empty. This makes the cmd+W flow look like:
+    //
+    //    AX-destroyed → `applyAxSnapshot` removes AX from this window's
+    //    sources (window stays alive with `{CG}` if CG still has it,
+    //    drops if `{AX}` was the only source) → AppRegistry's existing
+    //    `onCgWindowIdSetChanged` callback kicks `cgWindowListWatcher
+    //    .refresh()` → ~80 ms later `applyCgSnapshot` either retracts
+    //    CG (confirming destruction → drop) or keeps the window with
+    //    refreshed CG fields (e.g. space-drag — window survived).
+    //
+    // **Field preservation across source loss.** When a source retracts
+    // we keep that source's last-known fields on the Window. A window
+    // that was {AX, CG} and loses AX keeps its real title (last AX
+    // value) instead of falling back to ownerName. Same the other way
+    // for CG fields. The fields go stale, but staleness is far less
+    // visible than a "title flipped to App Name" flash.
+    //
+    // **Active-window pruning.** Every mutator that can drop a window
+    // calls [pruneActivationStateForPid] so the activation log and
+    // `_activeWindowId` don't leak references to dropped ids.
+
     /** Remove an app and any windows we knew about for it. Also prunes that
      *  pid's activation history and clears the active-app/window pointers if
      *  they pointed at it — pids are runtime ids that macOS may reuse, and
@@ -264,16 +326,292 @@ class WorldStore(initial: World = World(ActivationLog(), emptyMap(), emptyMap())
         }
     }
 
-    /** Replace the full window list for a pid. Use for snapshot-style refreshes.
-     *  Also prunes any activation events that referenced now-missing windows
-     *  (AX window ids are tied to native element lifetimes and can be reused);
-     *  app-level events for the pid are kept. Clears [activeWindowId] if the
-     *  pointed-at window has disappeared. */
-    fun setWindows(pid: Pid, windows: List<Window>) {
+    /**
+     * Reconcile the [pid]'s window list with AX's freshest snapshot.
+     *
+     * - For each entry in [axWindows]: patch the matching live window
+     *   (lookup by `cgWindowId`) with the new AX-side fields, or add it
+     *   fresh if there's no live record yet. `AX` joins `sources` either
+     *   way.
+     * - For every live window with `AX in sources` whose `cgWindowId`
+     *   isn't in [axWindows]: drop AX from `sources`. If `sources`
+     *   becomes empty → drop the window entirely. Otherwise the window
+     *   stays with last-known AX fields (preserved by source-cycle).
+     *
+     * Windows with `null` cgWindowId (rare — `_AXUIElementGetWindow`
+     * occasionally fails) are matched by `id` as a fallback so we don't
+     * accidentally treat the same window as new every refresh.
+     */
+    fun applyAxSnapshot(pid: Pid, axWindows: List<Window>) {
+        val existing = currentWindowsFor(pid)
+        val newAxByCgId: Map<Long, Window> = axWindows.mapNotNull { w ->
+            w.cgWindowId?.let { it to w }
+        }.toMap()
+        val newAxIdsWithoutCg: Set<WindowId> = axWindows
+            .filter { it.cgWindowId == null }
+            .mapTo(HashSet()) { it.id }
+
+        val updated = mutableListOf<Window>()
+        val handledFromNew: HashSet<Long> = HashSet()
+        val handledFromNewIds: HashSet<WindowId> = HashSet()
+
+        for (w in existing) {
+            val cgId = w.cgWindowId
+            val matchByCgId = cgId?.let { newAxByCgId[it] }
+            val matchById = if (cgId == null && w.id in newAxIdsWithoutCg) {
+                axWindows.first { it.id == w.id && it.cgWindowId == null }
+            } else null
+            val match = matchByCgId ?: matchById
+            when {
+                match != null -> {
+                    updated += patchAxFields(existing = w, fresh = match)
+                    if (matchByCgId != null && cgId != null) handledFromNew += cgId
+                    matchById?.let { handledFromNewIds += it.id }
+                }
+                WindowSource.AX in w.sources -> {
+                    // AX previously saw this window, no longer does.
+                    // Drop AX from sources; keep window if any other
+                    // source still has it.
+                    val withoutAx = w.copy(sources = w.sources - WindowSource.AX)
+                    if (withoutAx.sources.isNotEmpty()) updated += withoutAx
+                    // else: drop (don't append)
+                }
+                else -> {
+                    // AX never had it (CG-only window) — leave alone.
+                    updated += w
+                }
+            }
+        }
+        // Add brand-new AX-observed windows that didn't match any
+        // existing entry by either path.
+        for (w in axWindows) {
+            val isNew = (w.cgWindowId != null && w.cgWindowId !in handledFromNew) ||
+                (w.cgWindowId == null && w.id !in handledFromNewIds)
+            if (isNew) {
+                updated += w.copy(sources = w.sources + WindowSource.AX)
+            }
+        }
+
+        commitWindowsFor(pid, updated)
+    }
+
+    /**
+     * Drop windows by `cgWindowId` for a single pid — the fast-path
+     * destroyed-handler in [AxAppWatcher] calls this after a synchronous
+     * `CGWindowListCreateDescriptionFromArray` probe has already
+     * confirmed with the WindowServer that the windows really are gone.
+     *
+     * Because the caller has authority from CoreGraphics, we don't go
+     * through the source-bookkeeping reconciliation — those windows are
+     * unconditionally removed regardless of which `sources` they were
+     * in. `applyAxSnapshot` running immediately after would observe the
+     * same retraction independently; this call just lets the UI see the
+     * row disappear in the next paint instead of waiting ~80 ms for the
+     * off-main CG refresh round-trip.
+     *
+     * No-op for cgWindowIds not in the store. Empty input is also a
+     * no-op. Activation log + active-window pointer are pruned via the
+     * shared [commitWindowsFor] path.
+     */
+    fun dropWindowsByCgWindowIds(pid: Pid, cgWindowIds: List<Long>) {
+        if (cgWindowIds.isEmpty()) return
+        val toDrop = cgWindowIds.toHashSet()
+        val existing = currentWindowsFor(pid)
+        val updated = existing.filter { w ->
+            val cg = w.cgWindowId ?: return@filter true
+            cg !in toDrop
+        }
+        if (updated.size == existing.size) return
+        commitWindowsFor(pid, updated)
+    }
+
+    /**
+     * Resolve a window's [Window.cgWindowId] by its (pid, windowId).
+     *
+     * Used by the Swift commit path as a final fallback after the
+     * AX-watcher's live-element lookup (`_AXUIElementGetWindow`) and
+     * the CG enumerator's phantom map. Those two only resolve their
+     * own "first-hand" windows — AX resolves AX-visible windows on
+     * the current Space, the phantom map resolves CG-only entries
+     * by their cgwid-as-id. Neither covers the cross-source case:
+     * a window that arrived via AX (so its `id` is an AX-CFHash) and
+     * is now CG-only because AX retracted on a Space change. The
+     * store still carries that window with its `cgWindowId` intact —
+     * this accessor surfaces it.
+     *
+     * Walks children too (sheets / drawers carry their own cgwids).
+     * Returns null if no window with that id exists for the pid, or
+     * if the found window has no cgwid resolved.
+     */
+    fun cgWindowIdFor(pid: Pid, windowId: WindowId): Long? {
+        val list = _state.value.windowsByPid[pid] ?: return null
+        fun visit(w: Window): Long? {
+            if (w.id == windowId) return w.cgWindowId
+            for (c in w.children) {
+                val found = visit(c)
+                if (found != null) return found
+            }
+            return null
+        }
+        for (w in list) {
+            val found = visit(w)
+            if (found != null) return found
+        }
+        return null
+    }
+
+    /**
+     * Patch a single AX-observed window. Used for per-window events
+     * (title-changed, minimised, …) where we don't need to walk the
+     * whole pid's list. Adds or updates by `cgWindowId` (or `id` as
+     * fallback). Never drops anything.
+     */
+    fun upsertAxWindow(window: Window) {
+        val existing = currentWindowsFor(window.pid)
+        val pid = window.pid
+        val cgId = window.cgWindowId
+        val replaced = mutableListOf<Window>()
+        var found = false
+        for (w in existing) {
+            val match = (cgId != null && w.cgWindowId == cgId) ||
+                (cgId == null && w.id == window.id)
+            if (match) {
+                replaced += patchAxFields(existing = w, fresh = window)
+                found = true
+            } else {
+                replaced += w
+            }
+        }
+        if (!found) {
+            replaced += window.copy(sources = window.sources + WindowSource.AX)
+        }
+        commitWindowsFor(pid, replaced)
+    }
+
+    /**
+     * Reconcile the global CG-side window view across every pid.
+     *
+     * - For each entry in [allCgWindows]: patch the matching live window
+     *   (lookup by pid + cgWindowId) with the new CG-side fields, or
+     *   add fresh if there's no live record. `CG` joins `sources`.
+     * - For every live window with `CG in sources` whose `cgWindowId`
+     *   isn't in [allCgWindows]: drop CG from `sources`. If `sources`
+     *   becomes empty → drop. Otherwise window stays with last-known
+     *   CG fields.
+     */
+    fun applyCgSnapshot(allCgWindows: List<Window>) {
+        val newCgByKey: Map<Pair<Pid, Long>, Window> = allCgWindows.mapNotNull { w ->
+            w.cgWindowId?.let { (w.pid to it) to w }
+        }.toMap()
+        val newCgIdsByPid: Map<Pid, Set<Long>> = allCgWindows
+            .groupBy { it.pid }
+            .mapValues { entry -> entry.value.mapNotNullTo(HashSet()) { it.cgWindowId } }
+
+        // Pids we need to recompute: union of (pids currently in store)
+        // and (pids in the new snapshot).
+        val touchedPids: Set<Pid> = _state.value.windowsByPid.keys + newCgByKey.keys.map { it.first }
+
+        for (pid in touchedPids) {
+            val existing = currentWindowsFor(pid)
+            val newCgIdsForPid = newCgIdsByPid[pid].orEmpty()
+            val updated = mutableListOf<Window>()
+            val handledFromNew: HashSet<Long> = HashSet()
+            for (w in existing) {
+                val cgId = w.cgWindowId
+                val match = cgId?.let { newCgByKey[pid to it] }
+                when {
+                    match != null -> {
+                        updated += patchCgFields(existing = w, fresh = match)
+                        handledFromNew += cgId
+                    }
+                    WindowSource.CG in w.sources -> {
+                        val withoutCg = w.copy(sources = w.sources - WindowSource.CG)
+                        if (withoutCg.sources.isNotEmpty()) updated += withoutCg
+                    }
+                    else -> {
+                        // CG didn't have it (AX-only window) — leave alone.
+                        updated += w
+                    }
+                }
+            }
+            // Add brand-new CG-observed windows for this pid.
+            for ((key, w) in newCgByKey) {
+                if (key.first != pid) continue
+                if (key.second in handledFromNew) continue
+                updated += w.copy(sources = w.sources + WindowSource.CG)
+            }
+            commitWindowsFor(pid, updated)
+        }
+    }
+
+    /** Merge AX-side fields from [fresh] into [existing], preserving
+     *  [existing]'s CG-side fields and source bits, then add AX to
+     *  sources. Used by both [applyAxSnapshot] and [upsertAxWindow]. */
+    private fun patchAxFields(existing: Window, fresh: Window): Window =
+        existing.copy(
+            id = fresh.id,
+            title = fresh.title,
+            role = fresh.role,
+            subrole = fresh.subrole,
+            isMinimized = fresh.isMinimized,
+            isFullscreen = fresh.isFullscreen,
+            isFocused = fresh.isFocused,
+            isMain = fresh.isMain,
+            x = fresh.x,
+            y = fresh.y,
+            width = fresh.width,
+            height = fresh.height,
+            children = fresh.children,
+            spaceIds = fresh.spaceIds,
+            cgWindowId = fresh.cgWindowId ?: existing.cgWindowId,
+            sources = existing.sources + WindowSource.AX,
+        )
+
+    /** Merge CG-side fields from [fresh] into [existing], preserving
+     *  [existing]'s AX-side fields and source bits, then add CG. */
+    private fun patchCgFields(existing: Window, fresh: Window): Window {
+        val nextSpaceIds = if (WindowSource.AX in existing.sources) existing.spaceIds else fresh.spaceIds
+        return existing.copy(
+            cgWindowId = fresh.cgWindowId ?: existing.cgWindowId,
+            ownerName = fresh.ownerName,
+            isOnscreen = fresh.isOnscreen,
+            isOnVisibleSpace = fresh.isOnVisibleSpace,
+            cgLayer = fresh.cgLayer,
+            cgAlpha = fresh.cgAlpha,
+            spaceIds = nextSpaceIds,
+            sources = existing.sources + WindowSource.CG,
+        )
+    }
+
+    private fun currentWindowsFor(pid: Pid): List<Window> =
+        _state.value.windowsByPid[pid].orEmpty()
+
+    /** Initial-state normaliser — recursively adds [WindowSource.AX] to
+     *  every window's sources. Only called from the [WorldStore] constructor
+     *  when the caller pre-populated `windowsByPid` directly; see the
+     *  doc on the `_state` initialiser for why this is needed. */
+    private fun ensureAxSourceRecursively(w: Window): Window {
+        val withSource =
+            if (WindowSource.AX in w.sources) w
+            else w.copy(sources = w.sources + WindowSource.AX)
+        val patchedChildren = withSource.children.map(::ensureAxSourceRecursively)
+        return if (patchedChildren == withSource.children) withSource
+        else withSource.copy(children = patchedChildren)
+    }
+
+    /**
+     * Persist a new window list for a single pid: writes to
+     * `_state.windowsByPid`, prunes the activation log so dropped
+     * windows don't linger in history, and clears `_activeWindowId`
+     * if it pointed at a now-dropped window.
+     */
+    private fun commitWindowsFor(pid: Pid, windows: List<Window>) {
         val liveIds: Set<WindowId> = collectAllWindowIds(windows)
         _state.update {
             it.copy(
-                windowsByPid = it.windowsByPid + (pid to windows),
+                windowsByPid =
+                    if (windows.isEmpty()) it.windowsByPid - pid
+                    else it.windowsByPid + (pid to windows),
                 log = it.log.withoutMissingWindows(pid, liveIds),
             )
         }
@@ -297,15 +635,6 @@ class WorldStore(initial: World = World(ActivationLog(), emptyMap(), emptyMap())
         }
         for (w in windows) visit(w)
         return out
-    }
-
-    /** Insert or update a single window. */
-    fun upsertWindow(window: Window) {
-        _state.update {
-            val existing = it.windowsByPid[window.pid].orEmpty()
-            val replaced = existing.filter { w -> w.id != window.id } + window
-            it.copy(windowsByPid = it.windowsByPid + (window.pid to replaced))
-        }
     }
 
     /**

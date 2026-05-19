@@ -26,6 +26,15 @@ data class Rule(
     val enabled: Boolean = true,
     val predicates: List<Predicate> = emptyList(),
     val outcome: TriFilter = TriFilter.Hide,
+    /** True if this rule ships built into the app (one of [SeedRules]) and
+     *  must not be edited at runtime. Built-ins are kept in lock-step with
+     *  their canonical seed by [withSeedDefaults], which resets predicates,
+     *  name, and outcome to the seed every load — only [enabled] (and the
+     *  rule's position in the chain) is user-controllable. The UI gates
+     *  every editor on this flag; the classifier doesn't care. Serialised
+     *  so a `config.json` round-trip preserves the distinction even though
+     *  it's also re-derived from id on load. */
+    val builtIn: Boolean = false,
 )
 
 /** True iff every enabled predicate matches the (app, window, isPhantom) tuple. */
@@ -54,60 +63,110 @@ data class FilteringRules(
 )
 
 /**
+ * Reconcile [rules] with the shipped [SeedRules]:
+ *
+ *  1. **Normalise** any rule whose `id` is in [SeedRules] back to that
+ *     seed's canonical predicates / name / outcome / `builtIn=true`,
+ *     preserving only the user's `enabled` flag. Built-ins are immutable
+ *     to the user (see [Rule.builtIn]); this is the enforcement step.
+ *     Also retroactively marks `builtIn=true` on rules that pre-date the
+ *     flag's introduction.
+ *  2. **Append missing seeds** to the end of the chain. Each newly-
+ *     shipped default lands after all existing rules so it doesn't
+ *     silently re-order the user's chain. Position policy is the
+ *     SeedRules list order itself — that's the order a fresh config
+ *     gets via the data-class default.
+ *
+ * Doesn't drop rules with unknown ids — old defaults removed from
+ * [SeedRules] continue to live in the user's config until the user
+ * deletes them. Silently dropping a rule mid-run is the kind of
+ * surprise that makes a user reach for their bug tracker.
+ */
+fun FilteringRules.withSeedDefaults(): FilteringRules {
+    val seedById = SeedRules.associateBy { it.id }
+    val normalised = rules.map { existing ->
+        val seed = seedById[existing.id] ?: return@map existing
+        seed.copy(enabled = existing.enabled)
+    }
+    val existingIds = normalised.mapTo(HashSet()) { it.id }
+    val missing = SeedRules.filterNot { it.id in existingIds }
+    if (missing.isEmpty()) return copy(rules = normalised)
+    return copy(rules = normalised + missing)
+}
+
+/**
  * Default ruleset. IDs are stable strings so JSON round-trips don't churn
  * them and so the rules are recognisable in `config.json` if a user pokes
  * around. Tests that want a guaranteed-empty list pass `rules = emptyList()`
  * explicitly.
+ *
+ * **List order matters.** [withSeedDefaults] appends missing seeds in this
+ * order. A fresh install — and any user upgrading after a new seed is
+ * added — sees rules in exactly this sequence. Earlier rules win because
+ * the classifier is first-match. The shape below is the result of the
+ * user's curation: switcher dialog + accessory show + minimised demote +
+ * AXUnknown hide come first because they make the largest dent on real
+ * traffic; CG-phantom triage rules come after so they don't get in the
+ * way of AX-side classification; demote-hidden lands last as a low-
+ * priority fallthrough.
+ *
+ * **Removed seeds (history).** Earlier shipped defaults that the user
+ * disabled, weren't pulling weight, or duplicated a user-side rule have
+ * been deleted from this list: `default-hide-finder-untitled`,
+ * `default-hide-accessory-windowless`, `default-hide-hidden-apps`,
+ * `default-show-accessory-windows`, `default-demote-ff-pip`, and the
+ * twelve `default-hide-cg-<ownerName>` rules (Window Server / Dock /
+ * Control Center / …). [withSeedDefaults] doesn't re-add them; if they
+ * persist in a user's config (we don't auto-drop unknown ids), the
+ * Settings UI lets the user delete them — for `builtIn=true` rows the
+ * delete affordance is wired alongside the enable toggle now they're
+ * no longer maintained by us.
  */
 val SeedRules: List<Rule> = listOf(
     Rule(
-        // KAltSwitch is the switcher itself — appearing in its own switcher
-        // is at best curious and at worst lets the user accidentally
-        // navigate to KAltSwitch instead of their actual target. The OS-
-        // level `LSUIElement = true` already removes us from the system
-        // cmd+tab list and the Dock; this rule does the same for our own
-        // switcher. Disable the rule if you want the inspector window
-        // accessible via cmd+tab.
-        id = "default-hide-kaltswitch",
-        name = "hide KAltSwitch from its own switcher",
+        // Hides the borderless switcher overlay (subrole AXSystemDialog
+        // on macOS for `.nonactivatingPanel` style) while leaving the
+        // Inspector and Settings windows visible — those are
+        // AXStandardWindow.
+        id = "default-hide-kaltswitch-dialog",
+        name = "hide KAltSwitch switcher dialog",
         predicates = listOf(
             BundleIdPredicate(value = "com.shish.kaltswitch"),
+            SubrolePredicate(op = StringOp.Eq, value = "AXSystemDialog"),
         ),
         outcome = TriFilter.Hide,
     ),
     Rule(
-        id = "default-hide-finder-untitled",
-        name = "hide MacOs Finder",
-        predicates = listOf(
-            BundleIdPredicate(value = "com.apple.finder"),
-            TitlePredicate(op = StringOp.Eq, value = ""),
-        ),
-        outcome = TriFilter.Hide,
-    ),
-    Rule(
-        id = "default-show-accessory-windows",
+        // Surfaces menubar / utility-style apps when they have a real
+        // standard window open. Without it, accessory apps (Things,
+        // 1Password, certain dev tools) don't appear in the switcher
+        // even when they have a frontable window.
+        id = "default-show-accessory-standard",
         name = "show Accessory Windows",
-        enabled = false,
         predicates = listOf(
             ActivationPolicyPredicate(value = PolicyValue.Accessory),
-            // AX role values include the "AX" prefix verbatim; a literal
-            // match against "Window" never matched anything because the
-            // stored value is "AXWindow". The inspector now shows the
-            // real AX-prefixed name (iter27).
             RolePredicate(op = StringOp.Eq, value = "AXWindow"),
+            SubrolePredicate(op = StringOp.Eq, value = "AXStandardWindow"),
         ),
         outcome = TriFilter.Show,
     ),
     Rule(
-        id = "default-hide-accessory-windowless",
-        name = "hide Accessory windowless apps",
-        enabled = false,
+        // IntelliJ IDEA / Android Studio / various Electron tools
+        // dump utility floaters into the window list with `subrole =
+        // AXUnknown`. They're typically tool windows the user
+        // doesn't want to cmd+tab to.
+        id = "default-hide-axunknown",
+        name = "hide AXUnknown windows (IntelliJ Idea / Android Studio / ...)",
         predicates = listOf(
-            ActivationPolicyPredicate(value = PolicyValue.Accessory),
+            SubrolePredicate(op = StringOp.Eq, value = "AXUnknown"),
         ),
         outcome = TriFilter.Hide,
     ),
     Rule(
+        // Sub-100-px-area sliver windows. Pickers, hidden Spotlight-
+        // adjacent search panes that never grew, ghost frames. Floor
+        // tuned conservatively — any window large enough to interact
+        // with is well above 100 px².
         id = "default-hide-small-area",
         name = "hide small-area windows",
         predicates = listOf(
@@ -115,33 +174,144 @@ val SeedRules: List<Rule> = listOf(
         ),
         outcome = TriFilter.Hide,
     ),
+    // ─────────── CG phantom triage (cross-space window enumeration) ───────────
+    //
+    // Rules below address rows surfaced by the Swift `CGWindowListWatcher`,
+    // i.e. windows enumerated through `CGWindowListCopyWindowInfo` to cover
+    // macOS's AX-only-current-space limitation. They use the CG-only
+    // predicates (`IsOnscreen…` / `CgLayer…` / `Owner…`) which short-circuit
+    // to `false` on AX-derived rows, so each rule is automatically scoped
+    // to CG phantoms without an explicit source flag.
     Rule(
-        id = "default-demote-ff-pip",
-        name = "demote FF PiP windows",
+        // CG returns ~10 layer>0 entries on a typical desktop: menu bar,
+        // Dock tile, status bar items, Mission Control overlays.
+        id = "default-hide-cg-overlay-layer",
+        name = "hide CG overlay layers",
         predicates = listOf(
-            BundleIdPredicate(value = "org.mozilla.firefox"),
-            TitlePredicate(op = StringOp.Contains, value = "Picture-in-Picture"),
+            CgLayerPredicate(op = NumberOp.Gt, value = 0.0),
+        ),
+        outcome = TriFilter.Hide,
+    ),
+    Rule(
+        // The discriminator that prompted this whole rule chain. A
+        // phantom window that's off-screen *and* on the current space is
+        // a hidden helper (autocomplete popover, autofill panel, settings
+        // pane the app keeps cached). Off-screen rows on *another* space
+        // are legitimate cross-space windows — those have
+        // `isOnVisibleSpace=false` and this rule deliberately doesn't
+        // touch them.
+        id = "default-hide-cg-hidden-helper",
+        name = "hide hidden CG helpers (off-screen on current space)",
+        predicates = listOf(
+            IsOnscreenPredicate(inverted = true),
+            IsOnVisibleSpacePredicate(),
+        ),
+        outcome = TriFilter.Hide,
+    ),
+    Rule(
+        // Catches the menubar-shadow phantoms apps maintain for their
+        // menu items (typically size=1800×39 pos=0,0 with spaceIds=[]
+        // because CGS doesn't tie them to a Mission Control space).
+        id = "default-hide-cg-no-space-data",
+        name = "hide off-screen CG entries with no space data",
+        predicates = listOf(
+            IsOnscreenPredicate(inverted = true),
+            HasSpaceIdsPredicate(inverted = true),
+        ),
+        outcome = TriFilter.Hide,
+    ),
+    Rule(
+        id = "default-hide-cg-zero-alpha",
+        name = "hide zero-alpha CG entries",
+        predicates = listOf(
+            CgAlphaPredicate(op = NumberOp.Lte, value = 0.0),
+        ),
+        outcome = TriFilter.Hide,
+    ),
+    Rule(
+        // Catches CursorUIViewService's many 54×54/64×64 cursor sprites,
+        // tooltip popovers (~200×40), autocomplete dropdowns, etc. Floor
+        // borrowed from the alt-tab-macos heuristic; loosened a touch so
+        // floating tool palettes still qualify.
+        id = "default-hide-cg-tiny",
+        name = "hide tiny CG entries (< 80×60)",
+        predicates = listOf(
+            OwnerNamePredicate(op = StringOp.IsEmpty, inverted = true),
+            AreaPredicate(op = NumberOp.Lt, value = 4800.0),
+        ),
+        outcome = TriFilter.Hide,
+    ),
+    Rule(
+        // Accessory apps (LSUIElement = true) without any open windows
+        // shouldn't sit in the cmd+tab list — they're typically
+        // menubar utilities the user reaches via their status item.
+        // Composing [NoVisibleWindowsPredicate] with the activation
+        // policy keeps regular utility apps that *do* have a window
+        // visible (Things, 1Password, ...) — that's the
+        // `default-show-accessory-standard` rule's job earlier in the
+        // chain.
+        id = "default-hide-accessory-windowless",
+        name = "hide accessory apps without windows",
+        predicates = listOf(
+            NoVisibleWindowsPredicate(),
+            ActivationPolicyPredicate(value = PolicyValue.Accessory),
+        ),
+        outcome = TriFilter.Hide,
+    ),
+    Rule(
+        // Per-window demote: a minimised window is still a valid
+        // switch target (cmd+tab to it then it un-minimises), but it
+        // shouldn't sit in the primary row.
+        id = "default-demote-minimised",
+        name = "demote minimised windows",
+        predicates = listOf(
+            IsMinimizedPredicate(),
         ),
         outcome = TriFilter.Demote,
     ),
-)
+    Rule(
+        // cmd+H → app.isHidden → demote the app's windows. Lands at the
+        // end of the chain so any earlier Hide / Demote rule can still
+        // pre-empt (e.g. AXUnknown subrole takes priority over the
+        // generic demote-hidden fallthrough).
+        id = "default-demote-hidden",
+        name = "demote hidden windows",
+        predicates = listOf(
+            IsHiddenPredicate(),
+        ),
+        outcome = TriFilter.Demote,
+    ),
+).map { it.copy(builtIn = true) }   // single source of truth for the built-in flag
 
-/** A window decorated with the filter mode classification. */
+/** A window decorated with the filter mode classification. [firingRule] is
+ *  the [Rule] whose predicate chain matched and decided [mode]; `null`
+ *  means no rule matched and the default fell through (typically `Show`).
+ *  Surfaced to the inspector so each window plate can render the rule
+ *  name as a badge — that turns "why is this here / why is this hidden"
+ *  into a one-glance answer instead of a rule-table archaeology session. */
 data class WindowView(
     val window: Window,
     val mode: TriFilter,
     val children: List<WindowView>,
+    val firingRule: Rule? = null,
 )
 
 /**
  * An app with its windows already classified and sorted: within `windows`,
  * Show items come first, then Demote, then Hide. Order within each group is
  * the original (recency-driven) order.
+ *
+ * [firingRule] applies only to the app-level second pass — the rule that
+ * matched against the synthetic "windowless-app" placeholder. For apps
+ * whose section was derived from a window outcome (any Show window → Show
+ * app, any Demote → Demote), it stays `null`; in that case the per-window
+ * `firingRule` is the source of truth.
  */
 data class AppView(
     val app: App,
     val windows: List<WindowView>,
     val mode: TriFilter,
+    val firingRule: Rule? = null,
 )
 
 /** Three buckets at the app level. The UI renders all three; the eventual switcher overlay would render only `show`. */
@@ -198,8 +368,8 @@ fun World.filteredSnapshot(
             .map { classifyWindow(entry.app, it, filters, isPhantom = false) }
             .map { if (spaceFilterActive) maskOffSpace(it, visibleSet) else it }
             .sortedBy(::modeOrder)
-        val mode = appSection(entry.app, winViews, filters)
-        val view = AppView(entry.app, winViews, mode)
+        val (mode, appRule) = appSection(entry.app, winViews, filters)
+        val view = AppView(entry.app, winViews, mode, firingRule = appRule)
         when (mode) {
             TriFilter.Show -> show.add(view)
             TriFilter.Demote -> demote.add(view)
@@ -214,13 +384,20 @@ fun World.filteredSnapshot(
  *  members with the currently visible set. Windows we don't have space
  *  data for (empty `spaceIds`) keep their classification — staleness
  *  during the brief window between observation and the next refresh
- *  shouldn't make them disappear from the switcher. */
+ *  shouldn't make them disappear from the switcher.
+ *
+ *  Clears [WindowView.firingRule] when the mask forces Hide — the actual
+ *  driver is the global space toggle, not any rule the user can edit,
+ *  so the inspector showing "rule: foo" next to a space-masked row would
+ *  be misleading. The mode-vs-rule asymmetry is documented on
+ *  [WindowView]. */
 private fun maskOffSpace(view: WindowView, visible: Set<Long>): WindowView {
     val onCurrent = view.window.spaceIds.isEmpty() || view.window.spaceIds.any { it in visible }
     val newMode = if (onCurrent) view.mode else TriFilter.Hide
+    val newRule = if (onCurrent) view.firingRule else null
     val newChildren = view.children.map { maskOffSpace(it, visible) }
     return if (newMode == view.mode && newChildren === view.children) view
-    else view.copy(mode = newMode, children = newChildren)
+    else view.copy(mode = newMode, children = newChildren, firingRule = newRule)
 }
 
 /**
@@ -234,12 +411,12 @@ private fun maskOffSpace(view: WindowView, visible: Set<Long>): WindowView {
  * apps demoted or accessory utilities hidden author a rule for it
  * (e.g. `noVisibleWindows → Demote`, `activationPolicy == Accessory → Hide`).
  */
-private fun appSection(app: App, windows: List<WindowView>, f: FilteringRules): TriFilter {
-    if (windows.any { it.mode == TriFilter.Show }) return TriFilter.Show
-    if (windows.any { it.mode == TriFilter.Demote }) return TriFilter.Demote
+private fun appSection(app: App, windows: List<WindowView>, f: FilteringRules): Pair<TriFilter, Rule?> {
+    if (windows.any { it.mode == TriFilter.Show }) return TriFilter.Show to null
+    if (windows.any { it.mode == TriFilter.Demote }) return TriFilter.Demote to null
     val phantom = phantomWindow(app)
-    return f.rules.firstOrNull { it.matches(app, phantom, isPhantom = true) }?.outcome
-        ?: TriFilter.Show
+    val matched = f.rules.firstOrNull { it.matches(app, phantom, isPhantom = true) }
+    return (matched?.outcome ?: TriFilter.Show) to matched
 }
 
 /** Synthetic stand-in window used to evaluate app-level rules for apps
@@ -256,11 +433,12 @@ private fun phantomWindow(app: App): Window = Window(
  * list. First-match-wins; default if no rule matches is `Show`.
  */
 private fun classifyWindow(app: App, w: Window, f: FilteringRules, isPhantom: Boolean): WindowView {
-    val mode = f.rules.firstOrNull { it.matches(app, w, isPhantom) }?.outcome ?: TriFilter.Show
+    val matched = f.rules.firstOrNull { it.matches(app, w, isPhantom) }
+    val mode = matched?.outcome ?: TriFilter.Show
     val childViews = w.children
         .map { classifyWindow(app, it, f, isPhantom = false) }
         .sortedBy(::modeOrder)
-    return WindowView(w, mode, childViews)
+    return WindowView(w, mode, childViews, firingRule = matched)
 }
 
 private fun modeOrder(v: TriFilter): Int = when (v) {

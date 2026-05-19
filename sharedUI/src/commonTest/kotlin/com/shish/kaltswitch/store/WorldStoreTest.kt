@@ -6,6 +6,9 @@ import com.shish.kaltswitch.config.SwitcherSettings
 import com.shish.kaltswitch.config.WindowFrame
 import com.shish.kaltswitch.model.FilteringRules
 import com.shish.kaltswitch.model.Window
+import com.shish.kaltswitch.model.WindowSource
+import kotlin.test.assertNotNull
+import kotlin.test.assertTrue
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.test.runTest
 import kotlin.test.Test
@@ -131,7 +134,7 @@ class WorldStoreTest {
         store.recordActivation(pid = 10, windowId = null)  // app-level
 
         // Snapshot reports only window 101 alive.
-        store.setWindows(pid = 10, windows = listOf(window(id = 101, pid = 10)))
+        store.applyAxSnapshot(pid = 10, axWindows =listOf(window(id = 101, pid = 10)))
 
         // Window 100 is gone from history, 101 + the app-level event remain.
         assertEquals(listOf(101L), store.state.value.log.windowOrder(pid = 10))
@@ -143,11 +146,11 @@ class WorldStoreTest {
     fun setWindows_clearsActiveWindowIdIfThatWindowDisappeared() {
         val store = WorldStore()
         store.recordActivation(pid = 10, windowId = 100)
-        store.setWindows(pid = 10, windows = listOf(window(id = 100, pid = 10)))
+        store.applyAxSnapshot(pid = 10, axWindows =listOf(window(id = 100, pid = 10)))
         // Sanity: still pointing at 100.
         assertEquals(100L, store.activeWindowId.value)
 
-        store.setWindows(pid = 10, windows = listOf(window(id = 101, pid = 10)))
+        store.applyAxSnapshot(pid = 10, axWindows =listOf(window(id = 101, pid = 10)))
 
         assertEquals(10, store.activeAppPid.value)        // app pointer kept
         assertNull(store.activeWindowId.value)            // window pointer cleared
@@ -160,9 +163,9 @@ class WorldStoreTest {
         store.recordActivation(pid = 10, windowId = 100)
 
         // Snapshot: window 100 has child id 200 attached.
-        store.setWindows(
+        store.applyAxSnapshot(
             pid = 10,
-            windows = listOf(
+            axWindows = listOf(
                 window(id = 100, pid = 10, children = listOf(window(id = 200, pid = 10))),
             ),
         )
@@ -183,7 +186,7 @@ class WorldStoreTest {
             executablePath = null,
             launchDateMillis = 0,
         )
-        store.setWindows(pid = 10, windows = emptyList())
+        store.applyAxSnapshot(pid = 10, axWindows =emptyList())
         store.setAppIconPng(pid = 10, png = byteArrayOf(1, 2, 3))
 
         store.removeApp(pid = 10)
@@ -197,4 +200,156 @@ class WorldStoreTest {
         pid: Int,
         children: List<Window> = emptyList(),
     ): Window = Window(id = id, pid = pid, title = "", children = children)
+
+    // ─────────────────────── Unified window storage ───────────────────────
+    //
+    // These tests pin the per-source membership rules from
+    // `applyAxSnapshot` / `applyCgSnapshot` / `upsertAxWindow`. The
+    // critical invariants:
+    //  * A window is dropped iff its `sources` becomes empty.
+    //  * Retracting one source preserves the other source's last-known
+    //    fields on the window.
+    //  * `applyAxSnapshot` ignores windows AX never claimed (CG-only
+    //    cross-space rows aren't affected by AX losing visibility).
+
+    @Test
+    fun applyAxSnapshot_addsNewWindow_withAxInSources() {
+        val store = WorldStore()
+        store.applyAxSnapshot(
+            pid = 1,
+            axWindows = listOf(window(id = 11, pid = 1).copy(title = "Hi", cgWindowId = 101)),
+        )
+        val w = store.state.value.windowsByPid[1]?.single()
+        assertNotNull(w)
+        assertEquals("Hi", w.title)
+        assertEquals(setOf(WindowSource.AX), w.sources)
+    }
+
+    @Test
+    fun applyAxSnapshot_retract_dropsAxOnlyWindow() {
+        // Window present with sources = {AX}, then AX-snapshot doesn't
+        // mention it → window is removed entirely.
+        val store = WorldStore()
+        store.applyAxSnapshot(
+            pid = 1,
+            axWindows = listOf(window(id = 11, pid = 1).copy(cgWindowId = 101)),
+        )
+        store.applyAxSnapshot(pid = 1, axWindows = emptyList())
+        assertNull(store.state.value.windowsByPid[1])
+    }
+
+    @Test
+    fun applyAxSnapshot_retract_keepsWindowWhenCgStillHasIt_preservesAxFields() {
+        // Seed AX + CG both knowing the same window (matched by cgWindowId).
+        val store = WorldStore()
+        store.applyAxSnapshot(
+            pid = 1,
+            axWindows = listOf(window(id = 11, pid = 1).copy(title = "Hello", cgWindowId = 101)),
+        )
+        store.applyCgSnapshot(
+            allCgWindows = listOf(window(id = 0, pid = 1).copy(cgWindowId = 101, ownerName = "Mail")),
+        )
+        // Now AX retracts.
+        store.applyAxSnapshot(pid = 1, axWindows = emptyList())
+        val w = store.state.value.windowsByPid[1]?.single()
+        assertNotNull(w)
+        assertEquals(setOf(WindowSource.CG), w.sources)
+        // AX-side fields are preserved on the survivor — title doesn't
+        // collapse to "" just because AX lost visibility.
+        assertEquals("Hello", w.title)
+        // CG fields stay populated too.
+        assertEquals("Mail", w.ownerName)
+    }
+
+    @Test
+    fun applyCgSnapshot_retract_dropsCgOnlyWindow() {
+        // CG-only (cross-space) window, then CG no longer sees it → drop.
+        val store = WorldStore()
+        store.applyCgSnapshot(
+            allCgWindows = listOf(window(id = 0, pid = 1).copy(cgWindowId = 101)),
+        )
+        assertEquals(1, store.state.value.windowsByPid[1]?.size)
+        store.applyCgSnapshot(allCgWindows = emptyList())
+        assertNull(store.state.value.windowsByPid[1])
+    }
+
+    @Test
+    fun applyCgSnapshot_retract_keepsWindowWhenAxStillHasIt_preservesCgFields() {
+        // Both AX + CG saw the window; CG retracts.
+        val store = WorldStore()
+        store.applyAxSnapshot(
+            pid = 1,
+            axWindows = listOf(window(id = 11, pid = 1).copy(title = "Hi", cgWindowId = 101)),
+        )
+        store.applyCgSnapshot(
+            allCgWindows = listOf(
+                window(id = 0, pid = 1).copy(cgWindowId = 101, ownerName = "Mail", cgLayer = 0),
+            ),
+        )
+        store.applyCgSnapshot(allCgWindows = emptyList())
+        val w = store.state.value.windowsByPid[1]?.single()
+        assertNotNull(w)
+        assertEquals(setOf(WindowSource.AX), w.sources)
+        assertEquals("Hi", w.title)
+        // CG fields are preserved (last-known) — UI / rules can still
+        // reason about the off-CG state even though CG itself doesn't
+        // currently see the window.
+        assertEquals("Mail", w.ownerName)
+    }
+
+    @Test
+    fun applyAxSnapshot_doesNotDropCgOnlyWindow() {
+        // CG-only cross-space window. AX-snapshot for this pid arrives
+        // without it (AX is space-filtered, doesn't see it). Window
+        // should NOT be dropped — AX has no claim over it.
+        val store = WorldStore()
+        store.applyCgSnapshot(
+            allCgWindows = listOf(window(id = 0, pid = 1).copy(cgWindowId = 101)),
+        )
+        store.applyAxSnapshot(
+            pid = 1,
+            axWindows = listOf(window(id = 12, pid = 1).copy(cgWindowId = 102)),
+        )
+        val ws = store.state.value.windowsByPid[1].orEmpty()
+        // Two windows: the CG-only 101 and the new AX 102.
+        assertEquals(2, ws.size)
+        val cgOnly = ws.single { it.cgWindowId == 101L }
+        assertEquals(setOf(WindowSource.CG), cgOnly.sources)
+    }
+
+    @Test
+    fun applyCgSnapshot_upgradesCgOnlyToBothSources() {
+        // CG-only window first, then AX sees it (user switched to its
+        // space) → sources becomes {AX, CG}.
+        val store = WorldStore()
+        store.applyCgSnapshot(
+            allCgWindows = listOf(window(id = 0, pid = 1).copy(cgWindowId = 101, ownerName = "Mail")),
+        )
+        store.applyAxSnapshot(
+            pid = 1,
+            axWindows = listOf(window(id = 11, pid = 1).copy(title = "Inbox", cgWindowId = 101)),
+        )
+        val w = store.state.value.windowsByPid[1]?.single()
+        assertNotNull(w)
+        assertEquals(setOf(WindowSource.AX, WindowSource.CG), w.sources)
+        assertEquals("Inbox", w.title)
+        assertEquals("Mail", w.ownerName)
+    }
+
+    @Test
+    fun upsertAxWindow_addsThenPatches_neverDrops() {
+        val store = WorldStore()
+        store.upsertAxWindow(window = window(id = 11, pid = 1).copy(title = "A", cgWindowId = 101))
+        assertEquals(1, store.state.value.windowsByPid[1]?.size)
+
+        // Same cgWindowId, new title → patch.
+        store.upsertAxWindow(window = window(id = 11, pid = 1).copy(title = "A2", cgWindowId = 101))
+        val w = store.state.value.windowsByPid[1]?.single()
+        assertEquals("A2", w?.title)
+        assertTrue(WindowSource.AX in (w?.sources ?: emptySet()))
+
+        // Different cgWindowId → upsert adds, doesn't drop the existing.
+        store.upsertAxWindow(window = window(id = 12, pid = 1).copy(title = "B", cgWindowId = 102))
+        assertEquals(2, store.state.value.windowsByPid[1]?.size)
+    }
 }

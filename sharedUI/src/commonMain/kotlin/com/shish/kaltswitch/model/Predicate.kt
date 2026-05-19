@@ -161,15 +161,118 @@ data class AreaPredicate(
 /**
  * App-level predicate: true iff the app has no surviving (Show or Demote)
  * windows after rule evaluation. The classifier evaluates rules in two
- * stages — once for each real window, then for a synthetic "phantom" window
- * if the app turned up empty — and this predicate is the only way for a
- * rule to address the second stage. On real-window evaluations it is
+ * stages — once for each real window, then for a synthetic "windowless-app"
+ * stand-in if the app turned up empty — and this predicate is the only way
+ * for a rule to address the second stage. On real-window evaluations it is
  * always `false`; on phantom evaluations always `true`. This makes it a
  * clean replacement for the old `windowlessApps` fallback toggle.
+ *
+ * Note: the `isPhantom` arg to [Predicate.matches] is overloaded — the
+ * classifier passes `true` for the windowless-app stand-in but never for
+ * cross-space CG-phantom rows. CG phantoms therefore look like ordinary
+ * windows to the rule chain and should be addressed via the CG-side
+ * predicates below ([IsOnscreenPredicate] etc.) rather than this one.
  */
 @Serializable
 @SerialName("noVisibleWindows")
 data class NoVisibleWindowsPredicate(
+    override val enabled: Boolean = true,
+    override val inverted: Boolean = false,
+) : Predicate
+
+// ─────────────── CG-only window predicates (phantom rows) ───────────────
+//
+// These five address fields populated only by `CGWindowListWatcher` —
+// for AX-derived windows the underlying value is `null` and the predicate
+// evaluates to `false`. That gives rules a clean "applies to CG phantoms
+// only" scope without needing a source discriminator: a rule mixing
+// CG-only predicates with [BundleIdPredicate]/[AppNamePredicate] still
+// composes correctly because the AX side returns `false` on the first
+// CG predicate and short-circuits the AND.
+
+/** `kCGWindowIsOnscreen`. The key discriminator between "real visible
+ *  window" and "hidden helper popover the app keeps cached". Combine
+ *  with [IsOnVisibleSpacePredicate] to avoid hiding legitimate cross-
+ *  space rows which also report `false`. */
+@Serializable
+@SerialName("isOnscreen")
+data class IsOnscreenPredicate(
+    override val enabled: Boolean = true,
+    override val inverted: Boolean = false,
+) : Predicate
+
+/** True iff any of the window's [Window.spaceIds] is in the WorldStore's
+ *  current `visibleSpaceIds`. Pre-computed in the Swift enumerator so
+ *  predicate evaluation stays ambient-context-free. */
+@Serializable
+@SerialName("isOnVisibleSpace")
+data class IsOnVisibleSpacePredicate(
+    override val enabled: Boolean = true,
+    override val inverted: Boolean = false,
+) : Predicate
+
+/** `kCGWindowLayer`. Zero = regular app window; positive layers cover
+ *  status items, the Dock tile, menubar overlays. Numeric so a rule can
+ *  say "anything with layer > 0 is decoration, hide it". */
+@Serializable
+@SerialName("cgLayer")
+data class CgLayerPredicate(
+    override val enabled: Boolean = true,
+    override val inverted: Boolean = false,
+    val op: NumberOp = NumberOp.Gt,
+    val value: Double = 0.0,
+) : Predicate
+
+/** `kCGWindowAlpha` (0–1). Zero-alpha entries are usually stub windows. */
+@Serializable
+@SerialName("cgAlpha")
+data class CgAlphaPredicate(
+    override val enabled: Boolean = true,
+    override val inverted: Boolean = false,
+    val op: NumberOp = NumberOp.Lte,
+    val value: Double = 0.0,
+) : Predicate
+
+/** `kCGWindowOwnerName`. Matches the WindowServer's view of the owner
+ *  process (CFBundleName for user apps, a fixed string for system
+ *  services like "Window Server" / "Dock" / "Control Center"). For
+ *  user apps it overlaps with [AppNamePredicate]; for system services
+ *  it's the only way to address them (those processes don't appear
+ *  in `NSWorkspace.runningApplications` and have no `App` record). */
+@Serializable
+@SerialName("ownerName")
+data class OwnerNamePredicate(
+    override val enabled: Boolean = true,
+    override val inverted: Boolean = false,
+    val op: StringOp = StringOp.Eq,
+    val value: String = "",
+) : Predicate
+
+/** True iff the window has at least one entry in [Window.spaceIds]. The
+ *  list is populated via `CGSCopySpacesForWindows`; an empty list means
+ *  CGS didn't return a space for this window — typically a menubar-shadow
+ *  helper, a cached popover, or some other WindowServer-internal stub.
+ *
+ *  Crucially this disambiguates "[isOnVisibleSpace]=false because the
+ *  window is on another space" (`spaceIds` non-empty, just doesn't
+ *  intersect the visible set) from "...because we have no space data"
+ *  (`spaceIds` empty). A rule pattern that wants to drop the latter but
+ *  keep the former needs both predicates:
+ *
+ *  ```
+ *  IsOnscreenPredicate(inverted = true)         // not visible right now
+ *  HasSpaceIdsPredicate(inverted = true)        // and no space data either
+ *  → Hide
+ *  ```
+ *
+ *  Returns `false` on AX-derived rows where `spaceIds` is unset (the
+ *  field is `List<Long>`, not nullable; AX rows ship an empty list when
+ *  the `_AXUIElementGetWindow` resolver failed, so this predicate also
+ *  catches that edge case — which is the right behaviour: a window with
+ *  no resolvable CGWindowID has no business in the switcher). */
+@Serializable
+@SerialName("hasSpaceIds")
+data class HasSpaceIdsPredicate(
     override val enabled: Boolean = true,
     override val inverted: Boolean = false,
 ) : Predicate
@@ -189,6 +292,25 @@ data class NoVisibleWindowsPredicate(
  * keeps a sensible interpretation against it.
  */
 fun Predicate.matches(app: App, window: Window, isPhantom: Boolean): Boolean {
+    // CG-only predicates: short-circuit to `false` when the underlying
+    // field is null (i.e. the row isn't CG-derived). Done **before** the
+    // inverted XOR — otherwise an `inverted=true` invocation would silently
+    // match every AX row, which is how a CG-targeted "hide menubar
+    // shadows" rule once managed to hide every test fixture's windows
+    // and broke the suite. The semantic we want here is "predicate
+    // doesn't apply to this row → don't fire it regardless of intent".
+    when (this) {
+        is IsOnscreenPredicate -> if (window.isOnscreen == null) return false
+        is IsOnVisibleSpacePredicate -> if (window.isOnVisibleSpace == null) return false
+        is CgLayerPredicate -> if (window.cgLayer == null) return false
+        is CgAlphaPredicate -> if (window.cgAlpha == null) return false
+        is OwnerNamePredicate -> if (window.ownerName == null) return false
+        // HasSpaceIdsPredicate intentionally has no applicability check:
+        // spaceIds is non-nullable on both sources, and "no space data"
+        // is a meaningful question for AX rows too (when
+        // _AXUIElementGetWindow failed to resolve a CGWindowID).
+        else -> {}
+    }
     val raw = when (this) {
         is BundleIdPredicate -> matchString(app.bundleId.orEmpty(), op, value)
         is AppNamePredicate -> matchString(app.name, op, value)
@@ -211,6 +333,17 @@ fun Predicate.matches(app: App, window: Window, isPhantom: Boolean): Boolean {
             matchNumber(area, op, value)
         }
         is NoVisibleWindowsPredicate -> isPhantom
+        // CG-only fields are nullable; AX-derived rows have them all null.
+        // Convention: a CG predicate against a null underlying value
+        // evaluates to `false` (i.e. "doesn't apply"). That makes any
+        // rule whose predicate list includes a CG predicate inert
+        // against AX rows — exactly the scoping we want.
+        is IsOnscreenPredicate -> window.isOnscreen == true
+        is IsOnVisibleSpacePredicate -> window.isOnVisibleSpace == true
+        is CgLayerPredicate -> matchNumber(window.cgLayer?.toDouble(), op, value)
+        is CgAlphaPredicate -> matchNumber(window.cgAlpha, op, value)
+        is OwnerNamePredicate -> matchString(window.ownerName.orEmpty(), op, value)
+        is HasSpaceIdsPredicate -> window.spaceIds.isNotEmpty()
     }
     return raw xor inverted
 }

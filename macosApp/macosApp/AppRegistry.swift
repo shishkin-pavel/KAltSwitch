@@ -23,15 +23,44 @@ final class AppRegistry {
     private var systemAccentObserver: NSObjectProtocol?
     private var trustTimer: Timer?
     private var lastTrusted = false
+    /// Repeating timer driving the always-on CGWindowList rescan. CGWindowList
+    /// has no public change notification, so we poll. The work itself is
+    /// off-main (see `CGWindowListWatcher.refresh()`), so the timer firing
+    /// every [Self.backgroundRefreshIntervalSec] seconds adds essentially
+    /// zero main-thread cost. Closes the "I closed a window and the
+    /// switcher still shows it" gap to ≤ cadence; combined with reactive
+    /// AX notifications, the merged view is usually fresh-to-real-time.
+    private var backgroundRefreshTimer: Timer?
+    /// Cadence of the always-on CG poll. 2 s strikes the balance: long
+    /// enough to keep CPU near zero in Activity Monitor at idle, short
+    /// enough that a closed window + immediate cmd+tab almost never
+    /// shows a stale row in practice (AX-destroyed usually beats this
+    /// anyway). Tunable here — single constant, no other call site.
+    private static let backgroundRefreshIntervalSec: TimeInterval = 2.0
     /// Reads notification badges off the macOS Dock's AX tree and pushes
     /// them into `WorldStore`. Owned here because its lifetime mirrors
     /// the per-app watchers' and it benefits from the same trust-flip
     /// respawn (its observer also needs AX permission to attach).
     private var dockBadgeWatcher: DockBadgeWatcher?
+    /// Enumerates windows across every Mission Control space via the
+    /// public `CGWindowListCopyWindowInfo` API and pushes them as
+    /// "phantom" rows into `WorldStore`. Without this, AX's silent
+    /// current-space filter hides every window on another space — even
+    /// for apps we already watch. Owned here so we can call `refresh`
+    /// from inside the space-change handler and expose
+    /// `refreshCrossSpaceWindows()` for the switcher's session-open trigger.
+    private var cgWindowListWatcher: CGWindowListWatcher?
     /// Fires whenever AX trust flips. The hotkey controller's CGEventTap
     /// creation requires AX, so on `true` AppDelegate calls `start()` again
     /// (the call is idempotent).
     var onAxTrustChanged: ((Bool) -> Void)?
+
+    /// Monotonic counter that lets [commit] cancel its own previously
+    /// scheduled deferred-activation closure when the user starts a
+    /// fresh switcher session faster than the dock-swipe swoosh
+    /// settles. Each [commit] grabs a fresh token; the deferred
+    /// closure runs only if the token still matches.
+    private var commitToken: Int = 0
 
     init(store: WorldStore) {
         self.store = store
@@ -109,6 +138,29 @@ final class AppRegistry {
         // first space switch. Cheap call — no harm in doing it eagerly.
         refreshVisibleSpaces()
 
+        // Cross-space window enumerator. One initial scan now so the
+        // switcher has off-space rows from the very first open;
+        // a 2 s background poll (set up below) plus reactive
+        // `handleSpaceChanged` + `refreshCrossSpaceWindows()` keep
+        // the merged view current after that.
+        let cgwl = CGWindowListWatcher(store: store)
+        cgwl.refresh()
+        cgWindowListWatcher = cgwl
+
+        // Always-on background poll. Sole reason CGWindowList freshness
+        // doesn't depend on the cmd+tab hotkey path (which is now strictly
+        // read-only against `WorldStore`). The work fires off main inside
+        // `CGWindowListWatcher.refresh()`, so the cost shows up as a few
+        // CG / CGS syscalls on a userInitiated background queue every
+        // [backgroundRefreshIntervalSec] seconds and a sub-ms main-thread
+        // hop to push results into the kotlin store.
+        backgroundRefreshTimer = Timer.scheduledTimer(
+            withTimeInterval: AppRegistry.backgroundRefreshIntervalSec,
+            repeats: true,
+        ) { [weak self] _ in
+            self?.cgWindowListWatcher?.refresh()
+        }
+
         // System accent colour: read + observe lives on the Kotlin side
         // (`SystemAccentKt.observeSystemAccent`) so the NSColor → 0xRRGGBB
         // packing has one home.
@@ -120,11 +172,55 @@ final class AppRegistry {
     }
 
     private func handleSpaceChanged() {
-        log("[reg] activeSpaceDidChange — re-poll visible spaces & windows")
+        log("[reg] activeSpaceDidChange → visible now=\(currentVisibleSpaceIds())")
         refreshVisibleSpaces()
-        for watcher in watchers.values {
-            watcher.requestRefresh()
-        }
+        // We intentionally do *not* loop every watcher and trigger
+        // `refreshAllWindows()` here, even though that's the obvious
+        // way to refresh AX-side state after a Space transition.
+        // Reason: each `refreshAllWindows()` reads `kAXWindowsAttribute`
+        // synchronously on the main thread, which can stall for
+        // hundreds of milliseconds per unresponsive app (IntelliJ EAP
+        // in particular). With ~10 watchers, a single space-change
+        // chains 10 such reads on main and blocks every other
+        // main-queue closure for that span — most notably the
+        // `SwipeOrchestrator.done()` `asyncAfter(+80ms)` that fires
+        // [commit]'s deferred activation. Observed effect: cmd+tab
+        // cross-space commits visibly lag for 1–2 seconds when the
+        // user rapid-fires through cross-space targets.
+        //
+        // Instead, rely on the per-app AX event stream
+        // (kAXFocusedWindowChangedNotification, kAXWindowCreatedNotification,
+        // …) to drive watcher refreshes naturally. The store-side
+        // cgwid fallback in `AppRegistry.commit` ensures activation
+        // works even when AX is briefly stale.
+        // Window-to-space membership can shift on space transitions
+        // (user-dragged windows, system-moved sheets). Drop the
+        // `spaceIdsCache` so the next refresh re-fetches authoritatively
+        // — the only event we get that signals possible mass-mutation.
+        cgWindowListWatcher?.invalidateSpaceIdsCache()
+        // Refresh cross-space phantoms too — windows on the now-visible
+        // space have flipped from "off-space phantom" to "AX-visible
+        // window", and the converse for the space we just left. Skipping
+        // this would leave stale phantoms shadowing real AX rows until
+        // the next switcher open.
+        cgWindowListWatcher?.refresh()
+    }
+
+    /// Re-enumerate phantom windows on switcher-session-start. Cheap
+    /// enough to run synchronously on the main thread before the panel
+    /// shows; the cost is a single CG syscall plus a few dictionary
+    /// allocations per running window. AppDelegate wires this to its
+    /// `setOverlayActive(true)` path.
+    func refreshCrossSpaceWindows() {
+        cgWindowListWatcher?.refresh()
+    }
+
+    /// Resolve a phantom window's commit-time `CGWindowID` from a kotlin
+    /// `WindowId`. Returns nil when the windowId belongs to an AX-derived
+    /// window (or is otherwise unknown to the cross-space enumerator) —
+    /// the AX path in `commit(pid:windowId:)` handles those.
+    func phantomCgWindowId(pid: pid_t, windowId: Int64) -> CGWindowID? {
+        cgWindowListWatcher?.cgWindowIdByPidByPhantomId[pid]?[windowId]
     }
 
     private func refreshVisibleSpaces() {
@@ -163,6 +259,7 @@ final class AppRegistry {
 
     func stop() {
         trustTimer?.invalidate(); trustTimer = nil
+        backgroundRefreshTimer?.invalidate(); backgroundRefreshTimer = nil
         let center = NSWorkspace.shared.notificationCenter
         for obs in nsObservers { center.removeObserver(obs) }
         nsObservers.removeAll()
@@ -176,6 +273,7 @@ final class AppRegistry {
         watchers.removeAll()
         dockBadgeWatcher?.stop()
         dockBadgeWatcher = nil
+        cgWindowListWatcher = nil
     }
 
     // MARK: - Switcher actions (raise / commit / quit / hide / window-actions)
@@ -227,35 +325,103 @@ final class AppRegistry {
 
     /// Final activation on cmd-release.
     ///
-    /// Order matters and matches alt-tab-macos's `Window.focus()` exactly:
-    ///  1. CGS `_SLPSSetFrontProcessWithOptions` (with the window's CGWindowID)
-    ///     to flip the frontmost-app pointer in WindowServer **and** put the
-    ///     specific window on top inside that process. NSRunningApplication.
-    ///     activate would no-op here because we're a non-activating panel
-    ///     host, so we call SkyLight directly.
-    ///  2. The byte-record key-window trick is part of `bringAppToFront`.
-    ///  3. AX `kAXMain` + `kAXRaise` on the chosen window. Done **after**
-    ///     CGS so the target process is already frontmost when its main thread
-    ///     processes the AX message — otherwise some apps (Safari, FF) ignore
-    ///     a kAXMain change to a backgrounded window and re-raise their
-    ///     previous frontmost window instead.
-    ///  4. `nsApp.activate()` as a free fallback. If a future macOS breaks
-    ///     the SkyLight call, this keeps focus moving on the public path.
-    ///     The `.activateIgnoringOtherApps` option was deprecated on macOS
-    ///     14+ and Apple documents it as ineffective — the no-arg form is
-    ///     the modern equivalent and avoids a deprecation warning at build.
+    /// **Same-Space:** synchronous. Runs the alt-tab-macos focus
+    /// chain (SLPS frontmost + cgwid → key-window byte trick →
+    /// AXRaise → NSApp.activate). See [finishCommit].
+    ///
+    /// **Cross-Space:** synthesise the private CGEvent the trackpad
+    /// driver posts for a 3-finger Mission Control swipe, post one
+    /// per display-Space we have to traverse, then defer the
+    /// activation chain by `delta × 100 + 150 ms` so SLPS runs on a
+    /// settled visible Space. See [swipeToSpaceFor] for the
+    /// synthesis details and [iss / InstantSpaceSwitcher][1] for the
+    /// open-source references that prove the technique works under
+    /// SIP without entitlements.
+    ///
+    /// [1]: ~/projects/iss and ~/projects/InstantSpaceSwitcher
+    ///
+    /// Why not `CGSManagedDisplaySetCurrentSpace`: on recent macOS
+    /// the setter flips its logical pointer without animating and
+    /// pulls target-Space windows onto the current Space instead.
+    /// alt-tab-macos documents the same finding in their
+    /// `experimentations/PrivateApis.swift` and avoids the call.
+    /// The diagnostic Spaces submenu still exposes both paths for
+    /// A/B comparison; the boot commit path uses dock-swipe only.
+    ///
+    /// `commitToken` lets a superseding commit cancel a still-pending
+    /// deferred activation — handy when the user spams cmd+tab
+    /// through two cross-Space targets faster than the swooshes
+    /// settle. The displaced commit's window won't get activated,
+    /// which is the right call.
     func commit(pid: pid_t, windowId: Int64?) {
         let watcher = watchers[pid]
-        let cgWid: CGWindowID? = (windowId != nil)
-            ? watcher?.cgWindowId(forAxWindowId: windowId!)
-            : nil
+        // Cross-space windows have no live AX element on the current
+        // space, so `watcher.cgWindowId(forAxWindowId:)` returns nil.
+        // Fall back to the CGWindowList enumerator's phantom map — its
+        // recorded CGWindowID lets the SkyLight focus call still target
+        // a specific window. Without this fallback we'd end up in
+        // `bringAppToFront(pid, nil)` → SLPSMode.allWindows, which just
+        // activates the app and lets macOS pick whatever's main —
+        // typically the *wrong* window when the user explicitly chose
+        // an off-space one.
+        let cgWid: CGWindowID? = {
+            guard let wid = windowId else { return nil }
+            let fromAx = watcher?.cgWindowId(forAxWindowId: wid)
+            let fromPhantom = phantomCgWindowId(pid: pid, windowId: wid)
+            // Store-side fallback: a window that arrived via AX (so its
+            // `id` is an AX-CFHash) and is now CG-only because AX
+            // retracted on a Space change still carries its cgwid on
+            // the stored Window. The AX-watcher's `windowsByHash` no
+            // longer holds its AXUIElement (AX retracted), and the
+            // phantom map keys by cgwid-as-id (not by AX hash), so
+            // neither of the above paths resolves it.
+            let fromStore = store.cgWindowIdFor(pid: pid, windowId: wid)?.int64Value
+            log("[reg] cgwid-resolve pid=\(pid) wid=\(wid) " +
+                "fromAx=\(fromAx.map(String.init) ?? "nil") " +
+                "fromPhantom=\(fromPhantom.map(String.init) ?? "nil") " +
+                "fromStore=\(fromStore.map(String.init) ?? "nil")")
+            if let cg = fromAx ?? fromPhantom { return cg }
+            if let cg = fromStore, cg > 0 { return CGWindowID(cg) }
+            return nil
+        }()
+        commitToken += 1
+        let token = commitToken
+        var scheduled = false
+        if let cgwid = cgWid {
+            scheduled = swipeToSpaceFor(cgWindowId: cgwid) { [weak self] in
+                guard let self = self, self.commitToken == token else {
+                    log("[reg] commit token=\(token) superseded, skipping activation")
+                    return
+                }
+                self.finishCommit(pid: pid, windowId: windowId, cgWid: cgwid, spaceSwitched: true)
+            }
+            if scheduled {
+                log("[reg] commit deferred (dock-swipe in flight) pid=\(pid) token=\(token)")
+            }
+        }
+        if !scheduled {
+            finishCommit(pid: pid, windowId: windowId, cgWid: cgWid, spaceSwitched: false)
+        }
+    }
+
+    /// Activation chain — see [commit]'s doc for ordering rationale.
+    /// Runs synchronously for same-Space commits and from the
+    /// deferred closure for cross-Space ones.
+    private func finishCommit(pid: pid_t, windowId: Int64?, cgWid: CGWindowID?, spaceSwitched: Bool) {
+        let watcher = watchers[pid]
         let cgsOk = bringAppToFront(pid: pid, cgWindowId: cgWid)
         var axOk = false
         if let wid = windowId {
+            // `makeWindowMain` is AX-only; on a phantom commit there's no
+            // AX element to act on, so this just returns false and we
+            // rely on `_SLPSSetFrontProcessWithOptions` + the
+            // post-activation AX refresh to land the user on the right
+            // window.
             axOk = watcher?.makeWindowMain(windowId: wid) ?? false
         }
         let nsAppOk = NSRunningApplication(processIdentifier: pid)?.activate() ?? false
         log("[reg] commit pid=\(pid) ax=\(windowId ?? 0) cg=\(cgWid ?? 0) " +
+            "spaceSwitch=\(spaceSwitched ? "yes" : "no") " +
             "cgs=\(cgsOk ? "ok" : "fail") axRaise=\(axOk ? "ok" : "fail") nsapp=\(nsAppOk ? "ok" : "fail")")
     }
 
@@ -350,6 +516,18 @@ final class AppRegistry {
             DispatchQueue.main.async { [weak self] in
                 guard let self = self else { return }
                 AppRecordKt.upsertAppRecord(pid: pid, store: self.store)
+            }
+        }
+        // Inventory-change signal — fires only when AX adds or removes
+        // a window (not on title / focus / minimise mutations). Kicks
+        // the cross-space enumerator so its phantom for the destroyed
+        // window disappears in the same tick as the AX row, instead of
+        // lingering for ≤ 2 s until the background timer next ticks.
+        // The CG refresh itself is off-main + coalesced, so this hook
+        // can fire freely without blocking anything.
+        watcher.onCgWindowIdSetChanged = { [weak self] _ in
+            DispatchQueue.main.async { [weak self] in
+                self?.cgWindowListWatcher?.refresh()
             }
         }
         watchers[pid] = watcher

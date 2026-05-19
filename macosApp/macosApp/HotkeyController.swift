@@ -182,8 +182,16 @@ final class HotkeyController {
         }
         log("[hk] press id=\(id) entry=\(entry) reverse=\(reverse)")
         DispatchQueue.main.async { [weak self] in
-            log("[diag-hk] onShortcut running on main entry=\(entry) reverse=\(reverse)")
-            self?.controller.onShortcut(entry: entry, reverse: reverse)
+            // Sample cmd state at the moment the handler runs on main,
+            // not at Carbon-callback time. The dispatch above races
+            // the CGEventTap modifier-release dispatch onto main; for
+            // sub-100 ms cmd-holds the release wins and by the time
+            // we're here cmd is already gone. SwitcherController.onShortcut
+            // uses this signal to auto-commit a just-opened session
+            // instead of leaving it visible until the user hits Esc.
+            let cmdHeld = NSEvent.modifierFlags.contains(.command)
+            log("[diag-hk] onShortcut running on main entry=\(entry) reverse=\(reverse) cmdHeld=\(cmdHeld)")
+            self?.controller.onShortcut(entry: entry, reverse: reverse, modifierHeld: cmdHeld)
         }
     }
 

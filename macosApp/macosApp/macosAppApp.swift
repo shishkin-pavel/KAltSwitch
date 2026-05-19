@@ -44,6 +44,11 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     /// when the state changes via the settings panel.
     private var menubarIconMenuItem: NSMenuItem? = nil
     private var launchAtLoginMenuItem: NSMenuItem? = nil
+    /// Diagnostic Spaces submenu. Held so [menuWillOpen] can repopulate
+    /// items each time the user opens it — the (display, space) list
+    /// changes when the user creates / deletes Spaces in Mission
+    /// Control. See [refreshSpacesSubmenu].
+    private var spacesSubmenu: NSMenu? = nil
     /// KVO context for `NSApp.effectiveAppearance`.
     private var appearanceObservation: NSKeyValueObservation? = nil
 
@@ -437,6 +442,17 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         inspectorItem.target = self
         menu.addItem(inspectorItem)
 
+        // Diagnostic Spaces submenu — populated on open (the
+        // display / space list mutates as the user creates &
+        // deletes Mission Control Spaces). See [refreshSpacesSubmenu]
+        // for the rationale.
+        let spacesItem = NSMenuItem(title: "Spaces (diagnostic)", action: nil, keyEquivalent: "")
+        let submenu = NSMenu(title: "Spaces")
+        submenu.delegate = self
+        spacesItem.submenu = submenu
+        spacesSubmenu = submenu
+        menu.addItem(spacesItem)
+
         menu.addItem(.separator())
 
         let menubarToggle = NSMenuItem(
@@ -503,6 +519,11 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     private func setOverlayActive(_ active: Bool) {
         guard let panel = overlayWindow else { return }
         if active {
+            // Re-enumerate cross-space (CGWindowList) windows before the
+            // panel paints, so the user sees off-space rows on the very
+            // first frame of every session. Cheap; runs synchronously on
+            // the main thread.
+            appRegistry?.refreshCrossSpaceWindows()
             panel.alphaValue = 0
             panel.ignoresMouseEvents = true
             panel.captureSessionScreen()
@@ -651,6 +672,101 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         settingsCompose?.destroy()
         inspectorCompose?.destroy()
         setSymbolicHotKeysEnabled(true)
+    }
+}
+
+// MARK: - Diagnostic Spaces submenu
+
+/// Reference-type wrapper for [NSMenuItem.representedObject], which is
+/// `Any?` but ObjC-bridged — value types need a class shell.
+private final class SpaceMenuTarget: NSObject {
+    let displayId: String
+    let displayShort: String
+    let spaceId: CGSSpaceID
+    init(displayId: String, displayShort: String, spaceId: CGSSpaceID) {
+        self.displayId = displayId
+        self.displayShort = displayShort
+        self.spaceId = spaceId
+    }
+}
+
+extension AppDelegate: NSMenuDelegate {
+    func menuWillOpen(_ menu: NSMenu) {
+        guard menu === spacesSubmenu else { return }
+        refreshSpacesSubmenu(menu)
+    }
+
+    private func refreshSpacesSubmenu(_ menu: NSMenu) {
+        menu.removeAllItems()
+        let entries = collectMenubarSpaceTopology()
+        log("[diag-space] menu opened: \(entries.count) entries")
+        if entries.isEmpty {
+            let empty = NSMenuItem(title: "(no spaces — CGS data unavailable)", action: nil, keyEquivalent: "")
+            empty.isEnabled = false
+            menu.addItem(empty)
+            return
+        }
+        var lastDisplayIndex: Int? = nil
+        for entry in entries {
+            // Per-display section header.
+            if entry.displayIndex != lastDisplayIndex {
+                if lastDisplayIndex != nil { menu.addItem(.separator()) }
+                let header = NSMenuItem(
+                    title: "Display \(entry.displayIndex + 1) (\(entry.displayShort))",
+                    action: nil, keyEquivalent: "")
+                header.isEnabled = false
+                menu.addItem(header)
+                lastDisplayIndex = entry.displayIndex
+            }
+            let suffix = entry.isCurrent ? " — current" : ""
+            let item = NSMenuItem(
+                title: "  Space \(entry.spaceId)\(suffix) (via CGS)",
+                action: #selector(spacesMenuItemClicked(_:)),
+                keyEquivalent: "")
+            item.target = self
+            item.representedObject = SpaceMenuTarget(
+                displayId: entry.displayId,
+                displayShort: entry.displayShort,
+                spaceId: entry.spaceId)
+            if entry.isCurrent { item.state = .on }
+            menu.addItem(item)
+        }
+        // Alternative: synthesize the private CGEvent the trackpad
+        // driver posts for a 3-finger Space swipe and CGEventPost it
+        // to the session tap. iss / InstantSpaceSwitcher both prove
+        // this path is reachable under SIP without entitlements.
+        // If `(via CGS)` is silently broken on this macOS (the case
+        // observed so far), these two items should still flip the
+        // Space with the standard swoosh.
+        menu.addItem(.separator())
+        let swipeRight = NSMenuItem(
+            title: "Dock swipe → (next space)",
+            action: #selector(dockSwipeRightClicked),
+            keyEquivalent: "")
+        swipeRight.target = self
+        menu.addItem(swipeRight)
+        let swipeLeft = NSMenuItem(
+            title: "Dock swipe ← (prev space)",
+            action: #selector(dockSwipeLeftClicked),
+            keyEquivalent: "")
+        swipeLeft.target = self
+        menu.addItem(swipeLeft)
+    }
+
+    @objc fileprivate func spacesMenuItemClicked(_ sender: NSMenuItem) {
+        guard let target = sender.representedObject as? SpaceMenuTarget else {
+            log("[diag-space] click ignored: no representedObject")
+            return
+        }
+        diagnosticSwitchToSpace(displayId: target.displayId, spaceId: target.spaceId)
+    }
+
+    @objc fileprivate func dockSwipeRightClicked() {
+        diagnosticDockSwipe(rightward: true)
+    }
+
+    @objc fileprivate func dockSwipeLeftClicked() {
+        diagnosticDockSwipe(rightward: false)
     }
 }
 

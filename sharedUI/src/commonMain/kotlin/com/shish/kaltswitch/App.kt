@@ -1,6 +1,9 @@
 package com.shish.kaltswitch
 
 import androidx.compose.foundation.background
+import androidx.compose.foundation.border
+import androidx.compose.foundation.clickable
+import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -12,6 +15,7 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.LazyListScope
 import androidx.compose.foundation.lazy.items
@@ -384,10 +388,24 @@ private fun AccentColorRow(
 // ─────────────────────────── Inspector window content ───────────────────────────
 
 /**
- * Live snapshot view rendered in the dedicated Inspector window. Three
- * sections (Show / Demote / Hide) listing apps with their windows. Same
- * contents as the pre-split sidebar pane; just hosted in its own
- * NSWindow now and themed via [LocalAppPalette].
+ * Live snapshot rendered in the Inspector window. Three sections
+ * (Show / Demote / Hide) stack vertically; within each section the apps
+ * stack vertically too, each with an inline horizontally-scrolling strip
+ * of **window plates**.
+ *
+ * Each plate carries: title · status chips (focused/main/min/fullscreen
+ * /role/subrole) · classifier chip (the rule whose predicates fired, with
+ * a TriFilter-colour tint) · dimensions. Click a plate to toggle a
+ * detail panel that dumps every AX + CG field on the window — the
+ * fastest path from "this row looks wrong" to "ok, here's exactly what
+ * we see".
+ *
+ * Why horizontally-scrolling plates rather than the old wrap-to-window-
+ * width text rows: a debug-heavy app like ChatGPT can sport 5+ phantom
+ * rows under one header, and stacking them vertically pushed apps
+ * off-screen on every refresh. Horizontal strip = constant vertical
+ * footprint per app + the user sees all windows of an app side-by-side
+ * in classifier order.
  */
 @Composable
 fun InspectorContent(
@@ -405,6 +423,15 @@ fun InspectorContent(
     val snapshot = remember(world, filters, pinning, currentSpaceOnly, visibleSpaceIds) {
         world.filteredSnapshot(filters, pinning, currentSpaceOnly, visibleSpaceIds)
     }
+    // Plate-expansion state is owned here and survives recomposition, so
+    // a Hide-bucket plate stays open across re-snapshots while the user
+    // is reading it. `rememberSaveable` would also persist across Inspector
+    // window close/reopen — overkill for now; debug state is fine to lose
+    // on close.
+    var expandedWindowIds by remember { mutableStateOf(setOf<WindowId>()) }
+    val toggleExpanded: (WindowId) -> Unit = { id ->
+        expandedWindowIds = if (id in expandedWindowIds) expandedWindowIds - id else expandedWindowIds + id
+    }
     Column(
         Modifier
             .fillMaxSize()
@@ -415,16 +442,16 @@ fun InspectorContent(
         if (!axTrusted) AxBanner(onGrantAxClick)
         LazyColumn(
             Modifier.fillMaxSize(),
-            verticalArrangement = Arrangement.spacedBy(2.dp),
+            verticalArrangement = Arrangement.spacedBy(6.dp),
         ) {
-            modeSection("Show", snapshot.show, activeAppPid, activeWindowId)
+            modeSection("Show", snapshot.show, activeAppPid, activeWindowId, expandedWindowIds, toggleExpanded)
             if (snapshot.demote.isNotEmpty()) {
-                item { Spacer(Modifier.height(12.dp)) }
-                modeSection("Demote", snapshot.demote, activeAppPid, activeWindowId)
+                item { Spacer(Modifier.height(10.dp)) }
+                modeSection("Demote", snapshot.demote, activeAppPid, activeWindowId, expandedWindowIds, toggleExpanded)
             }
             if (snapshot.hide.isNotEmpty()) {
-                item { Spacer(Modifier.height(12.dp)) }
-                modeSection("Hide", snapshot.hide, activeAppPid, activeWindowId)
+                item { Spacer(Modifier.height(10.dp)) }
+                modeSection("Hide", snapshot.hide, activeAppPid, activeWindowId, expandedWindowIds, toggleExpanded)
             }
         }
     }
@@ -435,6 +462,8 @@ private fun LazyListScope.modeSection(
     apps: List<AppView>,
     activeAppPid: Int?,
     activeWindowId: WindowId?,
+    expandedIds: Set<WindowId>,
+    toggleExpanded: (WindowId) -> Unit,
 ) {
     item {
         NativeText(
@@ -443,7 +472,9 @@ private fun LazyListScope.modeSection(
             fontWeight = FontWeight.SemiBold,
         )
     }
-    items(apps) { entry -> AppRow(entry, activeAppPid, activeWindowId) }
+    items(apps) { entry ->
+        AppBlock(entry, activeAppPid, activeWindowId, expandedIds, toggleExpanded)
+    }
 }
 
 @Composable
@@ -467,12 +498,24 @@ private fun AxBanner(onGrantClick: () -> Unit) {
     }
 }
 
+/**
+ * One app's block: header line + horizontally-scrolling window-plate strip
+ * underneath. Children of a window are flattened into the same strip with
+ * a depth chip — sub-windows are still rare enough that a separate row
+ * would waste vertical real-estate.
+ */
 @Composable
-private fun AppRow(view: AppView, activeAppPid: Int?, activeWindowId: WindowId?) {
+private fun AppBlock(
+    view: AppView,
+    activeAppPid: Int?,
+    activeWindowId: WindowId?,
+    expandedIds: Set<WindowId>,
+    toggleExpanded: (WindowId) -> Unit,
+) {
     val app = view.app
     val isActiveApp = app.pid == activeAppPid
     val baseColor = AppPalette.textPrimary
-    val color = baseColor.dimmedFor(view.mode)
+    val headerColor = baseColor.dimmedFor(view.mode)
     val pictogram = appPictogram(app, isActiveApp)
     val tags = buildList {
         add(policyTag(app.activationPolicy))
@@ -480,54 +523,233 @@ private fun AppRow(view: AppView, activeAppPid: Int?, activeWindowId: WindowId?)
         if (!app.isFinishedLaunching) add("launching")
         app.bundleId?.let { add(it) }
     }.joinToString(" · ")
-    Column {
+    Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+        Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+            NativeText(
+                "$pictogram ${app.name}  ${tagText(tags)}",
+                color = headerColor,
+                fontWeight = if (isActiveApp) FontWeight.Bold else FontWeight.Normal,
+                fontSize = 12.sp,
+            )
+            view.firingRule?.let { rule ->
+                // App-level firing rule: came from the windowless-app
+                // second pass. Per-window rules surface on the plates
+                // themselves; this chip only appears for apps that have
+                // no surviving windows.
+                ClassifierChip(view.mode, rule)
+            }
+        }
+        val plates = flattenWindows(view.windows, depth = 0)
+        if (plates.isEmpty()) {
+            // Pure windowless apps (e.g. menubar utilities) get no strip.
+            // The header + app-level chip already say everything there is.
+        } else {
+            Row(
+                Modifier
+                    .fillMaxWidth()
+                    .horizontalScroll(rememberScrollState()),
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
+            ) {
+                plates.forEach { (wv, depth) ->
+                    Column {
+                        WindowPlate(
+                            view = wv,
+                            depth = depth,
+                            appName = app.name,
+                            isActive = isActiveApp && wv.window.id == activeWindowId,
+                            isExpanded = wv.window.id in expandedIds,
+                            onClick = { toggleExpanded(wv.window.id) },
+                        )
+                        if (wv.window.id in expandedIds) {
+                            WindowDetailPanel(wv, appName = app.name)
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+/** Recurse a list of [WindowView] subtrees, flattening into (view, depth)
+ *  pairs in pre-order. We render children as additional plates in the same
+ *  horizontal strip rather than nesting, which keeps the per-app vertical
+ *  footprint constant regardless of subtree shape. */
+private fun flattenWindows(roots: List<WindowView>, depth: Int): List<Pair<WindowView, Int>> {
+    val out = mutableListOf<Pair<WindowView, Int>>()
+    fun visit(v: WindowView, d: Int) {
+        out.add(v to d)
+        v.children.forEach { visit(it, d + 1) }
+    }
+    roots.forEach { visit(it, depth) }
+    return out
+}
+
+/**
+ * One window's plate: rounded rectangle with title + chips + dimensions,
+ * tinted by [WindowView.mode]. Clicking toggles the expanded detail
+ * panel that the parent renders below.
+ */
+@Composable
+private fun WindowPlate(
+    view: WindowView,
+    depth: Int,
+    appName: String,
+    isActive: Boolean,
+    isExpanded: Boolean,
+    onClick: () -> Unit,
+) {
+    val w = view.window
+    val pal = AppPalette
+    val (bg, border) = plateColorsFor(view.mode, isActive)
+    Column(
+        Modifier
+            .widthIn(min = 200.dp, max = 320.dp)
+            .clip(RoundedCornerShape(6.dp))
+            .background(bg)
+            .border(
+                width = if (isActive) 1.5.dp else 1.dp,
+                color = border,
+                shape = RoundedCornerShape(6.dp),
+            )
+            .clickable(onClick = onClick)
+            .padding(horizontal = 10.dp, vertical = 8.dp),
+        verticalArrangement = Arrangement.spacedBy(4.dp),
+    ) {
         NativeText(
-            "$pictogram ${app.name}  ${tagText(tags)}",
-            color = color,
-            fontWeight = if (isActiveApp) FontWeight.Bold else FontWeight.Normal,
+            text = effectiveWindowTitle(w.title, appName),
+            color = pal.textPrimary,
+            fontWeight = if (isActive) FontWeight.SemiBold else FontWeight.Medium,
             fontSize = 12.sp,
         )
-        view.windows.forEach { wv ->
-            WindowSubtree(wv, appName = app.name, depth = 1, isInActiveApp = activeAppPid == app.pid, activeWindowId = activeWindowId)
+        // Status + classifier chips on one flow line. FlowRow would be
+        // ideal but the chip set rarely exceeds 4 entries — plain Row
+        // with horizontal scroll handled by the parent is enough.
+        Row(horizontalArrangement = Arrangement.spacedBy(4.dp), verticalAlignment = Alignment.CenterVertically) {
+            if (depth > 0) StatusChip("child·$depth")
+            if (isActive) StatusChip("focused", accent = true)
+            if (w.isMain) StatusChip("main")
+            if (w.isMinimized) StatusChip("min")
+            if (w.isFullscreen) StatusChip("full")
+            if (!w.role.isNullOrBlank() && w.role != "AXWindow") StatusChip(w.role)
+            view.firingRule?.let { rule -> ClassifierChip(view.mode, rule) }
+            if (view.firingRule == null && view.mode == TriFilter.Show) {
+                // Default-show is implicit but worth labelling so the
+                // user can tell "no rule fired" apart from "I forgot
+                // to label the chip".
+                ClassifierChip(view.mode, null)
+            }
+        }
+        val dims = if (w.width != null && w.height != null) "${w.width.toInt()} × ${w.height.toInt()}" else "—"
+        NativeText(
+            text = dims + if (isExpanded) "  ▾" else "  ▸",
+            color = pal.textSecondary,
+            fontSize = 11.sp,
+        )
+    }
+}
+
+/** Bottom of an expanded plate: every AX + CG field we know about, in
+ *  rough source order (identity first, AX next, then CG). Two-column
+ *  key/value rows; null / blank values stay visible so the user can tell
+ *  "didn't bother to read" from "field is null on purpose". */
+@Composable
+private fun WindowDetailPanel(view: WindowView, appName: String) {
+    val w = view.window
+    val pal = AppPalette
+    val rows = buildList<Pair<String, String>> {
+        add("id" to w.id.toString())
+        add("pid" to w.pid.toString())
+        add("title" to (if (w.title.isBlank()) "(blank → '${effectiveWindowTitle(w.title, appName)}')" else w.title))
+        add("mode" to view.mode.name)
+        add("rule" to (view.firingRule?.let { "${it.name.ifBlank { it.id }}" } ?: "(default Show)"))
+        add("role" to (w.role ?: "—"))
+        add("subrole" to (w.subrole ?: "—"))
+        add("isMain / isFocused" to "${w.isMain} / ${w.isFocused}")
+        add("isMinimized / isFullscreen" to "${w.isMinimized} / ${w.isFullscreen}")
+        add("frame" to "${w.x?.toInt() ?: "?"},${w.y?.toInt() ?: "?"} ${w.width?.toInt() ?: "?"}×${w.height?.toInt() ?: "?"}")
+        add("cgWindowId" to (w.cgWindowId?.toString() ?: "—"))
+        add("cgLayer / cgAlpha" to "${w.cgLayer ?: "—"} / ${w.cgAlpha ?: "—"}")
+        add("ownerName" to (w.ownerName ?: "—"))
+        add("isOnscreen / onVisibleSpace" to "${w.isOnscreen ?: "—"} / ${w.isOnVisibleSpace ?: "—"}")
+        add("spaceIds" to (if (w.spaceIds.isEmpty()) "[]" else w.spaceIds.joinToString()))
+        add("children" to view.children.size.toString())
+    }
+    Column(
+        Modifier
+            .widthIn(min = 200.dp, max = 320.dp)
+            .padding(top = 4.dp, start = 4.dp, end = 4.dp, bottom = 6.dp),
+        verticalArrangement = Arrangement.spacedBy(1.dp),
+    ) {
+        rows.forEach { (k, v) ->
+            Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                NativeText(
+                    k,
+                    color = pal.textSecondary,
+                    fontSize = 10.sp,
+                    modifier = Modifier.width(120.dp),
+                )
+                NativeText(v, color = pal.textPrimary, fontSize = 10.sp)
+            }
         }
     }
 }
 
 @Composable
-private fun WindowSubtree(
-    view: WindowView,
-    appName: String,
-    depth: Int,
-    isInActiveApp: Boolean,
-    activeWindowId: WindowId?,
-) {
-    WindowRow(view, appName = appName, depth = depth, isActive = isInActiveApp && view.window.id == activeWindowId)
-    view.children.forEach { child ->
-        WindowSubtree(child, appName, depth + 1, isInActiveApp, activeWindowId)
+private fun StatusChip(text: String, accent: Boolean = false) {
+    val pal = AppPalette
+    val bg = if (accent) AccentColor.copy(alpha = 0.18f) else pal.textSecondary.copy(alpha = 0.12f)
+    val fg = if (accent) AccentColor else pal.textSecondary
+    Box(
+        Modifier
+            .clip(RoundedCornerShape(3.dp))
+            .background(bg)
+            .padding(horizontal = 5.dp, vertical = 1.dp),
+    ) {
+        NativeText(text, color = fg, fontSize = 10.sp)
     }
 }
 
+/** Classifier chip: shows the firing rule's name (or "Show (default)"
+ *  when no rule matched) with a colour tint that mirrors the TriFilter
+ *  outcome. The rule chip is the single most important new affordance —
+ *  it answers "why did this window land here" without leaving the
+ *  inspector window. */
 @Composable
-private fun WindowRow(view: WindowView, appName: String, depth: Int, isActive: Boolean) {
-    val w = view.window
-    val baseColor = if (isActive) AppPalette.textPrimary else AppPalette.textSecondary
-    val color = baseColor.dimmedFor(view.mode)
-    val pictogram = windowPictogram(view, isActive)
-    val tags = buildList {
-        if (view.mode != TriFilter.Show) add(view.mode.name.lowercase())
-        if (!w.role.isNullOrBlank()) add("role: " + w.role)
-        if (!w.subrole.isNullOrBlank()) add("subrole: " + w.subrole)
-        if (w.isMain) add("main")
-        if (w.width != null && w.height != null) add("${w.width.toInt()}×${w.height.toInt()}")
-        if (view.children.isNotEmpty()) add("${view.children.size} child")
-    }.joinToString(" · ")
-    val indent = "    ".repeat(depth)
-    NativeText(
-        "$indent$pictogram ${effectiveWindowTitle(w.title, appName)}  ${tagText(tags)}",
-        color = color,
-        fontWeight = if (isActive) FontWeight.SemiBold else FontWeight.Normal,
-        fontSize = 11.sp,
-    )
+private fun ClassifierChip(mode: TriFilter, rule: com.shish.kaltswitch.model.Rule?) {
+    val (label, fg) = when (mode) {
+        TriFilter.Show -> (rule?.let { displayRuleName(it) } ?: "Show (default)") to Color(0xFF60C065)
+        TriFilter.Demote -> ("Demote: " + (rule?.let { displayRuleName(it) } ?: "(default)")) to Color(0xFFE0A040)
+        TriFilter.Hide -> ("Hide: " + (rule?.let { displayRuleName(it) } ?: "(default)")) to Color(0xFFE57373)
+    }
+    val bg = fg.copy(alpha = 0.18f)
+    Box(
+        Modifier
+            .clip(RoundedCornerShape(3.dp))
+            .background(bg)
+            .padding(horizontal = 5.dp, vertical = 1.dp),
+    ) {
+        NativeText(label, color = fg, fontSize = 10.sp)
+    }
+}
+
+private fun displayRuleName(rule: com.shish.kaltswitch.model.Rule): String =
+    rule.name.ifBlank { rule.id }
+
+/** Plate background + border, tinted by classification + active state.
+ *  Background is a faint version of the outcome colour so the user can
+ *  scan the inspector for "amber stripes = my Demote rules fired"
+ *  without reading any text. `@Composable` because the active-state
+ *  border uses [AccentColor] from the surrounding palette. */
+@Composable
+private fun plateColorsFor(mode: TriFilter, isActive: Boolean): Pair<Color, Color> {
+    val accent = when (mode) {
+        TriFilter.Show -> Color(0xFF60C065)
+        TriFilter.Demote -> Color(0xFFE0A040)
+        TriFilter.Hide -> Color(0xFF888888)
+    }
+    val bg = accent.copy(alpha = 0.06f)
+    val border = if (isActive) AccentColor else accent.copy(alpha = 0.45f)
+    return bg to border
 }
 
 private fun appPictogram(app: com.shish.kaltswitch.model.App, isActive: Boolean): String = when {
@@ -536,13 +758,6 @@ private fun appPictogram(app: com.shish.kaltswitch.model.App, isActive: Boolean)
     !app.isFinishedLaunching -> "…"
     app.activationPolicy == AppActivationPolicy.Accessory -> "◇"
     else -> "•"
-}
-
-private fun windowPictogram(view: WindowView, isActive: Boolean): String = when {
-    isActive -> "└▶"
-    view.window.isMinimized -> "└⎽"
-    view.window.isFullscreen -> "└⤢"
-    else -> "└─"
 }
 
 private fun policyTag(p: AppActivationPolicy): String = when (p) {

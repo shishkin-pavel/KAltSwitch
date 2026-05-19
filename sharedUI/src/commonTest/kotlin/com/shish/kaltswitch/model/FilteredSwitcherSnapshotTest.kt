@@ -305,19 +305,22 @@ class FilteredSwitcherSnapshotTest {
     @Test
     fun seedRules_areAppliedWhenNoExplicitRulesGiven() {
         // Default constructor seeds [SeedRules]. Smoke-test that the seed
-        // makes it through to the classifier — an FF window with
-        // "Picture-in-Picture" in its title should be Demoted.
-        val ff = App(pid = 60, bundleId = "org.mozilla.firefox", name = "Firefox")
-        val pipWin = Window(id = 600, pid = 60, title = "YouTube — Picture-in-Picture")
-        val log = ActivationLog().record(ActivationEvent(ff.pid, pipWin.id))
+        // makes it through to the classifier — a minimised window should
+        // be Demoted by `default-demote-minimised`. Switched away from
+        // the (now-retired) Firefox PiP rule when SeedRules shrank to
+        // the user-curated set; minimised demote is the same shape and
+        // covers the same machinery.
+        val app = App(pid = 60, bundleId = "com.example.app", name = "AnyApp")
+        val minWin = Window(id = 600, pid = 60, title = "Some Window", isMinimized = true)
+        val log = ActivationLog().record(ActivationEvent(app.pid, minWin.id))
         val world = World(
             log = log,
-            runningApps = mapOf(ff.pid to ff),
-            windowsByPid = mapOf(ff.pid to listOf(pipWin)),
+            runningApps = mapOf(app.pid to app),
+            windowsByPid = mapOf(app.pid to listOf(minWin)),
         )
         val snap = world.filteredSnapshot(FilteringRules())
         assertEquals(1, snap.demote.size)
-        assertEquals("Firefox", snap.demote.single().app.name)
+        assertEquals("AnyApp", snap.demote.single().app.name)
     }
 
     @Test
