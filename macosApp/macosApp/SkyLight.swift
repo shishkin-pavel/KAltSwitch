@@ -173,19 +173,11 @@ func currentVisibleSpaceIds() -> [Int64] {
     return out
 }
 
-/// Private SkyLight: switch the given display to the given Space, with
-/// the standard Mission Control swoosh animation. The `display`
-/// argument is the per-display UUID string returned under the
-/// `"Display Identifier"` key by `CGSCopyManagedDisplaySpaces` — NOT a
-/// `CGDirectDisplayID`. Stable since 10.10; same private-API caveat
-/// as the other CGS symbols in this file.
-@_silgen_name("CGSManagedDisplaySetCurrentSpace")
-func CGSManagedDisplaySetCurrentSpace(_ cid: CGSConnectionID, _ display: CFString, _ space: CGSSpaceID)
-
 /// Walk `CGSCopyManagedDisplaySpaces` and find the "Display Identifier"
 /// of the display whose Spaces list claims [spaceId]. Returns nil if
 /// no display claims it (deleted Space, transient state, or
-/// CGS-data-unavailable). Used by [switchToSpaceFor].
+/// CGS-data-unavailable). Used by [swipeToSpaceFor] to find which
+/// display to swipe.
 private func displayIdentifierForSpace(_ spaceId: CGSSpaceID) -> String? {
     let raw = CGSCopyManagedDisplaySpaces(cgsConnection)
     guard let displays = raw as? [NSDictionary] else { return nil }
@@ -200,108 +192,6 @@ private func displayIdentifierForSpace(_ spaceId: CGSSpaceID) -> String? {
         }
     }
     return nil
-}
-
-/// If [cgWindowId] lives on a Space that isn't currently visible on
-/// its owning display, switch that display to the window's Space.
-///
-/// Why this exists: `_SLPSSetFrontProcessWithOptions` (the workhorse
-/// of [bringAppToFront]) makes the target app frontmost and targets a
-/// specific window for subsequent input, but does **not** trigger a
-/// Mission Control space change. So if the user picks an off-space
-/// window in the switcher, focus moves to that window invisibly —
-/// `cmd+T` opens a new tab in it, but the screen stays on the user's
-/// current Space with no visual confirmation. This call closes the
-/// gap, with the same private symbol that alt-tab-macos / AeroSpace
-/// rely on.
-///
-/// Order in [AppRegistry.commit] is: switch space first, then
-/// activate. Switching after activation invites apps (Safari, Finder)
-/// to pull their window to the current Space instead of staying put,
-/// because the activation-frontmost handshake can fire `bring-to-
-/// current-space` semantics in `userGenerated` SLPS mode.
-///
-/// Returns `true` if a switch call was issued, `false` if no switch
-/// was needed or possible (callers don't need to react — the
-/// activation path is the same either way; the return value is just
-/// for the log line).
-@discardableResult
-func switchToSpaceFor(cgWindowId: CGWindowID) -> Bool {
-    let spaces = spaceIdsFor(cgWindowId: cgWindowId)
-    if spaces.isEmpty {
-        log("[space-switch] cgwid=\(cgWindowId) skip: no space data")
-        return false
-    }
-    let visible = Set(currentVisibleSpaceIds())
-    if spaces.contains(where: { visible.contains($0) }) {
-        log("[space-switch] cgwid=\(cgWindowId) skip: already visible " +
-            "(window spaces=\(spaces), visible=\(Array(visible).sorted()))")
-        return false
-    }
-    // Pick the first space the window claims. Multi-space windows
-    // (.canJoinAllSpaces / sticky panels) would short-circuit on the
-    // visible-intersection check above — if we got here, this window
-    // is pinned to exactly one Space.
-    let target = CGSSpaceID(spaces[0])
-    guard let displayId = displayIdentifierForSpace(target) else {
-        log("[space-switch] cgwid=\(cgWindowId) skip: no display claims space=\(target). " +
-            "Topology: \(describeSpaceTopology())")
-        return false
-    }
-    log("[space-switch] cgwid=\(cgWindowId) → space=\(target) display=\(displayId). " +
-        "Pre-state: window spaces=\(spaces), visible=\(Array(visible).sorted()). " +
-        "Topology: \(describeSpaceTopology())")
-    CGSManagedDisplaySetCurrentSpace(cgsConnection, displayId as CFString, target)
-    // Read the immediate post-call state. WindowServer updates its
-    // logical current-space pointer synchronously; the animation is
-    // async, but the pointer being already-flipped is what the next
-    // SLPS activation will see.
-    let postVisible = Set(currentVisibleSpaceIds())
-    log("[space-switch] post-call visible=\(Array(postVisible).sorted())")
-    return true
-}
-
-/// One entry per (display, space) pair — used to populate the
-/// menubar's Spaces submenu. The full UUID is kept for the
-/// SetCurrentSpace call; the truncated form drives the friendly
-/// label.
-struct SpaceMenubarEntry {
-    let displayId: String       // full "Display Identifier" UUID
-    let displayShort: String    // first 8 chars + ellipsis, for labels
-    let displayIndex: Int       // 0, 1, … in CGSCopyManagedDisplaySpaces order
-    let spaceId: CGSSpaceID
-    let isCurrent: Bool
-}
-
-/// Snapshot of every (display, space) pair currently known to
-/// SkyLight, with the per-display Current-Space flagged. Used by the
-/// menubar Spaces submenu to render up-to-date items on each open.
-func collectMenubarSpaceTopology() -> [SpaceMenubarEntry] {
-    let raw = CGSCopyManagedDisplaySpaces(cgsConnection)
-    guard let displays = raw as? [NSDictionary] else { return [] }
-    var entries: [SpaceMenubarEntry] = []
-    for (i, display) in displays.enumerated() {
-        let id = (display["Display Identifier"] as? String) ?? "?"
-        let short = String(id.prefix(8)) + "…"
-        var currentId: UInt64 = 0
-        if let cur = display["Current Space"] as? NSDictionary,
-           let n = cur["id64"] as? NSNumber {
-            currentId = n.uint64Value
-        }
-        guard let spaces = display["Spaces"] as? [NSDictionary] else { continue }
-        for s in spaces {
-            guard let n = s["id64"] as? NSNumber else { continue }
-            let id64 = n.uint64Value
-            entries.append(SpaceMenubarEntry(
-                displayId: id,
-                displayShort: short,
-                displayIndex: i,
-                spaceId: id64,
-                isCurrent: id64 == currentId
-            ))
-        }
-    }
-    return entries
 }
 
 // MARK: - Dock-swipe gesture synthesis (private CGEvent fields)
@@ -594,76 +484,6 @@ func swipeToSpaceFor(cgWindowId: CGWindowID, completion: @escaping () -> Void) -
         return false
     }
     return swipeBetweenSpaces(displayId: displayId, targetSpaceId: target, completion: completion)
-}
-
-/// Diagnostic entry point invoked from the menubar Spaces submenu.
-/// Logs before/after `currentVisibleSpaceIds` so we can tell from
-/// the log tail alone whether the dock-swipe path is reachable on
-/// this macOS — distinct from the CGS-setter path that's also in
-/// the same submenu for A/B comparison.
-func diagnosticDockSwipe(rightward: Bool) {
-    let before = currentVisibleSpaceIds()
-    log("[diag-space] dock-swipe \(rightward ? "→" : "←") pre-call visible=\(before)")
-    let ok = postDockSwipe(rightward: rightward)
-    let immediate = currentVisibleSpaceIds()
-    log("[diag-space] dock-swipe posted=\(ok) post-call visible=\(immediate)")
-    DispatchQueue.main.asyncAfter(deadline: .now() + .milliseconds(150)) {
-        log("[diag-space] dock-swipe +150ms visible=\(currentVisibleSpaceIds())")
-    }
-    DispatchQueue.main.asyncAfter(deadline: .now() + .milliseconds(500)) {
-        log("[diag-space] dock-swipe +500ms visible=\(currentVisibleSpaceIds())")
-    }
-}
-
-/// Diagnostic-only programmatic space switch invoked from the menubar
-/// Spaces submenu. Calls `CGSManagedDisplaySetCurrentSpace` in
-/// isolation — no SLPS, no NSApp.activate, no AXRaise — so the
-/// bench-test answers exactly one question: does this private API
-/// actually trigger a visible space change on this macOS / monitor
-/// setup at all? Heavy logging captures the before/after pointer
-/// state and a delayed re-sample so eventually-consistent flips
-/// surface in the log tail.
-func diagnosticSwitchToSpace(displayId: String, spaceId: CGSSpaceID) {
-    let before = currentVisibleSpaceIds()
-    log("[diag-space] click → display=\(String(displayId.prefix(8)))… space=\(spaceId)")
-    log("[diag-space] pre-call visible=\(before) topology=\(describeSpaceTopology())")
-    CGSManagedDisplaySetCurrentSpace(cgsConnection, displayId as CFString, spaceId)
-    let immediate = currentVisibleSpaceIds()
-    log("[diag-space] post-call visible=\(immediate)")
-    DispatchQueue.main.asyncAfter(deadline: .now() + .milliseconds(150)) {
-        log("[diag-space] +150ms visible=\(currentVisibleSpaceIds())")
-    }
-    DispatchQueue.main.asyncAfter(deadline: .now() + .milliseconds(500)) {
-        log("[diag-space] +500ms visible=\(currentVisibleSpaceIds())")
-    }
-}
-
-/// Human-readable dump of the per-display space topology, for
-/// debug-log spelunking. Returns a single-line string like:
-/// `displays=[CA2D…(cur=42, spaces=[42,99,339]), 8B7F…(cur=17, spaces=[17])]`.
-private func describeSpaceTopology() -> String {
-    let raw = CGSCopyManagedDisplaySpaces(cgsConnection)
-    guard let displays = raw as? [NSDictionary] else { return "displays=<unavailable>" }
-    var parts: [String] = []
-    for display in displays {
-        let id = (display["Display Identifier"] as? String) ?? "?"
-        let idShort = String(id.prefix(8))
-        var curId: UInt64 = 0
-        if let cur = display["Current Space"] as? NSDictionary,
-           let n = (cur["id64"] as? NSNumber) {
-            curId = n.uint64Value
-        }
-        var spaceIds: [UInt64] = []
-        if let spaces = display["Spaces"] as? [NSDictionary] {
-            for s in spaces {
-                if let n = s["id64"] as? NSNumber {
-                    spaceIds.append(n.uint64Value)
-                }
-            }
-        }
-        parts.append("\(idShort)…(cur=\(curId), spaces=\(spaceIds))")
-    }
-    return "displays=[\(parts.joined(separator: ", "))]"
 }
 
 /// Of the given [cgWindowIds], return the subset the WindowServer still
