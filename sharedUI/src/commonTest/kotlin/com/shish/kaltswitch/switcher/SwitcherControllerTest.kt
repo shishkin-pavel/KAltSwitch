@@ -585,11 +585,17 @@ class SwitcherControllerTest {
         ctl.onAction(SwitcherAction.ToggleMinimize)
         ctl.onAction(SwitcherAction.ToggleFullscreen)
 
+        // CloseWindow's neighbour-move happens via the snapshot refresh —
+        // not triggered here since onPerformAction is a no-op that doesn't
+        // mutate the world — so the cursor stays on IDE/21 for the next
+        // call. ToggleMinimize on a not-yet-minimised window advances the
+        // cursor synchronously, so the trailing ToggleFullscreen fires on
+        // IDE/22 (next Shown sibling).
         assertEquals(
             listOf<Triple<SwitcherAction, Int, Long?>>(
                 Triple(SwitcherAction.CloseWindow, 2, 21L),
                 Triple(SwitcherAction.ToggleMinimize, 2, 21L),
-                Triple(SwitcherAction.ToggleFullscreen, 2, 21L),
+                Triple(SwitcherAction.ToggleFullscreen, 2, 22L),
             ),
             actions,
         )
@@ -638,6 +644,188 @@ class SwitcherControllerTest {
             ),
             actions,
         )
+    }
+
+    // ---- onAction cursor advance ----------------------------------------
+
+    @Test
+    fun action_toggleMinimize_advancesCursorToNextSiblingWindow() = runTest {
+        // cmd+tab → IDE/21 (default cursor). Press M on a non-minimised
+        // window → cursor should move to IDE/22 (next Shown window).
+        val store = seededStore()
+        val ctl = SwitcherController(store, scope = backgroundScope)
+            .also { it.onPerformAction = { _, _, _ -> /* no-op: side-effects come via store */ } }
+        ctl.onShortcut(SwitcherEntry.App)
+        advanceTimeBy(50)
+        assertEquals(2, ctl.ui.value?.state?.selectedAppPid)
+        assertEquals(21L, ctl.ui.value?.state?.selectedWindowId)
+
+        ctl.onAction(SwitcherAction.ToggleMinimize)
+
+        assertEquals(2, ctl.ui.value?.state?.selectedAppPid)
+        assertEquals(22L, ctl.ui.value?.state?.selectedWindowId)
+    }
+
+    @Test
+    fun action_toggleMinimize_flipsStoreIsMinimizedSynchronously() = runTest {
+        // Regression: without optimistic store update the just-minimised
+        // window stays in the Shown bucket until the AX-notification
+        // round-trip (~200ms) lands. Verify the store sees the flip
+        // immediately so the snapshot can demote on the next collector
+        // tick.
+        val store = seededStore()
+        val ctl = SwitcherController(store, scope = backgroundScope)
+            .also { it.onPerformAction = { _, _, _ -> /* no-op: world mutation only via store */ } }
+        ctl.onShortcut(SwitcherEntry.App)
+        advanceTimeBy(50)
+        // Cursor on IDE/21.
+        assertEquals(false, store.state.value.windowsByPid[2]?.first { it.id == 21L }?.isMinimized)
+
+        ctl.onAction(SwitcherAction.ToggleMinimize)
+
+        // Store reflects isMinimized=true even though no AX notification
+        // arrived (no-op onPerformAction).
+        val w = store.state.value.windowsByPid[2]?.first { it.id == 21L }
+        assertEquals(true, w?.isMinimized)
+    }
+
+    @Test
+    fun action_toggleMinimize_unMinimize_flipsBackSynchronously() = runTest {
+        // Start with an already-minimised window; pressing M restores
+        // it. The store must report isMinimized=false immediately so
+        // the snapshot doesn't fall into the
+        // `isMinimized=false, isOnscreen=false (stale)` race that
+        // `default-hide-cg-hidden-helper` matches.
+        val safari = App(pid = 1, bundleId = "safari", name = "Safari")
+        val ide = App(pid = 2, bundleId = "ide", name = "IDE")
+        val w1 = Window(id = 11, pid = 1, title = "Safari A")
+        val w2a = Window(id = 21, pid = 2, title = "IDE A", isMinimized = true)
+        val w2b = Window(id = 22, pid = 2, title = "IDE B")
+        val log = ActivationLog()
+            .record(ActivationEvent(pid = 2, windowId = 22))
+            .record(ActivationEvent(pid = 2, windowId = 21))
+            .record(ActivationEvent(pid = 1, windowId = 11))
+        val store = WorldStore(World(
+            log = log,
+            runningApps = mapOf(1 to safari, 2 to ide),
+            windowsByPid = mapOf(1 to listOf(w1), 2 to listOf(w2a, w2b)),
+        ))
+        val ctl = SwitcherController(store, scope = backgroundScope)
+            .also { it.onPerformAction = { _, _, _ -> /* no-op */ } }
+        ctl.onShortcut(SwitcherEntry.App)
+        advanceTimeBy(50)
+        ctl.onNavigate(SwitcherEvent.NextWindow, NavScope.All)
+        assertEquals(21L, ctl.ui.value?.state?.selectedWindowId)
+
+        ctl.onAction(SwitcherAction.ToggleMinimize)
+
+        assertEquals(false, store.state.value.windowsByPid[2]?.first { it.id == 21L }?.isMinimized)
+    }
+
+    @Test
+    fun action_toggleMinimize_onLastShownWindow_dropsToAppLevelCell() = runTest {
+        // Single-window app: cursor on the only window, press M → fall
+        // back to the app-level cell (selectedWindowId=null).
+        val app = App(pid = 1, bundleId = "a", name = "Solo")
+        val w = Window(id = 11, pid = 1, title = "the window")
+        val store = WorldStore(World(
+            log = ActivationLog().record(ActivationEvent(pid = 1, windowId = 11)),
+            runningApps = mapOf(1 to app),
+            windowsByPid = mapOf(1 to listOf(w)),
+        ))
+        val ctl = SwitcherController(store, scope = backgroundScope)
+            .also { it.onPerformAction = { _, _, _ -> /* no-op */ } }
+        ctl.onShortcut(SwitcherEntry.Window)
+        advanceTimeBy(50)
+        assertEquals(1, ctl.ui.value?.state?.selectedAppPid)
+        assertEquals(11L, ctl.ui.value?.state?.selectedWindowId)
+
+        ctl.onAction(SwitcherAction.ToggleMinimize)
+
+        assertEquals(1, ctl.ui.value?.state?.selectedAppPid)
+        assertNull(ctl.ui.value?.state?.selectedWindowId)
+    }
+
+    @Test
+    fun action_toggleMinimize_onAlreadyMinimisedWindow_keepsCursor() = runTest {
+        // Window is already minimised → pressing M restores it → cursor
+        // stays on it (user just brought it forward).
+        val safari = App(pid = 1, bundleId = "safari", name = "Safari")
+        val ide = App(pid = 2, bundleId = "ide", name = "IDE")
+        val w1 = Window(id = 11, pid = 1, title = "Safari A")
+        val w2a = Window(id = 21, pid = 2, title = "IDE A", isMinimized = true)
+        val w2b = Window(id = 22, pid = 2, title = "IDE B")
+        val log = ActivationLog()
+            .record(ActivationEvent(pid = 2, windowId = 22))
+            .record(ActivationEvent(pid = 2, windowId = 21))
+            .record(ActivationEvent(pid = 1, windowId = 11))
+        val store = WorldStore(World(
+            log = log,
+            runningApps = mapOf(1 to safari, 2 to ide),
+            windowsByPid = mapOf(1 to listOf(w1), 2 to listOf(w2a, w2b)),
+        ))
+        val ctl = SwitcherController(store, scope = backgroundScope)
+            .also { it.onPerformAction = { _, _, _ -> /* no-op */ } }
+        // cmd+tab lands on IDE; default window via Shown skips the
+        // minimised W21 → cursor at IDE/22. Arrow-key to W21 (All scope)
+        // so we're on a minimised target.
+        ctl.onShortcut(SwitcherEntry.App)
+        advanceTimeBy(50)
+        ctl.onNavigate(SwitcherEvent.NextWindow, NavScope.All)
+        assertEquals(21L, ctl.ui.value?.state?.selectedWindowId)
+
+        ctl.onAction(SwitcherAction.ToggleMinimize)
+
+        assertEquals(21L, ctl.ui.value?.state?.selectedWindowId)
+    }
+
+    @Test
+    fun action_toggleHide_advancesCursorToNextApp() = runTest {
+        // cmd+tab → IDE selected (most-recent Show app sits at idx 1).
+        // Press H on a not-yet-hidden app → cursor advances to the next
+        // Shown app (wraps to Safari at idx 0).
+        val store = seededStore()
+        val ctl = SwitcherController(store, scope = backgroundScope)
+            .also { it.onPerformAction = { _, _, _ -> /* no-op */ } }
+        ctl.onShortcut(SwitcherEntry.App)
+        advanceTimeBy(50)
+        assertEquals(2, ctl.ui.value?.state?.selectedAppPid)
+
+        ctl.onAction(SwitcherAction.ToggleHide)
+
+        assertEquals(1, ctl.ui.value?.state?.selectedAppPid)
+        assertEquals(11L, ctl.ui.value?.state?.selectedWindowId)
+    }
+
+    @Test
+    fun action_toggleHide_onAlreadyHiddenApp_keepsCursor() = runTest {
+        // IDE is already hidden → H un-hides → cursor stays on the now
+        // un-hidden app (the user just brought it forward).
+        val safari = App(pid = 1, bundleId = "safari", name = "Safari")
+        val ide = App(pid = 2, bundleId = "ide", name = "IDE", isHidden = true)
+        val w1 = Window(id = 11, pid = 1, title = "Safari A")
+        val w2 = Window(id = 21, pid = 2, title = "IDE A")
+        val log = ActivationLog()
+            .record(ActivationEvent(pid = 2, windowId = 21))
+            .record(ActivationEvent(pid = 1, windowId = 11))
+        val store = WorldStore(World(
+            log = log,
+            runningApps = mapOf(1 to safari, 2 to ide),
+            windowsByPid = mapOf(1 to listOf(w1), 2 to listOf(w2)),
+        ))
+        val ctl = SwitcherController(store, scope = backgroundScope)
+            .also { it.onPerformAction = { _, _, _ -> /* no-op */ } }
+        // The hidden app's windows are demoted, so cmd+tab default goes
+        // to the next Show app — that's Safari (only other app). Step
+        // into IDE via the All-scope next.
+        ctl.onShortcut(SwitcherEntry.App)
+        advanceTimeBy(50)
+        ctl.onNavigate(SwitcherEvent.NextApp, NavScope.All)
+        assertEquals(2, ctl.ui.value?.state?.selectedAppPid)
+
+        ctl.onAction(SwitcherAction.ToggleHide)
+
+        assertEquals(2, ctl.ui.value?.state?.selectedAppPid)
     }
 
     @Test

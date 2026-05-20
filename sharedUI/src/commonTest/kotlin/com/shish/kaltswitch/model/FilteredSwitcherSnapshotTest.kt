@@ -411,6 +411,99 @@ class FilteredSwitcherSnapshotTest {
     }
 
     @Test
+    fun seedRules_minimisedAxCgWindow_isDemoted_notHidden() {
+        // Regression: before the IsMinimized/IsHidden guards were added
+        // to `default-hide-cg-hidden-helper`, a user-minimised window
+        // (isMinimized=true via AX, isOnscreen=false via CG, on the
+        // visible space) would race past `default-demote-minimised` and
+        // get classified as Hide — vanishing from the switcher ~one
+        // cgwl tick after the user pressed cmd+M.
+        val app = App(pid = 10, bundleId = "code", name = "Code")
+        val minimised = Window(
+            id = 100, pid = 10, title = "Minimised",
+            isMinimized = true,
+            isOnscreen = false,
+            isOnVisibleSpace = true,
+            cgLayer = 0,
+            cgAlpha = 1.0,
+            ownerName = "Code",
+            spaceIds = listOf(100L),   // real minimised windows carry a space id
+        )
+        val world = World(
+            log = ActivationLog().record(ActivationEvent(app.pid, minimised.id)),
+            runningApps = mapOf(app.pid to app),
+            windowsByPid = mapOf(app.pid to listOf(minimised)),
+        )
+
+        val snap = world.filteredSnapshot(FilteringRules())  // seed rules
+        val view = snap.all.first { it.app.pid == app.pid }
+            .windows.first { it.window.id == minimised.id }
+        assertEquals(TriFilter.Demote, view.mode)
+        assertEquals("default-demote-minimised", view.firingRule?.id)
+    }
+
+    @Test
+    fun seedRules_hiddenAppWindow_isDemoted_notHidden() {
+        // Same shape as the minimised case but for cmd+H: an app the
+        // user just hid drops all its windows off-screen, and they
+        // would otherwise be swallowed by the hidden-helper rule before
+        // `default-demote-hidden` could demote them.
+        val app = App(pid = 10, bundleId = "code", name = "Code", isHidden = true)
+        val win = Window(
+            id = 100, pid = 10, title = "Window of hidden app",
+            isOnscreen = false,
+            isOnVisibleSpace = true,
+            cgLayer = 0,
+            cgAlpha = 1.0,
+            ownerName = "Code",
+            spaceIds = listOf(100L),
+        )
+        val world = World(
+            log = ActivationLog().record(ActivationEvent(app.pid, win.id)),
+            runningApps = mapOf(app.pid to app),
+            windowsByPid = mapOf(app.pid to listOf(win)),
+        )
+
+        val snap = world.filteredSnapshot(FilteringRules())  // seed rules
+        val view = snap.all.first { it.app.pid == app.pid }
+            .windows.first { it.window.id == win.id }
+        assertEquals(TriFilter.Demote, view.mode)
+        assertEquals("default-demote-hidden", view.firingRule?.id)
+    }
+
+    @Test
+    fun seedRules_offscreenHelperPopover_stillHidden() {
+        // The original target of `default-hide-cg-hidden-helper`: a CG
+        // popover that's off-screen on the current space, NOT minimised
+        // and NOT belonging to a hidden app. The new guards must not
+        // weaken this case — popovers (cached settings panes,
+        // autocomplete chrome) should still be Hide.
+        val app = App(pid = 10, bundleId = "host", name = "Host")
+        val popover = Window(
+            id = 100, pid = 10, title = "popover",
+            isOnscreen = false,
+            isOnVisibleSpace = true,
+            cgLayer = 0,
+            cgAlpha = 1.0,
+            ownerName = "Host",
+            width = 400.0,
+            height = 300.0,  // big enough to dodge `default-hide-cg-tiny`
+            spaceIds = listOf(100L),  // so `default-hide-cg-no-space-data` doesn't pre-empt
+        )
+        val world = World(
+            log = ActivationLog().record(ActivationEvent(app.pid, popover.id)),
+            runningApps = mapOf(app.pid to app),
+            windowsByPid = mapOf(app.pid to listOf(popover)),
+        )
+
+        val snap = world.filteredSnapshot(FilteringRules())
+        val view = snap.all.first { it.app.pid == app.pid }
+            .windows.first { it.window.id == popover.id }
+        assertEquals(TriFilter.Hide, view.mode)
+        assertEquals("default-hide-cg-hidden-helper", view.firingRule?.id)
+    }
+
+    @Test
     fun noVisibleWindows_canShowWindowlessAppExplicitly() {
         // Opt-in to showing windowless apps via the new predicate.
         val rules = FilteringRules(

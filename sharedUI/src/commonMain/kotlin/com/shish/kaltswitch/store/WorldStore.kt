@@ -437,6 +437,45 @@ class WorldStore(initial: World = World(ActivationLog(), emptyMap(), emptyMap())
     }
 
     /**
+     * Flip [Window.isMinimized] (and mirror the CG-side [Window.isOnscreen])
+     * for the given (pid, windowId) **synchronously**, before AX/CG
+     * notifications have caught up.
+     *
+     * Why we touch isOnscreen too: AX delivers
+     * `kAXWindowMiniaturizedNotification` within ~200 ms of our SET call,
+     * but the CG snapshot lags by up to a full cgwl interval (~2 s). In
+     * the gap the window carries `isMinimized=false, isOnscreen=false`
+     * (un-minimize case) or `isMinimized=true, isOnscreen=true`
+     * (minimize case), and the [default-hide-cg-hidden-helper] filter
+     * rule matches the former pattern — the just-restored window
+     * disappears from the switcher until the cgwl refresh catches up.
+     * Optimistically anticipating the CG flip closes the gap.
+     *
+     * Only touches CG fields when this window has CG in its sources —
+     * otherwise the eventual cgwl refresh would have nothing to write
+     * back and we'd be inventing data. AX-only rows just get the
+     * isMinimized flip.
+     *
+     * Operates on top-level windows only — `cmd+M` always targets a
+     * top-level (the switcher cursor doesn't address sheets / drawers).
+     * No-op if [windowId] doesn't match any top-level window of [pid].
+     */
+    fun setWindowMinimizedOptimistic(pid: Pid, windowId: WindowId, minimized: Boolean) {
+        val existing = currentWindowsFor(pid)
+        var changed = false
+        val updated = existing.map { w ->
+            if (w.id != windowId) return@map w
+            val nextOnscreen =
+                if (WindowSource.CG in w.sources) !minimized else w.isOnscreen
+            val patched = w.copy(isMinimized = minimized, isOnscreen = nextOnscreen)
+            if (patched != w) changed = true
+            patched
+        }
+        if (!changed) return
+        commitWindowsFor(pid, updated)
+    }
+
+    /**
      * Resolve a window's [Window.cgWindowId] by its (pid, windowId).
      *
      * Used by the Swift commit path as a final fallback after the

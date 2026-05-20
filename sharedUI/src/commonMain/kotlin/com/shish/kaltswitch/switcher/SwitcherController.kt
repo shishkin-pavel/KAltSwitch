@@ -14,6 +14,8 @@ import com.shish.kaltswitch.model.apply
 import com.shish.kaltswitch.model.filteredSwitcherSnapshot
 import com.shish.kaltswitch.model.openSwitcher
 import com.shish.kaltswitch.model.refreshedWith
+import com.shish.kaltswitch.model.scopedApps
+import com.shish.kaltswitch.model.scopedNavigable
 import com.shish.kaltswitch.model.withCursor
 import com.shish.kaltswitch.store.WorldStore
 import kotlinx.coroutines.CoroutineScope
@@ -415,6 +417,16 @@ class SwitcherController(
             ActionScope.App -> {
                 log("[ctl] action=$action pid=${app.pid}")
                 onPerformAction?.invoke(action, app.pid, null)
+                // ToggleHide demotes the app's windows but the app itself
+                // stays in the snapshot, so identity-based refreshedWith
+                // would keep the cursor stuck on the now-hidden app.
+                // Synchronously advance to the next app. The un-hide
+                // direction brings the app forward — leave the cursor on
+                // it. QuitApp's target actually disappears, so
+                // refreshedWith's pickAppNeighbour handles the move.
+                if (action == SwitcherAction.ToggleHide && !app.isHidden) {
+                    advanceAppCursorAfterDemote()
+                }
             }
             ActionScope.Window -> {
                 if (window == null) {
@@ -440,9 +452,93 @@ class SwitcherController(
                 // is the path that promotes the app via [recordActivation].
                 if (action == SwitcherAction.ToggleMinimize) {
                     store.recordWindowActivation(app.pid, window.id)
+                    // Same problem as ToggleHide: the window stays in
+                    // the snapshot (just demoted), so the identity
+                    // cursor would stick on it. Advance synchronously
+                    // when we're going Show → minimised; on restore the
+                    // window is being brought forward, leave the cursor.
+                    // CloseWindow's target actually disappears, so
+                    // refreshedWith's pickWindowNeighbour handles it.
+                    val nextMinimized = !window.isMinimized
+                    if (nextMinimized) {
+                        advanceWindowCursorAfterDemote()
+                    }
+                    // Optimistic AX+CG flip: close the gap between our
+                    // AX-set call and the notification round-trip
+                    // (~200 ms) for AX, plus the cgwl refresh interval
+                    // (~2 s) for isOnscreen. Without this the
+                    // just-minimised window lingers in Show for a beat,
+                    // and a just-restored one falls into the brief
+                    // `isMinimized=false, isOnscreen=false (stale)`
+                    // window that `default-hide-cg-hidden-helper`
+                    // matches → it disappears until the cgwl catches
+                    // up. Real AX/CG events later confirm or correct.
+                    // Called AFTER the advance so the advance computes
+                    // against the pre-mutation snapshot — otherwise the
+                    // just-demoted window is gone from the Shown range
+                    // and advance falls back to the app-level cell.
+                    store.setWindowMinimizedOptimistic(app.pid, window.id, nextMinimized)
                 }
             }
         }
+    }
+
+    /**
+     * Move the cursor to the next window of the current app within the
+     * Shown scope (cmd+tab / cmd+\` cluster). Falls back to the app-level
+     * cell when no other Shown window exists — matching the "close last
+     * window stays on app" semantic from [refreshedWith]'s neighbour walk.
+     * Wrapping is the same as keyboard NextWindow.
+     */
+    private fun advanceWindowCursorAfterDemote() {
+        val cur = _ui.value ?: return
+        val state = cur.state
+        val app = state.selectedAppEntry ?: return
+        val wid = state.selectedWindowId ?: return
+        val navigable = app.scopedNavigable(NavScope.Shown)
+        val curIdx = navigable.indexOfFirst { it.id == wid }
+        if (curIdx < 0 || navigable.size <= 1) {
+            // Either the cursor isn't in the Shown range (shouldn't happen
+            // on the demote-direction toggle that gates this call), or
+            // this was the only Shown window of the app. Drop to the
+            // app-level cell.
+            log("[ctl] advanceWindowCursorAfterDemote → app-level cell (no Shown sibling)")
+            _ui.value = cur.copy(
+                state = state.copy(selectedWindowId = null),
+                previewedWindowId = null,
+            )
+            return
+        }
+        val next = navigable[(curIdx + 1) % navigable.size]
+        log("[ctl] advanceWindowCursorAfterDemote → wid=${next.id}")
+        _ui.value = cur.copy(
+            state = state.copy(selectedWindowId = next.id),
+            previewedWindowId = null,
+        )
+    }
+
+    /**
+     * Move the cursor to the next app in the Shown scope. No-op when the
+     * current app is the only Shown app — there's nowhere to advance to
+     * and snapshot refresh will sort out the visual position when the
+     * app's section flips.
+     */
+    private fun advanceAppCursorAfterDemote() {
+        val cur = _ui.value ?: return
+        val state = cur.state
+        val pid = state.selectedAppPid ?: return
+        val apps = state.snapshot.scopedApps(NavScope.Shown)
+        val curIdx = apps.indexOfFirst { it.app.pid == pid }
+        if (curIdx < 0 || apps.size <= 1) return
+        val nextApp = apps[(curIdx + 1) % apps.size]
+        log("[ctl] advanceAppCursorAfterDemote → pid=${nextApp.app.pid}")
+        _ui.value = cur.copy(
+            state = state.copy(
+                selectedAppPid = nextApp.app.pid,
+                selectedWindowId = nextApp.scopedNavigable(NavScope.Shown).firstOrNull()?.id,
+            ),
+            previewedWindowId = null,
+        )
     }
 
     private fun openSession(entry: SwitcherEntry) {

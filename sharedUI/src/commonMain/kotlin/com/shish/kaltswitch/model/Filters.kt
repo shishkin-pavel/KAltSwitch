@@ -200,11 +200,27 @@ val SeedRules: List<Rule> = listOf(
         // are legitimate cross-space windows — those have
         // `isOnVisibleSpace=false` and this rule deliberately doesn't
         // touch them.
+        //
+        // Two extra guards keep the rule away from windows the user
+        // demoted on purpose. A minimised window reports
+        // `isOnscreen=false` once the CG snapshot refreshes (it's been
+        // pulled into the Dock); same for every window of a hidden app
+        // (cmd+H drops them off-screen too). Without the guards, both
+        // classes would race past `default-demote-minimised` /
+        // `default-demote-hidden` (which sit later in the chain) and
+        // disappear from the switcher entirely ~one cgwl tick after
+        // the user pressed cmd+M / cmd+H. AX-only rows are already
+        // excluded by [IsOnscreenPredicate]'s null short-circuit above,
+        // so the new guards only affect AX+CG rows, which is exactly
+        // the population that carries trustworthy `isMinimized` /
+        // `isHidden` signals.
         id = "default-hide-cg-hidden-helper",
         name = "hide hidden CG helpers (off-screen on current space)",
         predicates = listOf(
             IsOnscreenPredicate(inverted = true),
             IsOnVisibleSpacePredicate(),
+            IsMinimizedPredicate(inverted = true),
+            IsHiddenPredicate(inverted = true),
         ),
         outcome = TriFilter.Hide,
     ),

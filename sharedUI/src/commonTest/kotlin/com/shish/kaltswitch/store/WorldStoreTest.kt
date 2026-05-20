@@ -352,4 +352,62 @@ class WorldStoreTest {
         store.upsertAxWindow(window = window(id = 12, pid = 1).copy(title = "B", cgWindowId = 102))
         assertEquals(2, store.state.value.windowsByPid[1]?.size)
     }
+
+    // ─────────────── Optimistic minimize / unminimize ───────────────
+
+    @Test
+    fun setWindowMinimizedOptimistic_axCgWindow_flipsBothFields() {
+        // Window seen by both AX and CG (typical case for a visible
+        // app's window). Optimistic minimize must flip isMinimized AND
+        // anticipate the CG isOnscreen flip — otherwise the
+        // `default-hide-cg-hidden-helper` rule's race window opens.
+        val store = WorldStore()
+        store.applyAxSnapshot(
+            pid = 1,
+            axWindows = listOf(window(id = 11, pid = 1).copy(cgWindowId = 101)),
+        )
+        store.applyCgSnapshot(
+            allCgWindows = listOf(
+                window(id = 0, pid = 1).copy(cgWindowId = 101, isOnscreen = true, ownerName = "App"),
+            ),
+        )
+        store.setWindowMinimizedOptimistic(pid = 1, windowId = 11, minimized = true)
+        val w = store.state.value.windowsByPid[1]?.single()
+        assertNotNull(w)
+        assertEquals(true, w.isMinimized)
+        assertEquals(false, w.isOnscreen)
+
+        // Un-minimize flips both back.
+        store.setWindowMinimizedOptimistic(pid = 1, windowId = 11, minimized = false)
+        val w2 = store.state.value.windowsByPid[1]?.single()
+        assertEquals(false, w2?.isMinimized)
+        assertEquals(true, w2?.isOnscreen)
+    }
+
+    @Test
+    fun setWindowMinimizedOptimistic_axOnlyWindow_leavesOnscreenAlone() {
+        // No CG twin → leave isOnscreen alone (it's null and the next
+        // CG refresh would have nothing to compare against).
+        val store = WorldStore()
+        store.applyAxSnapshot(
+            pid = 1,
+            axWindows = listOf(window(id = 11, pid = 1).copy(cgWindowId = 101)),
+        )
+        store.setWindowMinimizedOptimistic(pid = 1, windowId = 11, minimized = true)
+        val w = store.state.value.windowsByPid[1]?.single()
+        assertEquals(true, w?.isMinimized)
+        assertNull(w?.isOnscreen)
+    }
+
+    @Test
+    fun setWindowMinimizedOptimistic_unknownId_isNoOp() {
+        val store = WorldStore()
+        store.applyAxSnapshot(
+            pid = 1,
+            axWindows = listOf(window(id = 11, pid = 1).copy(cgWindowId = 101)),
+        )
+        val before = store.state.value
+        store.setWindowMinimizedOptimistic(pid = 1, windowId = 9999, minimized = true)
+        assertEquals(before, store.state.value)
+    }
 }
