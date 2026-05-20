@@ -78,6 +78,9 @@ fun SettingsContent(
     onLaunchAtLoginChange: (Boolean) -> Unit,
     currentSpaceOnly: Boolean,
     onCurrentSpaceOnlyChange: (Boolean) -> Unit,
+    loggingEnabled: Boolean,
+    onLoggingEnabledChange: (Boolean) -> Unit,
+    onOpenLogsFolder: () -> Unit,
     accentColor: AccentColorChoice,
     onAccentColorChange: (AccentColorChoice) -> Unit,
     panelBgArgb: Long,
@@ -128,6 +131,9 @@ fun SettingsContent(
                         onLaunchAtLoginChange = onLaunchAtLoginChange,
                         currentSpaceOnly = currentSpaceOnly,
                         onCurrentSpaceOnlyChange = onCurrentSpaceOnlyChange,
+                        loggingEnabled = loggingEnabled,
+                        onLoggingEnabledChange = onLoggingEnabledChange,
+                        onOpenLogsFolder = onOpenLogsFolder,
                         accentColor = accentColor,
                         onAccentColorChange = onAccentColorChange,
                         panelBgArgb = panelBgArgb,
@@ -197,6 +203,9 @@ private fun GeneralSection(
     onLaunchAtLoginChange: (Boolean) -> Unit,
     currentSpaceOnly: Boolean,
     onCurrentSpaceOnlyChange: (Boolean) -> Unit,
+    loggingEnabled: Boolean,
+    onLoggingEnabledChange: (Boolean) -> Unit,
+    onOpenLogsFolder: () -> Unit,
     accentColor: AccentColorChoice,
     onAccentColorChange: (AccentColorChoice) -> Unit,
     panelBgArgb: Long,
@@ -205,6 +214,40 @@ private fun GeneralSection(
     onDemoteBgArgbChange: (Long) -> Unit,
 ) {
     Column(verticalArrangement = Arrangement.spacedBy(14.dp)) {
+        NativeGroupBox(title = "Behaviour") {
+            NativeRow(label = "Show menubar icon") {
+                NativeToggle(checked = showMenubarIcon, onCheckedChange = onShowMenubarIconChange)
+            }
+            NativeRowDivider()
+            NativeRow(label = "Launch at login") {
+                NativeToggle(checked = launchAtLogin, onCheckedChange = onLaunchAtLoginChange)
+            }
+            NativeRowDivider()
+            NativeRow(label = "Current space only") {
+                NativeToggle(checked = currentSpaceOnly, onCheckedChange = onCurrentSpaceOnlyChange)
+            }
+            NativeRowDivider()
+            NativeRow(label = "Write log file") {
+                Row(
+                    Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    NativeToggle(checked = loggingEnabled, onCheckedChange = onLoggingEnabledChange)
+                    if (loggingEnabled) {
+                        NativeButton(
+                            label = "Open logs folder",
+                            onClick = onOpenLogsFolder,
+                        )
+                    }
+                }
+            }
+            NativeRowDivider()
+            PlacementRow(
+                placement = settings.windowPlacement,
+                onChange = { onChange(settings.copy(windowPlacement = it)) },
+            )
+        }
         NativeGroupBox(title = "Switcher timing") {
             DelayRow(
                 label = "Show delay",
@@ -256,24 +299,6 @@ private fun GeneralSection(
             IconSizeRow(
                 percent = settings.iconSizePercent,
                 onChange = { onChange(settings.copy(iconSizePercent = it)) },
-            )
-        }
-        NativeGroupBox(title = "Behaviour") {
-            NativeRow(label = "Show menubar icon") {
-                NativeToggle(checked = showMenubarIcon, onCheckedChange = onShowMenubarIconChange)
-            }
-            NativeRowDivider()
-            NativeRow(label = "Launch at login") {
-                NativeToggle(checked = launchAtLogin, onCheckedChange = onLaunchAtLoginChange)
-            }
-            NativeRowDivider()
-            NativeRow(label = "Current space only") {
-                NativeToggle(checked = currentSpaceOnly, onCheckedChange = onCurrentSpaceOnlyChange)
-            }
-            NativeRowDivider()
-            PlacementRow(
-                placement = settings.windowPlacement,
-                onChange = { onChange(settings.copy(windowPlacement = it)) },
             )
         }
         NativeGroupBox(title = "Accent colour") {

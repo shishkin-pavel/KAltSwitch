@@ -168,11 +168,12 @@ fun SwitcherSettings.sanitized(): SwitcherSettings = copy(
  * switcher-overlay panel + demote-block colours. v7 widens
  * `AccentColorChoice.Custom` from RGB to ARGB. v8 adds the pinning rules
  * (Settings → Pinning tab) — re-parent matching windows under the most
- * recently activated root of the same app.
+ * recently activated root of the same app. v9 adds [loggingEnabled], a
+ * master switch for the diagnostic file at `~/Library/Logs/KAltSwitch.log`.
  */
 @Serializable
 data class AppConfig(
-    val schemaVersion: Int = 8,
+    val schemaVersion: Int = 9,
     val filters: FilteringRules = FilteringRules(),
     val badges: BadgeRules = BadgeRules(),
     val pinning: PinningRules = PinningRules(),
@@ -191,6 +192,12 @@ data class AppConfig(
      *  current Mission Control space. Default false → show windows from
      *  every space (the alt-tab-macos default). */
     val currentSpaceOnly: Boolean = false,
+    /** Master switch for the diagnostic file at `~/Library/Logs/KAltSwitch.log`.
+     *  Default `true` so first-launch and crash investigations have data. When
+     *  flipped off, [com.shish.kaltswitch.log.log] becomes a no-op; the file
+     *  still receives the SESSION START banner and stdout/stderr redirect so
+     *  any later toggle-on falls into a coherent stream. */
+    val loggingEnabled: Boolean = true,
     /** Highlight colour. Default is the warm yellow-orange the app shipped
      *  with; toggling to [AccentColorChoice.UseSystem] mirrors the macOS
      *  control-accent setting in real time. ARGB-packed since v7 — the

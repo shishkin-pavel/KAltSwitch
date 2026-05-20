@@ -7,6 +7,8 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import com.shish.kaltswitch.config.ConfigStore
+import com.shish.kaltswitch.log.loggingEnabled
+import com.shish.kaltswitch.log.openLogsDirectory
 import com.shish.kaltswitch.native.requestAxPermission
 import com.shish.kaltswitch.store.WorldStore
 import com.shish.kaltswitch.switcher.SwitcherController
@@ -41,6 +43,13 @@ private val configScope = CoroutineScope(Dispatchers.Main).also { scope ->
         .drop(1)
         .distinctUntilChanged()
         .onEach(ConfigStore::save)
+        .launchIn(scope)
+    // Push the persisted logging master-switch into the log layer's volatile
+    // flag every time the user flips it (and once at startup with the seed
+    // value from config.json). Kept here rather than inside the store so the
+    // log package stays free of a store dependency.
+    store.loggingEnabled
+        .onEach { loggingEnabled = it }
         .launchIn(scope)
 }
 
@@ -143,6 +152,7 @@ fun AttachSettingsView(window: NSWindow): ComposeNSViewDelegate = ComposeNSViewD
             val showMenubarIcon by store.showMenubarIcon.collectAsState()
             val launchAtLogin by store.launchAtLogin.collectAsState()
             val currentSpaceOnly by store.currentSpaceOnly.collectAsState()
+            val loggingOn by store.loggingEnabled.collectAsState()
             val accentColor by store.accentColor.collectAsState()
             val panelBgArgb by store.switcherPanelBgArgb.collectAsState()
             val demoteBgArgb by store.switcherDemoteBgArgb.collectAsState()
@@ -158,6 +168,9 @@ fun AttachSettingsView(window: NSWindow): ComposeNSViewDelegate = ComposeNSViewD
                 onLaunchAtLoginChange = { store.setLaunchAtLogin(it) },
                 currentSpaceOnly = currentSpaceOnly,
                 onCurrentSpaceOnlyChange = { store.setCurrentSpaceOnly(it) },
+                loggingEnabled = loggingOn,
+                onLoggingEnabledChange = { store.setLoggingEnabled(it) },
+                onOpenLogsFolder = { openLogsDirectory() },
                 accentColor = accentColor,
                 onAccentColorChange = { store.setAccentColor(it) },
                 panelBgArgb = panelBgArgb,

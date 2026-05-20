@@ -117,6 +117,17 @@ class WorldStore(initial: World = World(ActivationLog(), emptyMap(), emptyMap())
         _currentSpaceOnly.value = enabled
     }
 
+    /** Master switch for the file at `~/Library/Logs/KAltSwitch.log`. The
+     *  macOS-side observer in `ComposeView` pushes this into the
+     *  `com.shish.kaltswitch.log.loggingEnabled` package-level flag that
+     *  [com.shish.kaltswitch.log.log] consults on every call. */
+    private val _loggingEnabled = MutableStateFlow(true)
+    val loggingEnabled: StateFlow<Boolean> = _loggingEnabled.asStateFlow()
+
+    fun setLoggingEnabled(enabled: Boolean) {
+        _loggingEnabled.value = enabled
+    }
+
     /** Mission Control "current" space IDs across every connected display.
      *  Updated by the Swift side on `NSWorkspace.activeSpaceDidChangeNotification`.
      *  Empty list means we don't have the data — the classifier treats that
@@ -703,6 +714,7 @@ class WorldStore(initial: World = World(ActivationLog(), emptyMap(), emptyMap())
         setShowMenubarIcon(cfg.showMenubarIcon)
         setLaunchAtLogin(cfg.launchAtLogin)
         setCurrentSpaceOnly(cfg.currentSpaceOnly)
+        setLoggingEnabled(cfg.loggingEnabled)
         // Migrate legacy v6 RGB accents (alpha-byte == 0 when interpreted as
         // ARGB) up to opaque. Every shipped pre-v7 config has alpha = 0 in
         // the stored Long; without this fix-up they'd render fully
@@ -762,16 +774,21 @@ class WorldStore(initial: World = World(ActivationLog(), emptyMap(), emptyMap())
         // 5-arm overload. Both are predicate-rule collections without their
         // own colour/numeric arms — sharing one slot reads fine.
         val ruleExtras = combine(badgeRules, pinning) { b, p -> b to p }
+        // Bundle the three behaviour booleans into a single arm so the outer
+        // combine stays within its 5-overload bound as the schema grows.
+        val behaviour = combine(launchAtLogin, currentSpaceOnly, loggingEnabled) { l, c, lg ->
+            Triple(l, c, lg)
+        }
         return combine(
             core,
-            launchAtLogin,
-            currentSpaceOnly,
+            behaviour,
             colors,
             ruleExtras,
-        ) { base, launchAtLogin, currentSpaceOnly, colorsT, extras ->
+        ) { base, behaviourT, colorsT, extras ->
             base.copy(
-                launchAtLogin = launchAtLogin,
-                currentSpaceOnly = currentSpaceOnly,
+                launchAtLogin = behaviourT.first,
+                currentSpaceOnly = behaviourT.second,
+                loggingEnabled = behaviourT.third,
                 accentColor = colorsT.first,
                 switcherPanelBgArgb = colorsT.second,
                 switcherDemoteBgArgb = colorsT.third,
