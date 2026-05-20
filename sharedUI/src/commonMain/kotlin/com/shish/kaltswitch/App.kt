@@ -1,5 +1,8 @@
 package com.shish.kaltswitch
 
+import androidx.compose.foundation.LocalScrollbarStyle
+import androidx.compose.foundation.ScrollbarStyle
+import androidx.compose.foundation.VerticalScrollbar
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
@@ -19,10 +22,13 @@ import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.LazyListScope
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.rememberScrollbarAdapter
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -104,44 +110,79 @@ fun SettingsContent(
                 onSelect = { selectedTab = it },
             )
         }
-        Box(
-            Modifier
-                .fillMaxSize()
-                .verticalScroll(rememberScrollState())
-                .padding(start = 20.dp, end = 20.dp, top = 4.dp, bottom = 20.dp),
-        ) {
-            when (selectedTab) {
-                0 -> GeneralSection(
-                    settings = switcherSettings,
-                    onChange = onSwitcherSettingsChange,
-                    showMenubarIcon = showMenubarIcon,
-                    onShowMenubarIconChange = onShowMenubarIconChange,
-                    launchAtLogin = launchAtLogin,
-                    onLaunchAtLoginChange = onLaunchAtLoginChange,
-                    currentSpaceOnly = currentSpaceOnly,
-                    onCurrentSpaceOnlyChange = onCurrentSpaceOnlyChange,
-                    accentColor = accentColor,
-                    onAccentColorChange = onAccentColorChange,
-                    panelBgArgb = panelBgArgb,
-                    onPanelBgArgbChange = onPanelBgArgbChange,
-                    demoteBgArgb = demoteBgArgb,
-                    onDemoteBgArgbChange = onDemoteBgArgbChange,
-                )
-                1 -> FilteringRulesPanel(
-                    filters = filters,
-                    onChange = onFiltersChange,
-                )
-                2 -> BadgeRulesPanel(
-                    rules = badgeRules,
-                    onChange = onBadgeRulesChange,
-                )
-                3 -> PinningRulesPanel(
-                    rules = pinningRules,
-                    onChange = onPinningRulesChange,
+        val scrollState = rememberScrollState()
+        Box(Modifier.fillMaxSize()) {
+            Box(
+                Modifier
+                    .fillMaxSize()
+                    .verticalScroll(scrollState)
+                    .padding(start = 20.dp, end = 24.dp, top = 4.dp, bottom = 20.dp),
+            ) {
+                when (selectedTab) {
+                    0 -> GeneralSection(
+                        settings = switcherSettings,
+                        onChange = onSwitcherSettingsChange,
+                        showMenubarIcon = showMenubarIcon,
+                        onShowMenubarIconChange = onShowMenubarIconChange,
+                        launchAtLogin = launchAtLogin,
+                        onLaunchAtLoginChange = onLaunchAtLoginChange,
+                        currentSpaceOnly = currentSpaceOnly,
+                        onCurrentSpaceOnlyChange = onCurrentSpaceOnlyChange,
+                        accentColor = accentColor,
+                        onAccentColorChange = onAccentColorChange,
+                        panelBgArgb = panelBgArgb,
+                        onPanelBgArgbChange = onPanelBgArgbChange,
+                        demoteBgArgb = demoteBgArgb,
+                        onDemoteBgArgbChange = onDemoteBgArgbChange,
+                    )
+                    1 -> FilteringRulesPanel(
+                        filters = filters,
+                        onChange = onFiltersChange,
+                    )
+                    2 -> BadgeRulesPanel(
+                        rules = badgeRules,
+                        onChange = onBadgeRulesChange,
+                    )
+                    3 -> PinningRulesPanel(
+                        rules = pinningRules,
+                        onChange = onPinningRulesChange,
+                    )
+                }
+            }
+            CompositionLocalProvider(LocalScrollbarStyle provides appScrollbarStyle()) {
+                VerticalScrollbar(
+                    adapter = rememberScrollbarAdapter(scrollState),
+                    modifier = Modifier
+                        .align(Alignment.CenterEnd)
+                        .fillMaxHeight()
+                        .padding(vertical = 4.dp),
                 )
             }
         }
     }
+}
+
+/**
+ * Scrollbar palette tuned to stand out on both [LightPalette] and
+ * [DarkPalette] backdrops. The stock `defaultScrollbarStyle` derives its
+ * thumb colour from the platform default (≈ `Color.Black.copy(0.12)`),
+ * which all but disappears on our window backgrounds — the user
+ * reported "scrollbar colour blends with the background" on the dark
+ * Settings window. Picking from the palette's text-primary keeps the
+ * thumb visible against both window-bg variants.
+ */
+@Composable
+private fun appScrollbarStyle(): ScrollbarStyle {
+    val pal = AppPalette
+    val base = pal.textPrimary
+    return ScrollbarStyle(
+        minimalHeight = 24.dp,
+        thickness = 8.dp,
+        shape = RoundedCornerShape(4.dp),
+        hoverDurationMillis = 200,
+        unhoverColor = base.copy(alpha = if (pal.isDark) 0.30f else 0.22f),
+        hoverColor = base.copy(alpha = if (pal.isDark) 0.55f else 0.45f),
+    )
 }
 
 // ──────────────────────── General section — switcher knobs ───────────────────────
@@ -210,6 +251,11 @@ private fun GeneralSection(
             CellSizeRow(
                 percent = settings.cellSizePercent,
                 onChange = { onChange(settings.copy(cellSizePercent = it)) },
+            )
+            NativeRowDivider()
+            IconSizeRow(
+                percent = settings.iconSizePercent,
+                onChange = { onChange(settings.copy(iconSizePercent = it)) },
             )
         }
         NativeGroupBox(title = "Behaviour") {
@@ -301,6 +347,22 @@ private fun CellSizeRow(percent: Int, onChange: (Int) -> Unit) {
                     value = percent.toFloat().coerceIn(50f, 200f),
                     onValueChange = { onChange(it.toInt().coerceIn(50, 200)) },
                     valueRange = 50f..200f,
+                )
+            }
+            NativeText("$percent %", color = AppPalette.textSecondary, fontSize = 12.sp)
+        }
+    }
+}
+
+@Composable
+private fun IconSizeRow(percent: Int, onChange: (Int) -> Unit) {
+    NativeRow(label = "Icon size") {
+        Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            Box(Modifier.width(180.dp)) {
+                NativeSlider(
+                    value = percent.toFloat().coerceIn(20f, 100f),
+                    onValueChange = { onChange(it.toInt().coerceIn(20, 100)) },
+                    valueRange = 20f..100f,
                 )
             }
             NativeText("$percent %", color = AppPalette.textSecondary, fontSize = 12.sp)
@@ -440,18 +502,32 @@ fun InspectorContent(
         verticalArrangement = Arrangement.spacedBy(8.dp),
     ) {
         if (!axTrusted) AxBanner(onGrantAxClick)
-        LazyColumn(
-            Modifier.fillMaxSize(),
-            verticalArrangement = Arrangement.spacedBy(6.dp),
-        ) {
-            modeSection("Show", snapshot.show, activeAppPid, activeWindowId, expandedWindowIds, toggleExpanded)
-            if (snapshot.demote.isNotEmpty()) {
-                item { Spacer(Modifier.height(10.dp)) }
-                modeSection("Demote", snapshot.demote, activeAppPid, activeWindowId, expandedWindowIds, toggleExpanded)
+        val listState = rememberLazyListState()
+        Box(Modifier.fillMaxSize()) {
+            LazyColumn(
+                modifier = Modifier
+                    .fillMaxSize()
+                    .padding(end = 12.dp),
+                state = listState,
+                verticalArrangement = Arrangement.spacedBy(6.dp),
+            ) {
+                modeSection("Show", snapshot.show, activeAppPid, activeWindowId, expandedWindowIds, toggleExpanded)
+                if (snapshot.demote.isNotEmpty()) {
+                    item { Spacer(Modifier.height(10.dp)) }
+                    modeSection("Demote", snapshot.demote, activeAppPid, activeWindowId, expandedWindowIds, toggleExpanded)
+                }
+                if (snapshot.hide.isNotEmpty()) {
+                    item { Spacer(Modifier.height(10.dp)) }
+                    modeSection("Hide", snapshot.hide, activeAppPid, activeWindowId, expandedWindowIds, toggleExpanded)
+                }
             }
-            if (snapshot.hide.isNotEmpty()) {
-                item { Spacer(Modifier.height(10.dp)) }
-                modeSection("Hide", snapshot.hide, activeAppPid, activeWindowId, expandedWindowIds, toggleExpanded)
+            CompositionLocalProvider(LocalScrollbarStyle provides appScrollbarStyle()) {
+                VerticalScrollbar(
+                    adapter = rememberScrollbarAdapter(listState),
+                    modifier = Modifier
+                        .align(Alignment.CenterEnd)
+                        .fillMaxHeight(),
+                )
             }
         }
     }

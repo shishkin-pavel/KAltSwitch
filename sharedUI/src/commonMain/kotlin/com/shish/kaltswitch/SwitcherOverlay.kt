@@ -127,14 +127,22 @@ fun SwitcherOverlay(
 
     // Targeted scale for the icon-and-cell visual only. Read inside
     // `AppCell` and `AppIconBox` so the multiplier hits cell width
-    // range, padding, corner, border, vertical inner spacing, the
-    // icon size, and the fallback letter font — but NOT app-name
-    // text, window-row text/paddings, panel-level paddings, FlowRow
-    // gaps, or badges. See `LocalIconCellScale`.
+    // range, padding, corner, border, vertical inner spacing — but NOT
+    // app-name text, window-row text/paddings, panel-level paddings,
+    // FlowRow gaps, or badges. See `LocalIconCellScale`.
     val iconCellScale = (switcherSettings.cellSizePercent / 100f).coerceIn(0.5f, 2f)
+    // Icon-glyph size as a fraction of the cell's max inner width
+    // (cell `widthIn(max=132*cellScale)` minus the cell's 6 dp×2
+    // horizontal padding ⇒ 120 dp inner at the widest). Keeping the
+    // icon as a fraction of the cell guarantees it never exceeds the
+    // cell — a free multiplier would let the icon outgrow the cell's
+    // width clamp and stretch the cell vertically without growing
+    // horizontally.
+    val iconFillFraction = (switcherSettings.iconSizePercent / 100f).coerceIn(0.2f, 1f)
 
     CompositionLocalProvider(
         LocalIconCellScale provides iconCellScale,
+        LocalIconFillFraction provides iconFillFraction,
         LocalSelectionExpandDelayMs provides switcherSettings.selectionExpandDelayMs,
         LocalPanelBoundsInWindow provides panelBounds,
         LocalReportPanelBounds provides reportPanelBounds,
@@ -435,17 +443,31 @@ private val LocalPanelBoundsInWindow = compositionLocalOf<IntRect?> { null }
 private val LocalReportPanelBounds = compositionLocalOf<((IntRect?) -> Unit)?> { null }
 
 /**
- * User-controlled scale factor (default 1f) applied only to the app
- * icon visual and its enclosing `AppCell` — width range, padding,
- * corner, border, vertical inner spacing, icon size, and the fallback
- * letter font. Text styling, window rows, panel paddings, FlowRow gaps,
- * and badges are intentionally *outside* the scope so the icon-cell
- * grows/shrinks independently of textual layout.
+ * User-controlled scale factor (default 1f) applied to the cell visual
+ * — width range, padding, corner, border, vertical inner spacing — but
+ * NOT to the icon glyph itself (see [LocalIconScale] for that). Text
+ * styling, window rows, panel paddings, FlowRow gaps, and badges are
+ * intentionally *outside* the scope so the icon-cell grows/shrinks
+ * independently of textual layout.
  *
  * Provided by `SwitcherOverlay` from the user's `cellSizePercent`
  * setting (see [com.shish.kaltswitch.config.SwitcherSettings]).
  */
 private val LocalIconCellScale = compositionLocalOf { 1f }
+
+/**
+ * Icon-glyph size as a fraction (0..1) of the cell's max inner width.
+ * Read inside `AppIconBox` and multiplied by `120.dp * cellScale` —
+ * the cell's max inner width (132 dp `widthIn.max` minus 2×6 dp
+ * horizontal padding). Keeps the icon ≤ cell width by construction so
+ * an oversized icon can no longer stretch the cell vertically without
+ * growing horizontally.
+ *
+ * Default 0.67f ≈ the historical 80 dp / 120 dp ratio the app shipped
+ * with. Provided by `SwitcherOverlay` from the user's `iconSizePercent`
+ * setting (see [com.shish.kaltswitch.config.SwitcherSettings]).
+ */
+private val LocalIconFillFraction = compositionLocalOf { 0.67f }
 
 /** Expand/collapse tween duration for the selected window-row's row
  *  expansion. Fast enough to feel like a direct response to the cursor
@@ -1454,7 +1476,17 @@ private fun ChildWindowRow(
 @Composable
 private fun AppIconBox(pid: Int, iconBytes: ByteArray?, name: String, isDemoted: Boolean) {
     val icon: ImageBitmap? = rememberAppIcon(pid, iconBytes)
-    val s = LocalIconCellScale.current
+    val cellScale = LocalIconCellScale.current
+    val iconFill = LocalIconFillFraction.current
+    // Icon size = (cell's max inner width) × iconFill. Cell max width is
+    // 132 dp × cellScale; horizontal padding takes 12 dp × cellScale, so
+    // the cell's max inner width is 120 dp × cellScale. iconFill ≤ 1
+    // guarantees the icon never exceeds the cell horizontally, so it
+    // can't stretch the cell vertically either.
+    val iconDp = (120f * cellScale * iconFill).dp
+    // The fallback letter glyph keeps its ~0.4 font-to-box ratio from
+    // the original 32 sp / 80 dp pairing.
+    val fallbackFontSp = (iconDp.value * 0.4f).sp
     // Light desaturation for demoted icons — keeps app branding identifiable
     // (full grayscale erases too much information when there are 30 demoted
     // apps in a row) while still clearly tagging the bucket. The matrix is
@@ -1465,11 +1497,7 @@ private fun AppIconBox(pid: Int, iconBytes: ByteArray?, name: String, isDemoted:
         } else null
     }
     Box(
-        Modifier
-            // 80dp (was 64dp) at 100 %. User's "Cell size" setting scales
-            // the icon and its enclosing AppCell only; text and panel
-            // paddings stay unscaled.
-            .size((80 * s).dp),
+        Modifier.size(iconDp),
         // No background — sits directly on the panel plate. The Color(0x22FFFFFF)
         // backplate the previous version had created a subtle "icon tray"
         // effect that diluted the icon's own design (especially for icons
@@ -1492,7 +1520,7 @@ private fun AppIconBox(pid: Int, iconBytes: ByteArray?, name: String, isDemoted:
                 // to this fallback Text path.
                 color = if (isDemoted) Color(0xFFCCCCCC) else Color(0xFFEEEEEE),
                 fontWeight = FontWeight.Bold,
-                fontSize = (32 * s).sp,
+                fontSize = fallbackFontSp,
             )
         }
     }

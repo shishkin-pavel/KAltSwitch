@@ -117,6 +117,20 @@ data class SwitcherSettings(
      *  50..200 (clamped in [sanitized]). Text (app name, window titles)
      *  and panel-level paddings deliberately stay unscaled. */
     val cellSizePercent: Int = 100,
+    /** Icon-glyph size expressed as a **percentage of the cell's max
+     *  inner width** (i.e. of the area between the cell's horizontal
+     *  paddings, at the cell's widest). 100 = fills the cell width
+     *  exactly. Range 20..100 (clamped in [sanitized]); default 67 ≈
+     *  the historical 80 dp glyph inside a 120 dp inner cell, which is
+     *  the visual the app shipped with before this knob existed.
+     *
+     *  Specifying the icon size as a fraction of the cell guarantees the
+     *  icon never exceeds its cell — the previous free-multiplier design
+     *  could push the icon past the cell's `widthIn(max=132*cellScale)`
+     *  clamp, which left the cell stretched vertically without growing
+     *  horizontally (the unbounded `Modifier.size(...)` set the height
+     *  to the requested icon size even after the width was clamped). */
+    val iconSizePercent: Int = 67,
     /** Which display the switcher opens on. See [SwitcherPlacement]. */
     val windowPlacement: SwitcherPlacement = SwitcherPlacement.MouseScreen,
 )
@@ -139,6 +153,7 @@ fun SwitcherSettings.sanitized(): SwitcherSettings = copy(
     maxIconsPerRow = maxIconsPerRow.coerceIn(1, 50),
     selectionExpandDelayMs = selectionExpandDelayMs.coerceAtLeast(0L),
     cellSizePercent = cellSizePercent.coerceIn(50, 200),
+    iconSizePercent = iconSizePercent.coerceIn(20, 100),
 )
 
 /**
