@@ -10,6 +10,7 @@ import com.shish.kaltswitch.model.SwitcherEntry
 import com.shish.kaltswitch.model.SwitcherEvent
 import com.shish.kaltswitch.model.SwitcherState
 import com.shish.kaltswitch.model.WindowId
+import com.shish.kaltswitch.model.WindowTags
 import com.shish.kaltswitch.model.apply
 import com.shish.kaltswitch.model.filteredSwitcherSnapshot
 import com.shish.kaltswitch.model.openSwitcher
@@ -113,6 +114,16 @@ class SwitcherController(
 
     private val _ui = MutableStateFlow<SwitcherUiState?>(null)
     val ui: StateFlow<SwitcherUiState?> = _ui.asStateFlow()
+
+    /**
+     * Digit→window "bookmarks" assigned via cmd+ctrl+digit while the
+     * switcher is open. Survive across sessions for the process lifetime;
+     * pruned automatically whenever the live snapshot loses a tagged
+     * window (see [launchSnapshotCollector]). The UI reads this to draw
+     * a tag glyph on the left edge of each tagged row.
+     */
+    private val _tags = MutableStateFlow(WindowTags.Empty)
+    val tags: StateFlow<WindowTags> = _tags.asStateFlow()
 
     private var showJob: Job? = null
     private var previewJob: Job? = null
@@ -484,6 +495,56 @@ class SwitcherController(
     }
 
     /**
+     * Bind the current selection to a digit "tag". Three behaviours per
+     * [WindowTags.assign]:
+     *   - same digit on the same window → unbind (toggle off);
+     *   - same digit on a different window → transfer;
+     *   - different digit on the same window → move the digit (each window
+     *     holds at most one tag).
+     *
+     * Ignored when no specific window is selected — tags are per-window, not
+     * per-app, so a windowless app cell can't be tagged.
+     */
+    fun onAssignTag(digit: Int) {
+        if (digit !in WindowTags.DIGIT_RANGE) return
+        val cur = _ui.value ?: return
+        val pid = cur.state.selectedAppPid ?: return
+        val wid = cur.state.selectedWindowId ?: run {
+            log("[ctl] onAssignTag digit=$digit SKIPPED — no window selected (pid=$pid)")
+            return
+        }
+        val before = _tags.value
+        val after = before.assign(digit, pid, wid)
+        if (after == before) return
+        _tags.value = after
+        log("[ctl] onAssignTag digit=$digit pid=$pid wid=$wid → ${after.byDigit}")
+    }
+
+    /**
+     * Move the cursor to the window tagged with [digit]. No-op when no
+     * binding exists, or when the bound window no longer appears in the
+     * current snapshot (which shouldn't normally happen — pruning runs on
+     * every snapshot refresh — but the lookup tolerates the race anyway).
+     */
+    fun onJumpToTag(digit: Int) {
+        val cur = _ui.value ?: return
+        val (pid, wid) = _tags.value.windowFor(digit) ?: run {
+            log("[ctl] onJumpToTag digit=$digit SKIPPED — no binding")
+            return
+        }
+        val app = cur.state.snapshot.all.firstOrNull { it.app.pid == pid }
+        val target = app?.navigableWindows?.firstOrNull { it.id == wid }
+        if (app == null || target == null) {
+            log("[ctl] onJumpToTag digit=$digit SKIPPED — bound window not in snapshot")
+            return
+        }
+        val nextState = cur.state.copy(selectedAppPid = pid, selectedWindowId = wid)
+        if (nextState == cur.state) return
+        _ui.value = cur.copy(state = nextState, previewedWindowId = null)
+        log("[ctl] onJumpToTag digit=$digit → pid=$pid wid=$wid")
+    }
+
+    /**
      * Move the cursor to the next window of the current app within the
      * Shown scope (cmd+tab / cmd+\` cluster). Falls back to the app-level
      * cell when no other Shown window exists — matching the "close last
@@ -617,6 +678,16 @@ class SwitcherController(
                     visibleSpaceIds = visibleSpaceIds,
                 )
             }.distinctUntilChanged().collect { newSnapshot ->
+                // Drop tags whose target window disappeared. Done before the
+                // refreshedWith branch so the tag state stays consistent even
+                // when the snapshot is structurally identical from the cursor's
+                // point of view (rare but possible — e.g. a Demote window in
+                // another app vanishing).
+                val pruned = _tags.value.prunedAgainst(newSnapshot)
+                if (pruned !== _tags.value) {
+                    _tags.value = pruned
+                    log("[ctl] tags pruned: now ${pruned.byDigit}")
+                }
                 val cur = _ui.value ?: return@collect
                 val refreshed = cur.state.refreshedWith(newSnapshot)
                 if (refreshed == cur.state) return@collect

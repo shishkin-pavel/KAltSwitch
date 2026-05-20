@@ -128,6 +128,12 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         panel.onAction = { [weak controller] action in
             controller?.onAction(action: action)
         }
+        panel.onAssignTag = { [weak controller] digit in
+            controller?.onAssignTag(digit: Int32(digit))
+        }
+        panel.onJumpToTag = { [weak controller] digit in
+            controller?.onJumpToTag(digit: Int32(digit))
+        }
         let resignObs = NotificationCenter.default.addObserver(
             forName: NSWindow.didResignKeyNotification,
             object: panel,

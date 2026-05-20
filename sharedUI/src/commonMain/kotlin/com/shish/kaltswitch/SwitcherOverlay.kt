@@ -90,8 +90,10 @@ import com.shish.kaltswitch.model.ResolvedBadge
 import com.shish.kaltswitch.model.SwitcherEntry
 import com.shish.kaltswitch.model.SwitcherEvent
 import com.shish.kaltswitch.model.SwitcherState
+import com.shish.kaltswitch.model.Pid
 import com.shish.kaltswitch.model.WindowBadge
 import com.shish.kaltswitch.model.WindowId
+import com.shish.kaltswitch.model.WindowTags
 import com.shish.kaltswitch.model.computeBadgeTree
 import com.shish.kaltswitch.switcher.SwitcherUiState
 
@@ -111,6 +113,7 @@ fun SwitcherOverlay(
     switcherSettings: SwitcherSettings,
     axTrusted: Boolean,
     badgeRules: BadgeRules = BadgeRules(),
+    tags: WindowTags = WindowTags.Empty,
     onNavigate: (SwitcherEvent) -> Unit,
     onEsc: () -> Unit,
     onShortcut: (SwitcherEntry) -> Unit,
@@ -269,6 +272,7 @@ fun SwitcherOverlay(
                     iconsByPid = iconsByPid,
                     axTrusted = axTrusted,
                     badgeRules = badgeRules,
+                    tags = tags,
                     onPointAt = onPointAt,
                     onCommit = onCommit,
                     onGrantAxClick = onGrantAxClick,
@@ -469,6 +473,17 @@ private val LocalIconCellScale = compositionLocalOf { 1f }
  */
 private val LocalIconFillFraction = compositionLocalOf { 0.67f }
 
+/**
+ * Per-app digit-tag bindings (windowId → digit), provided by [AppCell] from
+ * the [WindowTags] StateFlow the controller exposes. Window rows read this
+ * local to draw the leading circular tag glyph for their own id.
+ *
+ * Empty map = no tags for this app. We narrow at the cell boundary rather
+ * than passing the full `(pid, wid) → digit` map further down because every
+ * descendant of one cell talks about a single pid's windows.
+ */
+private val LocalTagByWindowId = compositionLocalOf<Map<WindowId, Int>> { emptyMap() }
+
 /** Expand/collapse tween duration for the selected window-row's row
  *  expansion. Fast enough to feel like a direct response to the cursor
  *  landing on the row. */
@@ -496,6 +511,7 @@ private fun WindowRowVisual(
     isFullscreen: Boolean,
     isDemoted: Boolean,
     customBadge: ResolvedBadge?,
+    tagDigit: Int?,
     titleMaxLines: Int,
     titleOverflow: TextOverflow,
     onTextLayout: ((androidx.compose.ui.text.TextLayoutResult) -> Unit)? = null,
@@ -537,11 +553,18 @@ private fun WindowRowVisual(
                 Modifier.weight(1f, fill = true)
             },
         )
-        // Trailing custom badge (from a Settings → Badges title-match
-        // rule that didn't bubble all the way to the app cell). Sits
-        // before the status pictogram so the per-window status indicator
-        // stays at the rightmost edge — matches the icon stack where
-        // status sits above the custom pill.
+        // Trailing badges, left-to-right:
+        //   1. user-assigned digit tag (cmd+ctrl+digit during a session),
+        //      drawn first so it sits closest to the title — matches the
+        //      "this is my mnemonic for this window" mental model;
+        //   2. custom badge from a Settings → Badges title-match rule
+        //      (when it didn't bubble all the way up to the app cell);
+        //   3. status pictogram (minimized / fullscreen), kept at the
+        //      rightmost edge so the macOS-style status cue is in the
+        //      same column it occupies on the app icon.
+        if (tagDigit != null) {
+            WindowTagGlyph(digit = tagDigit, onAccent = isActive)
+        }
         if (customBadge != null) {
             RowCustomBadge(
                 text = customBadge.text,
@@ -642,6 +665,42 @@ private fun CustomBadge(text: String, background: Color, modifier: Modifier = Mo
     }
 }
 
+/**
+ * Leading "tag" badge drawn at the left edge of a window row when the user
+ * has bound a digit to that window (cmd+ctrl+digit during the switcher
+ * session). Transparent fill, thin circular outline, digit centred —
+ * deliberately quiet so a row with no tag still looks identical to the
+ * pre-feature design.
+ *
+ * Colour rule:
+ *   - `onAccent = true`  → black outline / text (sitting on the active-row
+ *     accent fill which is light enough that white would disappear);
+ *   - `onAccent = false` → soft white / off-white (against the dark panel
+ *     plate).
+ *
+ * Sized to roughly match the trailing [StatusBadge] (14 dp) so vertical
+ * alignment in the row reads consistently across the two glyph styles.
+ */
+@Composable
+private fun WindowTagGlyph(digit: Int, onAccent: Boolean) {
+    val ringColor = if (onAccent) Color.Black else Color(0xFFEEEEEE)
+    Box(
+        Modifier
+            .size(14.dp)
+            .clip(RoundedCornerShape(7.dp))
+            .border(1.dp, ringColor, RoundedCornerShape(7.dp)),
+        contentAlignment = Alignment.Center,
+    ) {
+        Text(
+            digit.toString(),
+            color = ringColor,
+            fontSize = 9.sp,
+            fontWeight = FontWeight.Bold,
+            maxLines = 1,
+        )
+    }
+}
+
 private fun contrastingTextColor(bg: Color): Color {
     val lum = 0.2126 * bg.red + 0.7152 * bg.green + 0.0722 * bg.blue
     return if (lum > 0.55) Color.Black else Color.White
@@ -654,6 +713,7 @@ private fun SwitcherPanel(
     iconsByPid: Map<Int, ByteArray>,
     axTrusted: Boolean,
     badgeRules: BadgeRules,
+    tags: WindowTags,
     onPointAt: (appIndex: Int, windowId: WindowId?) -> Unit,
     onCommit: () -> Unit,
     onGrantAxClick: () -> Unit,
@@ -770,6 +830,19 @@ private fun SwitcherPanel(
                 val cellsByPid = remember { mutableMapOf<Int, @Composable (AppCellArgs) -> Unit>() }
                 val livePids = entries.mapTo(HashSet()) { it.app.pid }
                 cellsByPid.keys.retainAll(livePids)
+                // Pre-group the (pid, wid)→digit map by pid so each cell gets
+                // only the bindings that could possibly apply to one of its
+                // own windows. Recomputed when [tags] identity changes —
+                // typically once per session, or once per cmd+ctrl+digit press.
+                val tagsByPid: Map<Pid, Map<WindowId, Int>> = remember(tags) {
+                    if (tags.byDigit.isEmpty()) emptyMap()
+                    else buildMap<Pid, MutableMap<WindowId, Int>> {
+                        for ((digit, key) in tags.byDigit) {
+                            val (pid, wid) = key
+                            getOrPut(pid) { HashMap() }[wid] = digit
+                        }
+                    }
+                }
                 for (pid in livePids) {
                     cellsByPid.getOrPut(pid) {
                         movableContentOf<AppCellArgs> { args ->
@@ -791,6 +864,7 @@ private fun SwitcherPanel(
                                 demotedWindowIds = args.demotedWindowIds,
                                 isSelected = args.isSelected,
                                 selectedWindowId = args.selectedWindowId,
+                                tagByWindowId = args.tagByWindowId,
                                 onHoverApp = args.onHoverApp,
                                 onHoverWindow = args.onHoverWindow,
                                 onClickApp = args.onClickApp,
@@ -814,6 +888,7 @@ private fun SwitcherPanel(
                                 cursorAppIndex = state.cursor.appIndex,
                                 selectedWindowId = state.selectedWindowId,
                                 badgeRules = badgeRules,
+                                tagByWindowId = tagsByPid[entry.app.pid].orEmpty(),
                                 onPointAt = onPointAt,
                                 onCommit = onCommit,
                             )
@@ -840,6 +915,7 @@ private fun SwitcherPanel(
                                             cursorAppIndex = state.cursor.appIndex,
                                             selectedWindowId = state.selectedWindowId,
                                             badgeRules = badgeRules,
+                                            tagByWindowId = tagsByPid[entry.app.pid].orEmpty(),
                                             onPointAt = onPointAt,
                                             onCommit = onCommit,
                                         )
@@ -942,6 +1018,11 @@ private data class AppCellArgs(
      *  for pinned children rendered inside `ChildWindowSubtree` (which
      *  have no top-level row index of their own). */
     val selectedWindowId: WindowId?,
+    /** Digit-tag bindings narrowed to this app's pid: `windowId → digit (1..9)`.
+     *  Read by `WindowTitleRow` via the [LocalTagByWindowId] composition local
+     *  to draw the leading circular tag glyph on each tagged row. Empty when
+     *  no tags exist for any window of this app. */
+    val tagByWindowId: Map<WindowId, Int>,
     val onHoverApp: () -> Unit,
     val onHoverWindow: (WindowId) -> Unit,
     val onClickApp: () -> Unit,
@@ -956,6 +1037,7 @@ private fun cellArgs(
     cursorAppIndex: Int,
     selectedWindowId: WindowId?,
     badgeRules: BadgeRules,
+    tagByWindowId: Map<WindowId, Int>,
     onPointAt: (appIndex: Int, windowId: WindowId?) -> Unit,
     onCommit: () -> Unit,
 ): AppCellArgs {
@@ -981,6 +1063,7 @@ private fun cellArgs(
         demotedWindowIds = entry.demotedWindowIds,
         isSelected = isSelected,
         selectedWindowId = if (isSelected) selectedWindowId else null,
+        tagByWindowId = tagByWindowId,
         onHoverApp = { onPointAt(appIndex, null) },
         onHoverWindow = { wid -> onPointAt(appIndex, wid) },
         onClickApp = { onPointAt(appIndex, null); onCommit() },
@@ -1005,6 +1088,7 @@ private fun AppCell(
     demotedWindowIds: Set<WindowId>,
     isSelected: Boolean,
     selectedWindowId: WindowId?,
+    tagByWindowId: Map<WindowId, Int>,
     onHoverApp: () -> Unit,
     onHoverWindow: (WindowId) -> Unit,
     onClickApp: () -> Unit,
@@ -1016,6 +1100,8 @@ private fun AppCell(
     // so it stays legible against the darker backdrop.
     val nameColor = if (isSelected) Color.White else Color(0xFFCCCCCC)
     val s = LocalIconCellScale.current
+
+    CompositionLocalProvider(LocalTagByWindowId provides tagByWindowId) {
     // The demote backdrop now lives on the parent Box (not per-cell), so
     // the cell's modifier chain is just the inner clip + selection
     // border + interaction. Doing the bg per-cell broke under varying
@@ -1123,6 +1209,7 @@ private fun AppCell(
             )
         }
     }
+    }  // close CompositionLocalProvider
 }
 
 /**
@@ -1140,6 +1227,7 @@ private fun AppCell(
  */
 private data class WindowRowArgs(
     val title: String,
+    val windowId: WindowId,
     val isActive: Boolean,
     val isMinimized: Boolean,
     val isFullscreen: Boolean,
@@ -1160,6 +1248,7 @@ private fun windowRowArgs(
     onClickWindow: (WindowId) -> Unit,
 ): WindowRowArgs = WindowRowArgs(
     title = effectiveWindowTitle(w.title, appName),
+    windowId = w.id,
     isActive = isAppSelected && w.id == selectedWindowId,
     isMinimized = w.isMinimized,
     isFullscreen = w.isFullscreen,
@@ -1228,6 +1317,7 @@ private fun WindowList(
                             boundsTransform = rowMotion,
                         ),
                         title = args.title,
+                        windowId = args.windowId,
                         isActive = args.isActive,
                         isMinimized = args.isMinimized,
                         isFullscreen = args.isFullscreen,
@@ -1438,6 +1528,7 @@ private fun ChildRows(
         val badge = badges.getOrNull(i)
         WindowTitleRow(
             title = effectiveWindowTitle(child.title, appName),
+            windowId = child.id,
             isActive = isAppSelected && child.id == selectedWindowId,
             isMinimized = child.isMinimized,
             isFullscreen = child.isFullscreen,
@@ -1525,6 +1616,7 @@ private fun AppIconBox(pid: Int, iconBytes: ByteArray?, name: String, isDemoted:
 private fun WindowTitleRow(
     modifier: Modifier = Modifier,
     title: String,
+    windowId: WindowId,
     isActive: Boolean,
     isMinimized: Boolean,
     isFullscreen: Boolean,
@@ -1533,6 +1625,11 @@ private fun WindowTitleRow(
     onHover: () -> Unit,
     onClick: () -> Unit,
 ) {
+    // Per-window digit tag glyph. Looked up off the ambient tag-by-window
+    // map for the enclosing app (provided by AppCell). Null when nothing is
+    // bound — no leading glyph rendered, the row looks identical to the
+    // pre-feature design.
+    val tagDigit = LocalTagByWindowId.current[windowId]
     var truncated by remember(title) { mutableStateOf(false) }
     var anchorSizePx by remember { mutableStateOf(IntSize.Zero) }
     var anchorWindowX by remember { mutableStateOf<Int?>(null) }
@@ -1645,6 +1742,7 @@ private fun WindowTitleRow(
             isFullscreen = isFullscreen,
             isDemoted = isDemoted,
             customBadge = customBadge,
+            tagDigit = tagDigit,
             titleMaxLines = 1,
             titleOverflow = TextOverflow.Ellipsis,
             onTextLayout = { layout -> truncated = layout.hasVisualOverflow },
@@ -1710,6 +1808,7 @@ private fun WindowTitleRow(
                         isFullscreen = isFullscreen,
                         isDemoted = isDemoted,
                         customBadge = customBadge,
+                        tagDigit = tagDigit,
                         titleMaxLines = 1,
                         titleOverflow = TextOverflow.Visible,
                     )

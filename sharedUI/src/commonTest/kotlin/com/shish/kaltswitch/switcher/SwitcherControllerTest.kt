@@ -17,6 +17,8 @@ import com.shish.kaltswitch.model.SwitcherSnapshot
 import com.shish.kaltswitch.model.SwitcherState
 import com.shish.kaltswitch.model.TriFilter
 import com.shish.kaltswitch.model.Window
+import com.shish.kaltswitch.model.WindowSource
+import com.shish.kaltswitch.model.WindowTags
 import com.shish.kaltswitch.model.World
 import com.shish.kaltswitch.model.apply
 import com.shish.kaltswitch.model.openSwitcher
@@ -1111,5 +1113,163 @@ class SwitcherControllerTest {
         ctl.onShortcut(SwitcherEntry.App, reverse = true)
         // Should be 1 (last Show), not 2 (the demoted A3).
         assertEquals(1, ctl.ui.value?.state?.cursor?.appIndex)
+    }
+
+    // ---- window tags (cmd+ctrl+digit assign / cmd+digit jump) ---------------
+
+    @Test
+    fun assignTag_bindsCurrentWindow_andTransferDigitMoves() = runTest {
+        val store = seededStore()
+        val ctl = SwitcherController(store, scope = backgroundScope)
+
+        ctl.onShortcut(SwitcherEntry.App)
+        advanceTimeBy(30)
+        // Default cursor: app=1 (IDE), win=0 (IDE A id 21).
+        ctl.onAssignTag(1)
+        assertEquals(2 to 21L, ctl.tags.value.windowFor(1))
+
+        // Move to IDE B (id 22) and reassign digit 1 — should transfer.
+        ctl.onPointerMoved()
+        ctl.onPointAt(appIndex = 1, windowId = 22L)
+        ctl.onAssignTag(1)
+        assertEquals(2 to 22L, ctl.tags.value.windowFor(1))
+        // Old binding gone.
+        assertNull(ctl.tags.value.digitFor(pid = 2, windowId = 21L))
+    }
+
+    @Test
+    fun assignTag_sameDigitSameWindow_unbinds() = runTest {
+        val store = seededStore()
+        val ctl = SwitcherController(store, scope = backgroundScope)
+
+        ctl.onShortcut(SwitcherEntry.App)
+        advanceTimeBy(30)
+        ctl.onAssignTag(1)
+        ctl.onAssignTag(1)
+        assertNull(ctl.tags.value.windowFor(1))
+    }
+
+    @Test
+    fun assignTag_skipsWhenNoWindowSelected() = runTest {
+        // Empty window list for the only app → cursor lands on the app-level
+        // cell (windowId == null), and tagging must be a no-op there.
+        val app = App(pid = 1, bundleId = "a", name = "A")
+        val store = WorldStore(World(
+            log = ActivationLog().record(ActivationEvent(pid = 1, windowId = null)),
+            runningApps = mapOf(1 to app),
+            windowsByPid = mapOf(1 to emptyList()),
+        ))
+        val ctl = SwitcherController(store, scope = backgroundScope)
+        ctl.onShortcut(SwitcherEntry.App)
+        advanceTimeBy(30)
+        assertNull(ctl.ui.value?.state?.selectedWindowId)
+        ctl.onAssignTag(1)
+        assertEquals(WindowTags.Empty, ctl.tags.value)
+    }
+
+    @Test
+    fun jumpToTag_movesCursorToBoundWindow() = runTest {
+        val store = seededStore()
+        val ctl = SwitcherController(store, scope = backgroundScope)
+
+        ctl.onShortcut(SwitcherEntry.App)
+        advanceTimeBy(30)
+        // Cursor at IDE / win 21. Bind digit 1.
+        ctl.onAssignTag(1)
+        // Navigate elsewhere.
+        ctl.onNavigate(SwitcherEvent.PrevApp)  // → Safari, window 11
+        assertEquals(1, ctl.ui.value?.state?.selectedAppPid)
+        assertEquals(11L, ctl.ui.value?.state?.selectedWindowId)
+
+        ctl.onJumpToTag(1)
+        assertEquals(2, ctl.ui.value?.state?.selectedAppPid)
+        assertEquals(21L, ctl.ui.value?.state?.selectedWindowId)
+    }
+
+    @Test
+    fun jumpToTag_unknownDigit_isNoOp() = runTest {
+        val store = seededStore()
+        val ctl = SwitcherController(store, scope = backgroundScope)
+
+        ctl.onShortcut(SwitcherEntry.App)
+        advanceTimeBy(30)
+        val before = ctl.ui.value?.state
+        ctl.onJumpToTag(9)
+        assertEquals(before, ctl.ui.value?.state)
+    }
+
+    @Test
+    fun assignTag_outOfRangeDigit_isIgnoredNotCrashing() = runTest {
+        val store = seededStore()
+        val ctl = SwitcherController(store, scope = backgroundScope)
+        ctl.onShortcut(SwitcherEntry.App)
+        advanceTimeBy(30)
+        ctl.onAssignTag(0)
+        ctl.onAssignTag(10)
+        assertEquals(WindowTags.Empty, ctl.tags.value)
+    }
+
+    @Test
+    fun tags_persistAcrossSessions() = runTest {
+        val store = seededStore()
+        val ctl = SwitcherController(store, scope = backgroundScope)
+
+        ctl.onShortcut(SwitcherEntry.App)
+        advanceTimeBy(30)
+        ctl.onAssignTag(1)
+        ctl.onModifierReleased()  // commit closes the session
+        advanceUntilIdle()
+        assertNull(ctl.ui.value)
+
+        // Tag still set after the session ends.
+        assertEquals(2 to 21L, ctl.tags.value.windowFor(1))
+
+        // Reopen and jump.
+        ctl.onShortcut(SwitcherEntry.Window)
+        advanceTimeBy(30)
+        ctl.onJumpToTag(1)
+        assertEquals(2, ctl.ui.value?.state?.selectedAppPid)
+        assertEquals(21L, ctl.ui.value?.state?.selectedWindowId)
+    }
+
+    @Test
+    fun tags_pruneOnSnapshotWhenTaggedWindowDisappears() = runTest {
+        // Seed windows with AX-source bookkeeping so applyAxSnapshot's
+        // retraction path actually drops the window we want to remove —
+        // the default `sources = emptySet()` constructor would keep it as
+        // an "AX-never-saw-it" entry and the prune wouldn't have anything
+        // to react to.
+        val ide = App(pid = 2, bundleId = "ide", name = "IDE")
+        val w21 = Window(
+            id = 21, pid = 2, title = "IDE A",
+            cgWindowId = 21L, sources = setOf(WindowSource.AX),
+        )
+        val w22 = Window(
+            id = 22, pid = 2, title = "IDE B",
+            cgWindowId = 22L, sources = setOf(WindowSource.AX),
+        )
+        val log = ActivationLog()
+            .record(ActivationEvent(pid = 2, windowId = 22))
+            .record(ActivationEvent(pid = 2, windowId = 21))
+        val store = WorldStore(World(
+            log = log,
+            runningApps = mapOf(2 to ide),
+            windowsByPid = mapOf(2 to listOf(w21, w22)),
+        ))
+        val ctl = SwitcherController(store, scope = backgroundScope)
+
+        ctl.onShortcut(SwitcherEntry.App)
+        advanceTimeBy(50)
+        // Default cursor lands on IDE / window 21 (newest, since 21 is most
+        // recently activated).
+        ctl.onAssignTag(1)
+        assertEquals(2 to 21L, ctl.tags.value.windowFor(1))
+
+        // AX no longer reports w21 → the snapshot collector picks it up
+        // and prunes the now-stale tag. Mirrors `liveSnapshot_*` patterns
+        // elsewhere in this file: mutate the store, then `runCurrent()`.
+        store.applyAxSnapshot(pid = 2, axWindows = listOf(w22))
+        runCurrent()
+        assertNull(ctl.tags.value.windowFor(1))
     }
 }

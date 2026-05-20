@@ -38,6 +38,17 @@ final class SwitcherOverlayWindow: NSPanel {
     /// Compose's `onPreviewKeyEvent` path.
     var onAction: ((SwitcherAction) -> Void)?
 
+    /// Called for `cmd+ctrl+<digit>` (1..9) while the panel is key. The
+    /// AppDelegate wires this to `SwitcherController.onAssignTag(digit:)`
+    /// which binds the digit to the currently-selected window. Intercepted
+    /// here for the same reason as `onAction` — see `performKeyEquivalent`.
+    var onAssignTag: ((Int) -> Void)?
+
+    /// Called for plain `cmd+<digit>` (1..9) while the panel is key.
+    /// AppDelegate routes this to `SwitcherController.onJumpToTag(digit:)`
+    /// which moves the cursor to whichever window the digit is bound to.
+    var onJumpToTag: ((Int) -> Void)?
+
     /// The Compose-host NSView (set up by `ComposeNSViewDelegate`,
     /// re-parented into our wrapper by `installComposeView`). Since
     /// iter48 it is sized to the *captured screen's visibleFrame* and
@@ -428,6 +439,27 @@ final class SwitcherOverlayWindow: NSPanel {
         let modifiers = event.modifierFlags.intersection(
             [.command, .shift, .option, .control]
         )
+        // Number-row digits 1..9, identified by physical keyCode so the
+        // remap holds across non-ANSI keyboard layouts. Two combos:
+        //   * cmd+<digit>       → jump cursor to the window tagged with
+        //     that digit (no-op if nothing is bound).
+        //   * cmd+ctrl+<digit>  → bind the digit to the currently-selected
+        //     window (toggle off if it already pointed there; transfer if
+        //     bound elsewhere). cmd+ctrl was picked over cmd+shift because
+        //     cmd+shift+<digit> is already used by some apps for tab
+        //     activation and would conflict noticeably.
+        if let digit = digitForNumberKey(keyCode: Int(event.keyCode)) {
+            if modifiers == [.command, .control] {
+                log("[panel] cmd+ctrl+\(digit) → assignTag")
+                onAssignTag?(digit)
+                return true
+            }
+            if modifiers == .command {
+                log("[panel] cmd+\(digit) → jumpToTag")
+                onJumpToTag?(digit)
+                return true
+            }
+        }
         guard modifiers == .command else {
             return super.performKeyEquivalent(with: event)
         }
@@ -453,6 +485,24 @@ final class SwitcherOverlayWindow: NSPanel {
             return true
         }
         return super.performKeyEquivalent(with: event)
+    }
+
+    /// Map a number-row or numeric-keypad key code to its 1..9 digit, or
+    /// `nil` for any other key. Zero is excluded so cmd+0 keeps its default
+    /// app-level meaning; only the row of nine "bookmark" digits is claimed.
+    private func digitForNumberKey(keyCode: Int) -> Int? {
+        switch keyCode {
+        case kVK_ANSI_1, kVK_ANSI_Keypad1: return 1
+        case kVK_ANSI_2, kVK_ANSI_Keypad2: return 2
+        case kVK_ANSI_3, kVK_ANSI_Keypad3: return 3
+        case kVK_ANSI_4, kVK_ANSI_Keypad4: return 4
+        case kVK_ANSI_5, kVK_ANSI_Keypad5: return 5
+        case kVK_ANSI_6, kVK_ANSI_Keypad6: return 6
+        case kVK_ANSI_7, kVK_ANSI_Keypad7: return 7
+        case kVK_ANSI_8, kVK_ANSI_Keypad8: return 8
+        case kVK_ANSI_9, kVK_ANSI_Keypad9: return 9
+        default: return nil
+        }
     }
 
     override func sendEvent(_ event: NSEvent) {

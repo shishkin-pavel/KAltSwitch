@@ -234,6 +234,7 @@ fun AttachSwitcherOverlay(window: NSWindow): ComposeNSViewDelegate = ComposeNSVi
     window = window,
     content = {
         val ui by switcherController.ui.collectAsState()
+        val tags by switcherController.tags.collectAsState()
         val icons by store.iconsByPid.collectAsState()
         val accentColor by store.accentColor.collectAsState()
         val systemAccentRgb by store.systemAccentRgb.collectAsState()
@@ -255,6 +256,7 @@ fun AttachSwitcherOverlay(window: NSWindow): ComposeNSViewDelegate = ComposeNSVi
                     switcherSettings = switcherSettings,
                     axTrusted = axTrusted,
                     badgeRules = badgeRules,
+                    tags = tags,
                     onNavigate = { switcherController.onNavigate(it) },
                     onEsc = { switcherController.onEsc() },
                     onShortcut = { switcherController.onShortcut(it) },
