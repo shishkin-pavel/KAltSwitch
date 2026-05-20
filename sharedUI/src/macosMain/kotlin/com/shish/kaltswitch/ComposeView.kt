@@ -258,8 +258,8 @@ fun AttachSwitcherOverlay(window: NSWindow): ComposeNSViewDelegate = ComposeNSVi
                     onNavigate = { switcherController.onNavigate(it) },
                     onEsc = { switcherController.onEsc() },
                     onShortcut = { switcherController.onShortcut(it) },
-                    onPointAt = { appIndex, windowIndex ->
-                        switcherController.onPointAt(appIndex, windowIndex)
+                    onPointAt = { appIndex, windowId ->
+                        switcherController.onPointAt(appIndex, windowId)
                     },
                     onPointerMoved = { switcherController.onPointerMoved() },
                     onPanelSize = { w, h ->

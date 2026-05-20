@@ -329,14 +329,14 @@ class SwitcherControllerTest {
         // following hover events.
         ctl.onPointerMoved()
 
-        // Hover over Safari (appIndex=0). No windowIndex hint → resets to 0
+        // Hover over Safari (appIndex=0). No window hint → resets to 0
         // (most-recent Safari window = id 11).
         ctl.onPointAt(appIndex = 0)
         assertEquals(0, ctl.ui.value?.state?.cursor?.appIndex)
         assertEquals(0, ctl.ui.value?.state?.cursor?.windowIndex)
 
         // Hover over Safari's second window (Safari B id 12).
-        ctl.onPointAt(appIndex = 0, windowIndex = 1)
+        ctl.onPointAt(appIndex = 0, windowId = 12L)
         assertEquals(1, ctl.ui.value?.state?.cursor?.windowIndex)
 
         // Click commits without waiting for cmd-release.
@@ -354,11 +354,11 @@ class SwitcherControllerTest {
         ctl.onShortcut(SwitcherEntry.App)  // app=1 (IDE), win=0
         advanceTimeBy(30)
         ctl.onPointerMoved()
-        ctl.onPointAt(appIndex = 1, windowIndex = 1)  // IDE B id 22
+        ctl.onPointAt(appIndex = 1, windowId = 22L)  // IDE B id 22
         assertEquals(1, ctl.ui.value?.state?.cursor?.windowIndex)
 
         // Re-hover the same app cell as a whole — must NOT clobber win=1 back to 0.
-        ctl.onPointAt(appIndex = 1, windowIndex = null)
+        ctl.onPointAt(appIndex = 1, windowId = null)
         assertEquals(1, ctl.ui.value?.state?.cursor?.windowIndex)
     }
 
@@ -372,9 +372,28 @@ class SwitcherControllerTest {
         val before = ctl.ui.value?.state?.cursor
         ctl.onPointAt(appIndex = 99)
         assertEquals(before, ctl.ui.value?.state?.cursor)
-        ctl.onPointAt(appIndex = 0, windowIndex = 99)
-        // App moves but windowIndex clamps to last available.
+        // Unknown window id on a different app → cursor moves to the app
+        // and defaults to its first navigable window. Same-app fallback is
+        // tested in [pointAt_unknownWindowId_sameApp_preservesCursor].
+        ctl.onPointAt(appIndex = 0, windowId = 9999L)
         assertEquals(0, ctl.ui.value?.state?.cursor?.appIndex)
+        assertEquals(0, ctl.ui.value?.state?.cursor?.windowIndex)
+    }
+
+    @Test
+    fun pointAt_unknownWindowId_sameApp_preservesCursor() = runTest {
+        val store = seededStore()
+        val ctl = SwitcherController(store, scope = backgroundScope)
+
+        ctl.onShortcut(SwitcherEntry.App)  // app=1 (IDE), win=0
+        advanceTimeBy(30)
+        ctl.onPointerMoved()
+        ctl.onPointAt(appIndex = 1, windowId = 22L)
+        assertEquals(1, ctl.ui.value?.state?.cursor?.windowIndex)
+        // Stale id for the same app: the cursor must stay put rather than
+        // snapping back to 0 — racy AX updates routinely deliver hovers
+        // referring to a window that briefly disappeared from the snapshot.
+        ctl.onPointAt(appIndex = 1, windowId = 8888L)
         assertEquals(1, ctl.ui.value?.state?.cursor?.windowIndex)
     }
 

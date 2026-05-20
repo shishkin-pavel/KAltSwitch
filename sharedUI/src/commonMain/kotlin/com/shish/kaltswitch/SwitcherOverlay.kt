@@ -114,7 +114,7 @@ fun SwitcherOverlay(
     onNavigate: (SwitcherEvent) -> Unit,
     onEsc: () -> Unit,
     onShortcut: (SwitcherEntry) -> Unit,
-    onPointAt: (appIndex: Int, windowIndex: Int?) -> Unit,
+    onPointAt: (appIndex: Int, windowId: WindowId?) -> Unit,
     onPointerMoved: () -> Unit,
     onPanelSize: (Float, Float) -> Unit,
     onCommit: () -> Unit,
@@ -654,7 +654,7 @@ private fun SwitcherPanel(
     iconsByPid: Map<Int, ByteArray>,
     axTrusted: Boolean,
     badgeRules: BadgeRules,
-    onPointAt: (appIndex: Int, windowIndex: Int?) -> Unit,
+    onPointAt: (appIndex: Int, windowId: WindowId?) -> Unit,
     onCommit: () -> Unit,
     onGrantAxClick: () -> Unit,
     maxItemsPerRow: Int,
@@ -943,9 +943,9 @@ private data class AppCellArgs(
      *  have no top-level row index of their own). */
     val selectedWindowId: WindowId?,
     val onHoverApp: () -> Unit,
-    val onHoverWindow: (Int) -> Unit,
+    val onHoverWindow: (WindowId) -> Unit,
     val onClickApp: () -> Unit,
-    val onClickWindow: (Int) -> Unit,
+    val onClickWindow: (WindowId) -> Unit,
 )
 
 private fun cellArgs(
@@ -956,7 +956,7 @@ private fun cellArgs(
     cursorAppIndex: Int,
     selectedWindowId: WindowId?,
     badgeRules: BadgeRules,
-    onPointAt: (appIndex: Int, windowIndex: Int?) -> Unit,
+    onPointAt: (appIndex: Int, windowId: WindowId?) -> Unit,
     onCommit: () -> Unit,
 ): AppCellArgs {
     val isSelected = appIndex == cursorAppIndex
@@ -982,9 +982,9 @@ private fun cellArgs(
         isSelected = isSelected,
         selectedWindowId = if (isSelected) selectedWindowId else null,
         onHoverApp = { onPointAt(appIndex, null) },
-        onHoverWindow = { wi -> onPointAt(appIndex, wi) },
+        onHoverWindow = { wid -> onPointAt(appIndex, wid) },
         onClickApp = { onPointAt(appIndex, null); onCommit() },
-        onClickWindow = { wi -> onPointAt(appIndex, wi); onCommit() },
+        onClickWindow = { wid -> onPointAt(appIndex, wid); onCommit() },
     )
 }
 
@@ -1006,9 +1006,9 @@ private fun AppCell(
     isSelected: Boolean,
     selectedWindowId: WindowId?,
     onHoverApp: () -> Unit,
-    onHoverWindow: (Int) -> Unit,
+    onHoverWindow: (WindowId) -> Unit,
     onClickApp: () -> Unit,
-    onClickWindow: (Int) -> Unit,
+    onClickWindow: (WindowId) -> Unit,
 ) {
     val borderColor = if (isSelected) AccentColor else Color.Transparent
     // The demote cue is carried by the parent Box's backdrop + the icon
@@ -1132,9 +1132,11 @@ private fun AppCell(
  * same role the old colour-accent hairline served, but visually softer
  * and consistent with the app-level demote backdrop).
  *
- * Per-window callbacks receive the **full** index in the original
- * `windows` list — the split is purely visual; the controller still
- * navigates `windows[i]`.
+ * Per-window callbacks are addressed by [WindowId] rather than top-level
+ * row index so the same callback chain reaches pinned child rows (which
+ * have no top-level row index at all). The controller resolves the id
+ * against `navigableWindows` so a click on a child lands the cursor on
+ * the child directly.
  */
 private data class WindowRowArgs(
     val title: String,
@@ -1151,12 +1153,11 @@ private fun windowRowArgs(
     w: com.shish.kaltswitch.model.Window,
     badge: WindowBadge?,
     appName: String,
-    fullIndex: Int,
     isAppSelected: Boolean,
     selectedWindowId: WindowId?,
     demotedWindowIds: Set<WindowId>,
-    onHoverWindow: (Int) -> Unit,
-    onClickWindow: (Int) -> Unit,
+    onHoverWindow: (WindowId) -> Unit,
+    onClickWindow: (WindowId) -> Unit,
 ): WindowRowArgs = WindowRowArgs(
     title = effectiveWindowTitle(w.title, appName),
     isActive = isAppSelected && w.id == selectedWindowId,
@@ -1164,8 +1165,8 @@ private fun windowRowArgs(
     isFullscreen = w.isFullscreen,
     isDemoted = w.id in demotedWindowIds,
     customBadge = badge?.displayBadge,
-    onHover = { onHoverWindow(fullIndex) },
-    onClick = { onClickWindow(fullIndex) },
+    onHover = { onHoverWindow(w.id) },
+    onClick = { onClickWindow(w.id) },
 )
 
 @OptIn(ExperimentalComposeUiApi::class)
@@ -1178,8 +1179,8 @@ private fun WindowList(
     demotedWindowIds: Set<WindowId>,
     isAppSelected: Boolean,
     selectedWindowId: WindowId?,
-    onHoverWindow: (Int) -> Unit,
-    onClickWindow: (Int) -> Unit,
+    onHoverWindow: (WindowId) -> Unit,
+    onClickWindow: (WindowId) -> Unit,
 ) {
     val showWindows = if (shownTopWindowCount <= 0) emptyList() else windows.take(shownTopWindowCount)
     val demoteWindows = if (shownTopWindowCount >= windows.size) emptyList() else windows.drop(shownTopWindowCount)
@@ -1254,7 +1255,6 @@ private fun WindowList(
                                 w = w,
                                 badge = badge,
                                 appName = appName,
-                                fullIndex = i,
                                 isAppSelected = isAppSelected,
                                 selectedWindowId = selectedWindowId,
                                 demotedWindowIds = demotedWindowIds,
@@ -1270,6 +1270,8 @@ private fun WindowList(
                                 demotedWindowIds = demotedWindowIds,
                                 isAppSelected = isAppSelected,
                                 selectedWindowId = selectedWindowId,
+                                onHoverWindow = onHoverWindow,
+                                onClickWindow = onClickWindow,
                             )
                         }
                     }
@@ -1285,14 +1287,12 @@ private fun WindowList(
                     verticalArrangement = Arrangement.spacedBy(1.dp),
                 ) {
                     demoteWindows.forEachIndexed { i, w ->
-                        val fullIndex = i + shownTopWindowCount
                         val badge = demoteBadges.getOrNull(i)
                         rowsByWid.getValue(w.id)(
                             windowRowArgs(
                                 w = w,
                                 badge = badge,
                                 appName = appName,
-                                fullIndex = fullIndex,
                                 isAppSelected = isAppSelected,
                                 selectedWindowId = selectedWindowId,
                                 demotedWindowIds = demotedWindowIds,
@@ -1308,6 +1308,8 @@ private fun WindowList(
                                 demotedWindowIds = demotedWindowIds,
                                 isAppSelected = isAppSelected,
                                 selectedWindowId = selectedWindowId,
+                                onHoverWindow = onHoverWindow,
+                                onClickWindow = onClickWindow,
                             )
                         }
                     }
@@ -1331,9 +1333,10 @@ private fun WindowList(
  * Show-then-Demote (see `classifyWindow`), so the prefix length is just
  * the run of non-demoted ids.
  *
- * Pinned children are keyboard-selectable (cmd+`/arrows step into them),
- * so the active highlight uses identity match — mouse hover/click still
- * goes through the parent for now.
+ * Child rows reuse the same [WindowTitleRow] composable as top-level
+ * rows, so they get hover/click handling and the keyboard-driven popup-
+ * expansion on truncated titles. The id-addressed callbacks are passed
+ * straight through to the controller via [onHoverWindow] / [onClickWindow].
  */
 @OptIn(ExperimentalComposeUiApi::class)
 @Composable
@@ -1344,6 +1347,8 @@ private fun ChildWindowSubtree(
     demotedWindowIds: Set<WindowId>,
     isAppSelected: Boolean,
     selectedWindowId: WindowId?,
+    onHoverWindow: (WindowId) -> Unit,
+    onClickWindow: (WindowId) -> Unit,
 ) {
     if (children.isEmpty()) return
     val shownPrefix = children.takeWhile { it.id !in demotedWindowIds }.size
@@ -1377,6 +1382,8 @@ private fun ChildWindowSubtree(
                         demotedWindowIds = demotedWindowIds,
                         isAppSelected = isAppSelected,
                         selectedWindowId = selectedWindowId,
+                        onHoverWindow = onHoverWindow,
+                        onClickWindow = onClickWindow,
                     )
                 }
             }
@@ -1396,6 +1403,8 @@ private fun ChildWindowSubtree(
                         demotedWindowIds = demotedWindowIds,
                         isAppSelected = isAppSelected,
                         selectedWindowId = selectedWindowId,
+                        onHoverWindow = onHoverWindow,
+                        onClickWindow = onClickWindow,
                     )
                 }
             }
@@ -1406,7 +1415,13 @@ private fun ChildWindowSubtree(
 /** Render a flat list of child rows (one bucket — Show or Demote — of a
  *  parent's children). Pulled out so [ChildWindowSubtree]'s two buckets
  *  share the row-emit logic without duplicating the recursion into deeper
- *  subtrees. */
+ *  subtrees.
+ *
+ *  Child rows reuse [WindowTitleRow] just like top-level rows do, so they
+ *  inherit hover/click handling and the keyboard-driven popup expansion
+ *  for truncated titles. The [WindowId]-addressed callbacks resolve through
+ *  the controller's `navigableWindows` index, so a click on a pinned child
+ *  selects the child directly rather than its parent. */
 @OptIn(ExperimentalComposeUiApi::class)
 @Composable
 private fun ChildRows(
@@ -1416,16 +1431,20 @@ private fun ChildRows(
     demotedWindowIds: Set<WindowId>,
     isAppSelected: Boolean,
     selectedWindowId: WindowId?,
+    onHoverWindow: (WindowId) -> Unit,
+    onClickWindow: (WindowId) -> Unit,
 ) {
     children.forEachIndexed { i, child ->
         val badge = badges.getOrNull(i)
-        ChildWindowRow(
+        WindowTitleRow(
             title = effectiveWindowTitle(child.title, appName),
             isActive = isAppSelected && child.id == selectedWindowId,
             isMinimized = child.isMinimized,
             isFullscreen = child.isFullscreen,
             isDemoted = child.id in demotedWindowIds,
             customBadge = badge?.displayBadge,
+            onHover = { onHoverWindow(child.id) },
+            onClick = { onClickWindow(child.id) },
         )
         if (badge != null && badge.children.isNotEmpty()) {
             ChildWindowSubtree(
@@ -1435,6 +1454,8 @@ private fun ChildRows(
                 demotedWindowIds = demotedWindowIds,
                 isAppSelected = isAppSelected,
                 selectedWindowId = selectedWindowId,
+                onHoverWindow = onHoverWindow,
+                onClickWindow = onClickWindow,
             )
         }
     }
@@ -1445,33 +1466,6 @@ private fun ChildRows(
  *  coded since the switcher overlay sits on its own dark plate
  *  regardless of system appearance. */
 private val ChildConnectorColor = Color(0x33FFFFFF)
-
-@OptIn(ExperimentalComposeUiApi::class)
-@Composable
-private fun ChildWindowRow(
-    title: String,
-    isActive: Boolean,
-    isMinimized: Boolean,
-    isFullscreen: Boolean,
-    isDemoted: Boolean,
-    customBadge: ResolvedBadge?,
-) {
-    // Reuses [WindowRowVisual]'s layout. Since pinning, child rows can be
-    // keyboard-selected (cmd+`/arrows walk into them), so the active flag
-    // is honoured here too. Mouse hover/click still goes through the
-    // parent's onPointAt — first-class child clicking is a follow-up.
-    WindowRowVisual(
-        modifier = Modifier.fillMaxWidth(),
-        title = title,
-        isActive = isActive,
-        isMinimized = isMinimized,
-        isFullscreen = isFullscreen,
-        isDemoted = isDemoted,
-        customBadge = customBadge,
-        titleMaxLines = 1,
-        titleOverflow = TextOverflow.Ellipsis,
-    )
-}
 
 @Composable
 private fun AppIconBox(pid: Int, iconBytes: ByteArray?, name: String, isDemoted: Boolean) {
@@ -1631,10 +1625,10 @@ private fun WindowTitleRow(
                     anchorWindowX = coords.positionInWindow().x.toInt()
                 }
                 // Per-row hover/click handlers run BEFORE the parent cell's,
-                // so pointing at a specific window row updates windowIndex
-                // instead of resetting to the cell-level default. Re-arm
-                // expansion on every fresh Enter so mousing back onto the
-                // inline row after a previous overflow-suppress dismissal
+                // so pointing at a specific window row selects that window
+                // (by id) instead of resetting to the cell-level default.
+                // Re-arm expansion on every fresh Enter so mousing back onto
+                // the inline row after a previous overflow-suppress dismissal
                 // pops the popup again.
                 .onPointerEvent(PointerEventType.Enter) {
                     overflowSuppress = false

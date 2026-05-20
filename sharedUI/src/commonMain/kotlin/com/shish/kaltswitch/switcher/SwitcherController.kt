@@ -312,16 +312,21 @@ class SwitcherController(
     }
 
     /**
-     * Mouse-driven cursor move from the overlay UI. `windowIndex == null` means
+     * Mouse-driven cursor move from the overlay UI. `windowId == null` means
      * "the user is pointing at the app cell as a whole" — keep the existing
-     * window index if we're still on the same app, otherwise reset to 0
-     * (newest window of the newly-pointed app), matching the keyboard NextApp
-     * behaviour.
+     * window cursor if we're still on the same app, otherwise reset to the
+     * first navigable window (newest window of the newly-pointed app),
+     * matching the keyboard NextApp behaviour.
+     *
+     * Addressed by window identity rather than top-level row index so child
+     * rows (pinned windows, sheets) can target themselves directly — they
+     * live in the DFS-flattened `navigableWindows` list but not in the
+     * top-level `windows` list, so an index-based API couldn't reach them.
      *
      * Out-of-range coordinates are silently ignored — easier than asking
      * callers to validate against a snapshot they don't own.
      */
-    fun onPointAt(appIndex: Int, windowIndex: Int? = null) {
+    fun onPointAt(appIndex: Int, windowId: WindowId? = null) {
         val cur = _ui.value ?: return
         if (!mouseInteracted) {
             // Stationary-mouse hover at session-open. See [mouseInteracted].
@@ -330,30 +335,25 @@ class SwitcherController(
         val items = cur.state.snapshot.all
         if (appIndex !in items.indices) return
         val app = items[appIndex]
-        // The overlay still reports `windowIndex` as the top-level row index
-        // (children aren't mouse-targets yet). The cursor, however, indexes
-        // into the navigable (DFS) list — translate by identity so a click
-        // on a top-level row resolves to the same window the cursor would
-        // select. Anchor on `app.windows[windowIndex].id` then look it up in
-        // `navigableWindows`.
         val navigable = app.navigableWindows
         val resolvedWindowIndex = when {
             navigable.isEmpty() -> 0
-            windowIndex != null -> {
-                // Clamp into the top-level row range first (callers report
-                // index against `app.windows`, not `navigableWindows`), then
-                // translate to navigable index by identity.
-                val clampedTop = windowIndex.coerceIn(0, app.windows.lastIndex.coerceAtLeast(0))
-                val rootWid = app.windows.getOrNull(clampedTop)?.id
-                if (rootWid != null) navigable.indexOfFirst { it.id == rootWid }.coerceAtLeast(0)
-                else 0
+            windowId != null -> {
+                val hit = navigable.indexOfFirst { it.id == windowId }
+                // Unknown id (stale snapshot races) → app-level fallback so
+                // the cursor still moves onto the right app even if the
+                // exact window can no longer be located.
+                if (hit >= 0) hit
+                else if (appIndex == cur.state.cursor.appIndex) {
+                    cur.state.cursor.windowIndex.coerceIn(0, navigable.size - 1)
+                } else 0
             }
             appIndex == cur.state.cursor.appIndex -> cur.state.cursor.windowIndex.coerceIn(0, navigable.size - 1)
             else -> 0
         }
         val nextCursor = SwitcherCursor(appIndex, resolvedWindowIndex)
         if (nextCursor == cur.state.cursor) return
-        log("[ctl] onPointAt appIndex=$appIndex windowIndex=$windowIndex resolved=$nextCursor")
+        log("[ctl] onPointAt appIndex=$appIndex windowId=$windowId resolved=$nextCursor")
         _ui.value = cur.copy(state = cur.state.withCursor(nextCursor), previewedWindowId = null)
         schedulePreview()
     }
