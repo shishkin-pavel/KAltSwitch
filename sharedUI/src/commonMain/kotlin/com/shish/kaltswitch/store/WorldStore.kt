@@ -16,6 +16,7 @@ import com.shish.kaltswitch.model.Window
 import com.shish.kaltswitch.model.WindowId
 import com.shish.kaltswitch.model.WindowSource
 import com.shish.kaltswitch.model.World
+import com.shish.kaltswitch.model.reconcilePinAnchorsForPid
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -82,6 +83,26 @@ class WorldStore(initial: World = World(ActivationLog(), emptyMap(), emptyMap())
 
     fun setPinning(p: PinningRules) {
         _pinning.value = p
+        // Re-evaluate sticky pin anchors against the new rules — windows
+        // that just started matching get an anchor assigned now (current
+        // recency, since "creation" doesn't apply to a rule change), and
+        // entries for windows that just stopped matching are dropped.
+        _state.update { current ->
+            var anchors = current.pinAnchorByWindow
+            val pids = current.runningApps.keys + current.windowsByPid.keys
+            for (pid in pids) {
+                anchors = reconcilePinAnchorsForPid(
+                    current = anchors,
+                    pid = pid,
+                    app = current.runningApps[pid],
+                    roots = current.windowsByPid[pid].orEmpty(),
+                    log = current.log,
+                    pinning = p,
+                )
+            }
+            if (anchors === current.pinAnchorByWindow) current
+            else current.copy(pinAnchorByWindow = anchors)
+        }
     }
 
     private val _switcherSettings = MutableStateFlow(SwitcherSettings())
@@ -251,12 +272,29 @@ class WorldStore(initial: World = World(ActivationLog(), emptyMap(), emptyMap())
      *  from `DockBadgeWatcher` is independent of the NSWorkspace-driven
      *  upsert path, so we mustn't blow it away on every workspace event. */
     fun upsertApp(app: App) {
+        val pinning = _pinning.value
         _state.update {
             val merged = if (app.badgeText == null) {
                 val prevBadge = it.runningApps[app.pid]?.badgeText
                 if (prevBadge != null) app.copy(badgeText = prevBadge) else app
             } else app
-            it.copy(runningApps = it.runningApps + (app.pid to merged))
+            // If the App record arrived after the window list, the prior
+            // window-commit path couldn't evaluate pinning rules (no App →
+            // skip). Reconcile now so the first switcher snapshot taken
+            // *after* the app appears already has the sticky anchor map
+            // populated.
+            val newAnchors = reconcilePinAnchorsForPid(
+                current = it.pinAnchorByWindow,
+                pid = app.pid,
+                app = merged,
+                roots = it.windowsByPid[app.pid].orEmpty(),
+                log = it.log,
+                pinning = pinning,
+            )
+            it.copy(
+                runningApps = it.runningApps + (app.pid to merged),
+                pinAnchorByWindow = newAnchors,
+            )
         }
     }
 
@@ -329,6 +367,7 @@ class WorldStore(initial: World = World(ActivationLog(), emptyMap(), emptyMap())
                 runningApps = it.runningApps - pid,
                 windowsByPid = it.windowsByPid - pid,
                 log = it.log.withoutPid(pid),
+                pinAnchorByWindow = it.pinAnchorByWindow - pid,
             )
         }
         _iconsByPid.update { it - pid }
@@ -657,12 +696,23 @@ class WorldStore(initial: World = World(ActivationLog(), emptyMap(), emptyMap())
      */
     private fun commitWindowsFor(pid: Pid, windows: List<Window>) {
         val liveIds: Set<WindowId> = collectAllWindowIds(windows)
+        val pinning = _pinning.value
         _state.update {
+            val newLog = it.log.withoutMissingWindows(pid, liveIds)
+            val newAnchors = reconcilePinAnchorsForPid(
+                current = it.pinAnchorByWindow,
+                pid = pid,
+                app = it.runningApps[pid],
+                roots = windows,
+                log = newLog,
+                pinning = pinning,
+            )
             it.copy(
                 windowsByPid =
                     if (windows.isEmpty()) it.windowsByPid - pid
                     else it.windowsByPid + (pid to windows),
-                log = it.log.withoutMissingWindows(pid, liveIds),
+                log = newLog,
+                pinAnchorByWindow = newAnchors,
             )
         }
         if (_activeAppPid.value == pid) {

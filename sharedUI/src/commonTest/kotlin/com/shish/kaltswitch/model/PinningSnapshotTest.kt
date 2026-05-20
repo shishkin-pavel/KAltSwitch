@@ -238,6 +238,72 @@ class PinningSnapshotTest {
     }
 
     @Test
+    fun storedAnchorWins_overCurrentRecency() {
+        // The bug scenario: PiP was pinned under `main` when it opened.
+        // Later the user activates `second`, which would normally make
+        // `second` the most recent non-matching root. The stored anchor
+        // must override that — PiP stays under `main`.
+        val world = World(
+            log = ActivationLog()
+                .record(ActivationEvent(ff.pid, main.id))
+                .record(ActivationEvent(ff.pid, pip.id))
+                .record(ActivationEvent(ff.pid, second.id)),   // newest
+            runningApps = mapOf(ff.pid to ff),
+            windowsByPid = mapOf(ff.pid to listOf(main, second, pip)),
+            pinAnchorByWindow = mapOf(ff.pid to mapOf(pip.id to main.id)),
+        )
+        val snap = world.snapshot(pipRule)
+        val ffEntry = snap.withWindows.single { it.app.pid == ff.pid }
+        // Recency would put `second` first (it's the most recent non-pip),
+        // but PiP must stay under `main` because the stored anchor says so.
+        val mainView = ffEntry.windows.single { it.id == main.id }
+        assertEquals(listOf(pip.id), mainView.children.map { it.id })
+        val secondView = ffEntry.windows.single { it.id == second.id }
+        assertTrue(secondView.children.isEmpty())
+    }
+
+    @Test
+    fun staleStoredAnchor_fallsBackToRecency() {
+        // Stored anchor points at a window that no longer exists. Fallback
+        // kicks in (most recent non-matching root by current recency).
+        val world = World(
+            log = ActivationLog()
+                .record(ActivationEvent(ff.pid, second.id))
+                .record(ActivationEvent(ff.pid, pip.id)),
+            runningApps = mapOf(ff.pid to ff),
+            // `main` is no longer a root.
+            windowsByPid = mapOf(ff.pid to listOf(second, pip)),
+            pinAnchorByWindow = mapOf(ff.pid to mapOf(pip.id to main.id)),
+        )
+        val snap = world.snapshot(pipRule)
+        val ffEntry = snap.withWindows.single { it.app.pid == ff.pid }
+        val secondView = ffEntry.windows.single { it.id == second.id }
+        // Without a valid stored anchor, pip falls back under `second`.
+        assertEquals(listOf(pip.id), secondView.children.map { it.id })
+    }
+
+    @Test
+    fun differentSiblings_canHaveDifferentStoredAnchors() {
+        // Two PiPs, each opened from a different FF window. The map
+        // remembers per-window anchors and applyPinning splits them.
+        val pip2 = pip.copy(id = 400, title = "YouTube — Picture-in-Picture")
+        val world = World(
+            log = ActivationLog()
+                .record(ActivationEvent(ff.pid, second.id))
+                .record(ActivationEvent(ff.pid, main.id)),
+            runningApps = mapOf(ff.pid to ff),
+            windowsByPid = mapOf(ff.pid to listOf(main, second, pip, pip2)),
+            pinAnchorByWindow = mapOf(ff.pid to mapOf(pip.id to main.id, pip2.id to second.id)),
+        )
+        val snap = world.snapshot(pipRule)
+        val ffEntry = snap.withWindows.single { it.app.pid == ff.pid }
+        val mainView = ffEntry.windows.single { it.id == main.id }
+        val secondView = ffEntry.windows.single { it.id == second.id }
+        assertEquals(listOf(pip.id), mainView.children.map { it.id })
+        assertEquals(listOf(pip2.id), secondView.children.map { it.id })
+    }
+
+    @Test
     fun hideChildrenDropped_inSwitcherSnapshot() {
         // Filter rule sets a child to Hide → must be dropped from the switcher.
         val secretSheet = Window(id = 700, pid = 10, title = "Secret", role = "AXSheet")

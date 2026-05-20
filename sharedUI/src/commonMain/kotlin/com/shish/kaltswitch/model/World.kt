@@ -6,6 +6,14 @@ data class World(
     val runningApps: Map<Pid, App>,
     /** `null` (key absent) = AX info not yet known for this pid; empty list = knowingly windowless. */
     val windowsByPid: Map<Pid, List<Window>>,
+    /** Sticky pin-target memory: for every window that currently matches some
+     *  pinning rule, the WindowId of the root it was first pinned under. Set
+     *  once at the moment a window starts matching (window creation, title
+     *  change, or rule change) and only updated if that anchor stops being a
+     *  valid non-matching root. See `applyPinning` for the consumer and
+     *  `WorldStore` for the population path. Outer key is the owning pid;
+     *  WindowIds aren't unique across pids in this model. */
+    val pinAnchorByWindow: Map<Pid, Map<WindowId, WindowId>> = emptyMap(),
 ) {
     /** Returns ordered windows, or `null` if AX info is unknown for this pid. */
     fun orderedWindows(pid: Pid): List<Window>? {
@@ -146,20 +154,30 @@ fun World.snapshot(pinning: PinningRules = PinningRules()): SwitcherSnapshot {
 }
 
 /**
- * Re-parent matching top-level windows of [app] as children of the same app's
- * most recently activated non-matching root, using `log.windowOrder(app.pid)`
- * as the recency source. Inputs are the per-app top-level [roots] (already
- * recency-ordered). Returns the new roots; matching windows are appended in
- * recency order to the chosen parent's `children`.
+ * Re-parent matching top-level windows of [app] as children of one of the
+ * same app's non-matching roots. Inputs are the per-app top-level [roots]
+ * (already recency-ordered). Returns the new roots; matching windows are
+ * appended in recency order to their resolved parent's `children`.
  *
  * Pin behaviour:
  *  - If no rule matches any root, returns [roots] unchanged.
- *  - The parent is the first window in `windowOrder(pid)` that (a) is in
- *    [roots] and (b) doesn't itself match a pinning rule. If no such window
- *    exists (only-pinned app, or activation log is empty), matching windows
- *    stay as roots — better to leak one un-pinned root than to hide a
- *    window entirely while we wait for an "anchor" to be activated.
+ *  - **Per-window sticky anchor.** Each matching window's anchor is taken
+ *    from [World.pinAnchorByWindow] (populated by `WorldStore` at the
+ *    moment the window first started matching). That choice survives later
+ *    activation shuffles, so e.g. a Firefox PiP opened from window A keeps
+ *    anchoring on A even after the user moves on to window B. The fallback
+ *    only runs when no remembered anchor exists yet or the remembered one
+ *    is no longer a valid non-matching root (the original window closed,
+ *    or it has itself become a pin target).
+ *  - **Fallback (no sticky entry).** Most recent non-matching root in
+ *    `log.windowOrder(pid)`; if the log is silent on this app, the first
+ *    non-matching root in input order. If every root matches and we have
+ *    no recency hint, matching windows stay as roots — better to leak
+ *    one un-pinned root than to hide a window entirely.
  *  - Children attached to a pinned window via AX are preserved.
+ *  - Multiple pinned siblings can resolve to different anchors (e.g. two
+ *    PiPs opened from two different FF windows). They land under their
+ *    respective parents in the input recency order.
  */
 internal fun World.applyPinning(app: App, roots: List<Window>, pinning: PinningRules): List<Window> {
     if (pinning.rules.isEmpty()) return roots
@@ -169,19 +187,96 @@ internal fun World.applyPinning(app: App, roots: List<Window>, pinning: PinningR
     for (w in roots) if (pinning.matches(app, w)) matchingIds.add(w.id)
     if (matchingIds.isEmpty()) return roots
 
-    // Pick the most-recently-activated non-matching root as the anchor.
     val rootIds = roots.mapTo(HashSet()) { it.id }
-    val anchorId = log.windowOrder(app.pid).firstOrNull { it !in matchingIds && it in rootIds }
-        ?: roots.firstOrNull { it.id !in matchingIds }?.id
-        ?: return roots   // every root matched and we have no recency hint → leave as roots
+    val stickyForPid = pinAnchorByWindow[app.pid].orEmpty()
+    // Lazily resolved on first use — only one of the matching windows
+    // typically needs the fallback per snapshot.
+    val fallbackAnchor: WindowId? by lazy {
+        log.windowOrder(app.pid).firstOrNull { it !in matchingIds && it in rootIds }
+            ?: roots.firstOrNull { it.id !in matchingIds }?.id
+    }
 
-    // Preserve the input order of pinned roots (recency from orderedWindows).
-    val pinned = roots.filter { it.id in matchingIds }
+    val pinnedByAnchor = LinkedHashMap<WindowId, MutableList<Window>>()
+    val placedMatchingIds = HashSet<WindowId>()
+    for (w in roots) {
+        if (w.id !in matchingIds) continue
+        val sticky = stickyForPid[w.id]
+        val anchor = if (sticky != null && sticky in rootIds && sticky !in matchingIds) {
+            sticky
+        } else {
+            fallbackAnchor ?: continue   // no non-matching root anywhere → leave this one as a root
+        }
+        pinnedByAnchor.getOrPut(anchor) { ArrayList() }.add(w)
+        placedMatchingIds.add(w.id)
+    }
+    if (pinnedByAnchor.isEmpty()) return roots   // nothing could be anchored
+
     return roots.mapNotNull { r ->
+        val children = pinnedByAnchor[r.id]
         when {
-            r.id == anchorId -> r.copy(children = r.children + pinned)
-            r.id in matchingIds -> null
+            children != null -> r.copy(children = r.children + children)
+            r.id in placedMatchingIds -> null   // moved under its anchor
             else -> r
         }
     }
+}
+
+/**
+ * Reconcile [pinAnchorByWindow] for one pid against the freshest known window
+ * list. Used by `WorldStore` whenever the pid's roots change (new window,
+ * dropped window, title-change retitling) or the pinning rule set changes.
+ *
+ * Behaviour:
+ *  - Drops every stored entry whose pinned window is no longer in [roots] or
+ *    no longer matches any rule.
+ *  - Keeps an existing entry as-is when its anchor is still a non-matching
+ *    root of [roots] — that's the "sticky" property that fixes the user-
+ *    reported bug where a PiP re-pinned to the latest active window.
+ *  - For matching windows without a valid stored anchor (newly observed,
+ *    newly matching after a title/rule change, or anchor disappeared),
+ *    chooses the most recently activated non-matching root from [log], with
+ *    a final fallback to input-order. Mirrors `applyPinning`'s fallback so
+ *    a fresh snapshot agrees with what would have been picked anyway.
+ *  - Returns a map where the pid key is dropped entirely when there's no
+ *    matching window to remember — keeps the data structure compact.
+ *
+ * Pure function — does not look at [World] beyond what's passed in. The
+ * caller's pre-update [log] is fine: window-list changes don't touch the
+ * activation log, so its recency view is still current.
+ */
+internal fun reconcilePinAnchorsForPid(
+    current: Map<Pid, Map<WindowId, WindowId>>,
+    pid: Pid,
+    app: App?,
+    roots: List<Window>,
+    log: ActivationLog,
+    pinning: PinningRules,
+): Map<Pid, Map<WindowId, WindowId>> {
+    val empty: () -> Map<Pid, Map<WindowId, WindowId>> = {
+        if (pid in current) current - pid else current
+    }
+    if (app == null || pinning.rules.isEmpty() || roots.isEmpty()) return empty()
+
+    val matchingIds = LinkedHashSet<WindowId>()
+    for (w in roots) if (pinning.matches(app, w)) matchingIds.add(w.id)
+    if (matchingIds.isEmpty()) return empty()
+
+    val rootIds = roots.mapTo(HashSet()) { it.id }
+    val previous = current[pid].orEmpty()
+    val fallbackAnchor: WindowId? by lazy {
+        log.windowOrder(pid).firstOrNull { it !in matchingIds && it in rootIds }
+            ?: roots.firstOrNull { it.id !in matchingIds }?.id
+    }
+
+    val next = HashMap<WindowId, WindowId>(matchingIds.size)
+    for (wid in matchingIds) {
+        val stored = previous[wid]
+        val anchor = if (stored != null && stored in rootIds && stored !in matchingIds) {
+            stored
+        } else {
+            fallbackAnchor ?: continue
+        }
+        next[wid] = anchor
+    }
+    return if (next.isEmpty()) empty() else current + (pid to next)
 }

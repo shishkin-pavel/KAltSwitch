@@ -4,9 +4,15 @@ import com.shish.kaltswitch.config.AccentColorChoice
 import com.shish.kaltswitch.config.AppConfig
 import com.shish.kaltswitch.config.SwitcherSettings
 import com.shish.kaltswitch.config.WindowFrame
+import com.shish.kaltswitch.model.App
 import com.shish.kaltswitch.model.FilteringRules
+import com.shish.kaltswitch.model.PinningRule
+import com.shish.kaltswitch.model.PinningRules
+import com.shish.kaltswitch.model.StringOp
+import com.shish.kaltswitch.model.TitlePredicate
 import com.shish.kaltswitch.model.Window
 import com.shish.kaltswitch.model.WindowSource
+import com.shish.kaltswitch.model.snapshot
 import kotlin.test.assertNotNull
 import kotlin.test.assertTrue
 import kotlinx.coroutines.flow.first
@@ -397,6 +403,136 @@ class WorldStoreTest {
         val w = store.state.value.windowsByPid[1]?.single()
         assertEquals(true, w?.isMinimized)
         assertNull(w?.isOnscreen)
+    }
+
+    // ─────────────────────── Pinning anchor stickiness ───────────────────────
+    //
+    // Reproduces the user-reported bug where a freshly opened pinned window
+    // (e.g. Firefox PiP opened from window A) re-pins to whichever sibling
+    // happens to be most recently active. The fix stashes the anchor choice
+    // in `World.pinAnchorByWindow` at window-creation time so subsequent
+    // activations don't shuffle it.
+
+    @Test
+    fun pinningAnchor_isStickyAcrossActivationShuffle() {
+        val store = WorldStore()
+        store.upsertApp(
+            App(
+                pid = 10,
+                bundleId = "org.mozilla.firefox",
+                name = "Firefox",
+            ),
+        )
+        store.setPinning(
+            PinningRules(
+                rules = listOf(
+                    PinningRule(
+                        id = "p-pip",
+                        predicates = listOf(
+                            TitlePredicate(
+                                op = StringOp.Contains,
+                                value = "Picture-in-Picture",
+                            ),
+                        ),
+                    ),
+                ),
+            ),
+        )
+        val winA = Window(id = 100, pid = 10, title = "FF A", cgWindowId = 1000)
+        val winB = Window(id = 101, pid = 10, title = "FF B", cgWindowId = 1001)
+        val pip = Window(id = 102, pid = 10, title = "Twitch — Picture-in-Picture", cgWindowId = 1002)
+
+        // 1. User has FF windows A and B; A is most recently active.
+        store.applyAxSnapshot(pid = 10, axWindows = listOf(winA, winB))
+        store.recordActivation(pid = 10, windowId = winA.id)
+
+        // 2. PiP opens from A — AX delivers the new window list.
+        store.applyAxSnapshot(pid = 10, axWindows = listOf(winA, winB, pip))
+
+        // Anchor should be A (active just before pip arrived).
+        val anchorAfterOpen = store.state.value.pinAnchorByWindow[10]?.get(pip.id)
+        assertEquals(winA.id, anchorAfterOpen)
+
+        // 3. User switches to B — A is no longer most recent. The bug
+        //    used to make PiP "follow" the active window here.
+        store.recordActivation(pid = 10, windowId = winB.id)
+
+        // Sticky anchor must still be A, regardless of which root is newest.
+        val anchorAfterShuffle = store.state.value.pinAnchorByWindow[10]?.get(pip.id)
+        assertEquals(winA.id, anchorAfterShuffle)
+
+        // And the snapshot honours the sticky choice — PiP under A, not B.
+        val snap = store.state.value.snapshot(store.pinning.value)
+        val ffEntry = snap.withWindows.single { it.app.pid == 10 }
+        val aView = ffEntry.windows.single { it.id == winA.id }
+        val bView = ffEntry.windows.single { it.id == winB.id }
+        assertEquals(listOf(pip.id), aView.children.map { it.id })
+        assertTrue(bView.children.isEmpty())
+    }
+
+    @Test
+    fun pinningAnchor_droppedWhenWindowDies() {
+        val store = WorldStore()
+        store.upsertApp(
+            App(pid = 10, bundleId = "org.mozilla.firefox", name = "Firefox"),
+        )
+        store.setPinning(
+            PinningRules(
+                rules = listOf(
+                    PinningRule(
+                        id = "p-pip",
+                        predicates = listOf(
+                            TitlePredicate(
+                                op = StringOp.Contains,
+                                value = "Picture-in-Picture",
+                            ),
+                        ),
+                    ),
+                ),
+            ),
+        )
+        val winA = Window(id = 100, pid = 10, title = "FF A", cgWindowId = 1000)
+        val pip = Window(id = 102, pid = 10, title = "Twitch — Picture-in-Picture", cgWindowId = 1002)
+        store.applyAxSnapshot(pid = 10, axWindows = listOf(winA, pip))
+        store.recordActivation(pid = 10, windowId = winA.id)
+        assertEquals(winA.id, store.state.value.pinAnchorByWindow[10]?.get(pip.id))
+
+        // PiP closes — its anchor entry must be evicted, so a future PiP
+        // with the same id wouldn't accidentally inherit the old anchor.
+        store.applyAxSnapshot(pid = 10, axWindows = listOf(winA))
+        assertNull(store.state.value.pinAnchorByWindow[10]?.get(pip.id))
+    }
+
+    @Test
+    fun pinningAnchor_clearedOnAppRemoval() {
+        val store = WorldStore()
+        store.upsertApp(
+            App(pid = 10, bundleId = "org.mozilla.firefox", name = "Firefox"),
+        )
+        store.setPinning(
+            PinningRules(
+                rules = listOf(
+                    PinningRule(
+                        id = "p-pip",
+                        predicates = listOf(
+                            TitlePredicate(
+                                op = StringOp.Contains,
+                                value = "Picture-in-Picture",
+                            ),
+                        ),
+                    ),
+                ),
+            ),
+        )
+        val winA = Window(id = 100, pid = 10, title = "FF A", cgWindowId = 1000)
+        val pip = Window(id = 102, pid = 10, title = "Twitch — Picture-in-Picture", cgWindowId = 1002)
+        store.applyAxSnapshot(pid = 10, axWindows = listOf(winA, pip))
+        store.recordActivation(pid = 10, windowId = winA.id)
+        assertEquals(winA.id, store.state.value.pinAnchorByWindow[10]?.get(pip.id))
+
+        store.removeApp(pid = 10)
+        // Pid is fully scrubbed from the anchor map alongside its other state.
+        assertNull(store.state.value.pinAnchorByWindow[10])
     }
 
     @Test
