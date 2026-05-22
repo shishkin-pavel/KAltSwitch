@@ -56,6 +56,7 @@ class ComposeNSViewDelegate(
     window: NSWindow,
     content: @Composable () -> Unit,
 ) {
+    private val hostWindow = window
     private var isDisposed = false
     private val macosTextInputService = MacosTextInputService()
     private val _windowInfo = MacosWindowInfoImpl().apply {
@@ -83,6 +84,17 @@ class ComposeNSViewDelegate(
             val sizeInPx = IntSize(width, height)
             _windowInfo.containerSize = sizeInPx
             scene.size = sizeInPx
+            // Keep density in sync with the host window's current backing
+            // scale factor. Setting it once in init goes stale when the
+            // display config changes after launch — closing the laptop lid
+            // on a clamshell setup, hot-plugging a monitor, or the panel
+            // migrating between 1× and 2× screens. Without this, cells stay
+            // sized for the launch-time scale and the panel overflows the
+            // new screen (icons rendered at 2× on a 1× display).
+            val currentDensity = hostWindow.backingScaleFactor.toFloat()
+            if (scene.density.density != currentDensity) {
+                scene.density = Density(currentDensity)
+            }
             scene.render(canvas.asComposeCanvas(), nanoTime)
         }
     }
