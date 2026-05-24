@@ -106,9 +106,16 @@ sealed interface SwitcherEvent {
  * Default cursor identity on switcher open. Shown-scope by default — the
  * Carbon hot-key path is the canonical entry, and we want it to land on a
  * visible (Show) item even when the user has demoted lots of apps:
- *   - App entry → second-most-recent Show app, its newest navigable window
- *     (clamped to the only available app when there's just one).
- *   - Window entry → current app, its second-most-recent Show window.
+ *   - App entry → second-most-recent Show app, its most-recently-active
+ *     navigable window (clamped to the only available app when there's
+ *     just one). Uses [AppEntry.windowRecency] so pin re-parenting can't
+ *     bury the actually-most-recent window under a less-recent root.
+ *   - Window entry → current app, its **second** most-recently-active
+ *     navigable window — i.e. the window the user wants to toggle to from
+ *     wherever they're sitting. Recency-based (not DFS-based) so the
+ *     "skip current, land on the prior one" semantic holds regardless of
+ *     where in the tree (root or arbitrarily-nested child) the current
+ *     window happens to be.
  *
  * Returns `(null, null)` when the snapshot is empty so an empty switcher
  * session has a well-defined "no selection" identity.
@@ -122,13 +129,11 @@ internal fun SwitcherSnapshot.defaultIdentity(
     return when (entry) {
         SwitcherEntry.App -> {
             val app = apps.getOrNull(1) ?: apps.first()
-            app.app.pid to app.scopedNavigable(scope).firstOrNull()?.id
+            app.app.pid to app.mostRecentNavigableInScope(scope)?.id
         }
         SwitcherEntry.Window -> {
             val app = apps.first()
-            val wins = app.scopedNavigable(scope)
-            val wid = wins.getOrNull(1)?.id ?: wins.firstOrNull()?.id
-            app.app.pid to wid
+            app.app.pid to app.secondMostRecentNavigableInScope(scope)?.id
         }
     }
 }
@@ -212,7 +217,7 @@ private fun SwitcherState.stepApp(scope: NavScope, forward: Boolean): SwitcherSt
     val nextApp = apps[stepIndex(currentIdx, apps.size, forward)]
     return copy(
         selectedAppPid = nextApp.app.pid,
-        selectedWindowId = nextApp.scopedNavigable(scope).firstOrNull()?.id,
+        selectedWindowId = nextApp.mostRecentNavigableInScope(scope)?.id,
     )
 }
 
@@ -241,6 +246,62 @@ internal fun SwitcherSnapshot.scopedApps(scope: NavScope): List<AppEntry> = when
 internal fun AppEntry.scopedNavigable(scope: NavScope): List<Window> = when (scope) {
     NavScope.Shown -> shownNavigableWindows
     NavScope.All -> navigableWindows
+}
+
+/**
+ * Window the cursor should land on when an app is entered from the outside
+ * (cmd+tab into the app, or any code path that needs "this app's most
+ * recently active window"). Walks [AppEntry.windowRecency] newest-first and
+ * returns the first id that survives [scope]; falls back to the DFS-first
+ * window when recency is empty (raw / test-built AppEntries) or none of the
+ * recent windows are reachable in the current scope.
+ *
+ * Why not just [scopedNavigable].firstOrNull(): pin re-parenting moves a
+ * recently-active child window under a less-recent root, so DFS pre-order
+ * surfaces the parent first. Reading recency directly bypasses that and
+ * lands the cursor on the actually-most-recent navigable window.
+ */
+internal fun AppEntry.mostRecentNavigableInScope(scope: NavScope): Window? {
+    val nav = scopedNavigable(scope)
+    if (nav.isEmpty()) return null
+    if (windowRecency.isEmpty()) return nav.first()
+    val navById = HashMap<WindowId, Window>(nav.size)
+    for (w in nav) navById[w.id] = w
+    for (wid in windowRecency) {
+        val hit = navById[wid]
+        if (hit != null) return hit
+    }
+    return nav.first()
+}
+
+/**
+ * Default landing window for cmd+\` (Window entry): the **second** most-
+ * recently-active navigable window of the current app, treating
+ * [AppEntry.windowRecency]'s head as "the window we're already on" and
+ * skipping it. Falls back to the first recency hit (only one navigable in
+ * scope) or DFS index 1/0 when recency data is absent.
+ *
+ * Why second-most-recent and not DFS-second: when the user is sitting on a
+ * pinned child window, DFS index 0 is the parent root and index 1 may be a
+ * sibling child or the very window the user is on. Recency-based selection
+ * gives the toggle/alternate semantic regardless of tree shape.
+ */
+internal fun AppEntry.secondMostRecentNavigableInScope(scope: NavScope): Window? {
+    val nav = scopedNavigable(scope)
+    if (nav.isEmpty()) return null
+    if (windowRecency.isEmpty()) return nav.getOrNull(1) ?: nav.first()
+    val navById = HashMap<WindowId, Window>(nav.size)
+    for (w in nav) navById[w.id] = w
+    var first: Window? = null
+    for (wid in windowRecency) {
+        val hit = navById[wid] ?: continue
+        if (first == null) {
+            first = hit
+            continue
+        }
+        return hit
+    }
+    return first ?: nav.first()
 }
 
 /**

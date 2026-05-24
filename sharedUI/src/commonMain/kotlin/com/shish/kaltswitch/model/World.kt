@@ -48,6 +48,15 @@ data class AppEntry(
      *  entry as Show", which matches callers that build an `AppEntry`
      *  directly without going through the filter pipeline. */
     val demotedWindowIds: Set<WindowId> = emptySet(),
+    /** Per-app window ids newest-first from the activation log, populated at
+     *  snapshot construction. Includes window ids regardless of whether they
+     *  are top-level or pinned-child in [windows] — the log doesn't know about
+     *  pinning. Consumers (cmd+tab landing) pick the first id that survives
+     *  the current scope/filter to land on the most-recently-active window
+     *  even when pin re-parenting has buried it under a less-recent root.
+     *  Empty for callers that build an [AppEntry] directly without going
+     *  through the snapshot pipeline (tests, raw inspection). */
+    val windowRecency: List<WindowId> = emptyList(),
 ) {
     val hasWindows: Boolean get() = windows.isNotEmpty()
 
@@ -127,7 +136,7 @@ fun World.snapshot(pinning: PinningRules = PinningRules()): SwitcherSnapshot {
         val app = runningApps[pid] ?: continue
         val windows = applyPinning(app, orderedWindows(pid) ?: emptyList(), pinning)
         placedPids.add(pid)
-        withWindows.add(AppEntry(app, windows))
+        withWindows.add(AppEntry(app, windows, windowRecency = log.windowOrder(pid)))
     }
 
     // 2. Running apps not in the log yet (just-launched, never focused). A
@@ -139,7 +148,7 @@ fun World.snapshot(pinning: PinningRules = PinningRules()): SwitcherSnapshot {
         if (windowsByPid[pid]?.isEmpty() == true) continue   // never-activated windowless → step 3
         val windows = applyPinning(app, orderedWindows(pid) ?: emptyList(), pinning)
         placedPids.add(pid)
-        withWindows.add(AppEntry(app, windows))
+        withWindows.add(AppEntry(app, windows, windowRecency = log.windowOrder(pid)))
     }
 
     // 3. Never-activated windowless apps. Alphabetical for visual stability.
@@ -211,7 +220,7 @@ internal fun World.applyPinning(app: App, roots: List<Window>, pinning: PinningR
     }
     if (pinnedByAnchor.isEmpty()) return roots   // nothing could be anchored
 
-    return roots.mapNotNull { r ->
+    val grouped = roots.mapNotNull { r ->
         val children = pinnedByAnchor[r.id]
         when {
             children != null -> r.copy(children = r.children + children)
@@ -219,6 +228,32 @@ internal fun World.applyPinning(app: App, roots: List<Window>, pinning: PinningR
             else -> r
         }
     }
+
+    // Promote each surviving root by the freshest activation anywhere in its
+    // subtree. Without this, a pinned child being focused doesn't move the
+    // visual position of its anchor — the anchor's own recency is what
+    // [orderedWindows] used to place it in the input, and an anchor that's
+    // never been directly clicked stays in AX-enumeration order forever.
+    // Walking [log.windowOrder] for self + every (recursive) descendant
+    // makes the visible row order follow the user's actual attention even
+    // when attention sits exclusively on pinned descendants.
+    //
+    // Stable sort: roots whose entire subtree is unrecorded share key
+    // Int.MAX_VALUE and keep their input order, which matches the
+    // pre-fix behaviour for the no-pinned-activity case.
+    val order = log.windowOrder(app.pid)
+    if (order.isEmpty()) return grouped
+    val idxOf = HashMap<WindowId, Int>(order.size)
+    for ((i, wid) in order.withIndex()) idxOf[wid] = i
+    fun freshest(w: Window): Int {
+        var best = idxOf[w.id] ?: Int.MAX_VALUE
+        for (c in w.children) {
+            val sub = freshest(c)
+            if (sub < best) best = sub
+        }
+        return best
+    }
+    return grouped.sortedBy(::freshest)
 }
 
 /**

@@ -304,6 +304,57 @@ class PinningSnapshotTest {
     }
 
     @Test
+    fun rootOrder_followsFreshestPinnedDescendant() {
+        // Two FF windows, each with its own pinned PiP child. Only the
+        // children ever get activated. The parent whose child is most
+        // recent must appear first in the top-level order even though the
+        // parents themselves never reach `windowOrder`.
+        val pip2 = pip.copy(id = 400, title = "YouTube — Picture-in-Picture")
+        val world = World(
+            log = ActivationLog()
+                // Newest activation = pip2 (child of `second`).
+                .record(ActivationEvent(ff.pid, pip.id))
+                .record(ActivationEvent(ff.pid, pip2.id)),
+            runningApps = mapOf(ff.pid to ff),
+            windowsByPid = mapOf(ff.pid to listOf(main, second, pip, pip2)),
+            pinAnchorByWindow = mapOf(ff.pid to mapOf(pip.id to main.id, pip2.id to second.id)),
+        )
+        val snap = world.snapshot(pipRule)
+        val ffEntry = snap.withWindows.single { it.app.pid == ff.pid }
+        // `second` ranks above `main` because pip2 (its child) is the
+        // most recently activated window in the subtree.
+        assertEquals(listOf(second.id, main.id), ffEntry.windows.map { it.id })
+
+        // Swap which child is newest → top-level order flips accordingly.
+        val world2 = world.copy(
+            log = ActivationLog()
+                .record(ActivationEvent(ff.pid, pip2.id))
+                .record(ActivationEvent(ff.pid, pip.id)),
+        )
+        val snap2 = world2.snapshot(pipRule)
+        val ffEntry2 = snap2.withWindows.single { it.app.pid == ff.pid }
+        assertEquals(listOf(main.id, second.id), ffEntry2.windows.map { it.id })
+    }
+
+    @Test
+    fun rootOrder_unchangedWhenNoSubtreeRecency() {
+        // Two roots with pinned children but no per-window activations at
+        // all. The sort key ties (all Int.MAX_VALUE), so the stable sort
+        // preserves the input order coming out of `orderedWindows` — which
+        // is AX-enumeration order: main, then second.
+        val pip2 = pip.copy(id = 400, title = "YouTube — Picture-in-Picture")
+        val world = World(
+            log = ActivationLog(),  // no recency at all
+            runningApps = mapOf(ff.pid to ff),
+            windowsByPid = mapOf(ff.pid to listOf(main, second, pip, pip2)),
+            pinAnchorByWindow = mapOf(ff.pid to mapOf(pip.id to main.id, pip2.id to second.id)),
+        )
+        val snap = world.snapshot(pipRule)
+        val ffEntry = snap.withWindows.single { it.app.pid == ff.pid }
+        assertEquals(listOf(main.id, second.id), ffEntry.windows.map { it.id })
+    }
+
+    @Test
     fun hideChildrenDropped_inSwitcherSnapshot() {
         // Filter rule sets a child to Hide → must be dropped from the switcher.
         val secretSheet = Window(id = 700, pid = 10, title = "Secret", role = "AXSheet")

@@ -259,6 +259,127 @@ class SwitcherTest {
     }
 
     @Test
+    fun windowEntry_defaultCursor_picksSecondInRecency_skippingCurrentChild() {
+        // User is currently sitting on pinned child 220 — it tops the
+        // recency list. Pressing cmd+` should land on the next-most-recent
+        // navigable window (210), not on DFS index 1 (which happens to be
+        // 220 itself in this tree shape).
+        val ide = App(pid = 1, bundleId = "ide", name = "IDE")
+        val pinnedChildA = Window(id = 220, pid = 1, title = "Commit A")
+        val pinnedChildB = Window(id = 230, pid = 1, title = "Commit B")
+        val root1 = Window(id = 210, pid = 1, title = "main.kt", children = listOf(pinnedChildA))
+        val root2 = Window(id = 240, pid = 1, title = "other.kt", children = listOf(pinnedChildB))
+        val snap = SwitcherSnapshot(
+            withWindows = listOf(
+                AppEntry(
+                    app = ide,
+                    windows = listOf(root1, root2),
+                    // 220 is currently focused; 210 was previously focused.
+                    windowRecency = listOf(220, 210, 240, 230),
+                ),
+            ),
+            windowless = emptyList(),
+        )
+        val state = openSwitcher(snap, SwitcherEntry.Window)
+        // Land on 210 — second in recency — not on DFS index 1 which is 220.
+        assertEquals(210L, state.selectedWindowId)
+    }
+
+    @Test
+    fun windowEntry_defaultCursor_picksSecondInRecency_acrossPinnedChildren() {
+        // Two parent roots, each with one pinned child. User is on child 220
+        // (under root 210). Recency: most recent = 220, then the OTHER
+        // child 230 (under root 240), then the roots. cmd+` should land on
+        // 230 — the second-most-recent navigable, even though it sits on a
+        // different parent branch in the DFS tree.
+        val ide = App(pid = 1, bundleId = "ide", name = "IDE")
+        val pinnedChildA = Window(id = 220, pid = 1, title = "Commit A")
+        val pinnedChildB = Window(id = 230, pid = 1, title = "Commit B")
+        val root1 = Window(id = 210, pid = 1, title = "main.kt", children = listOf(pinnedChildA))
+        val root2 = Window(id = 240, pid = 1, title = "other.kt", children = listOf(pinnedChildB))
+        val snap = SwitcherSnapshot(
+            withWindows = listOf(
+                AppEntry(
+                    app = ide,
+                    windows = listOf(root1, root2),
+                    windowRecency = listOf(220, 230, 210, 240),
+                ),
+            ),
+            windowless = emptyList(),
+        )
+        val state = openSwitcher(snap, SwitcherEntry.Window)
+        assertEquals(230L, state.selectedWindowId)
+
+        // Subsequent NextWindow walks DFS pre-order from the landing point.
+        // From child 230 → DFS-next is root2 240's sibling (none here, so
+        // wraps within the app: 220 wraps back to 210? actually wraps
+        // forward to the next index in scopedNavigable). The exact id
+        // depends on DFS order [210, 220, 240, 230]; next from 230 wraps
+        // to 210.
+        val advanced = state.apply(SwitcherEvent.NextWindow)
+        assertEquals(210L, advanced.selectedWindowId)
+    }
+
+    @Test
+    fun stepApp_landsOnPinnedChild_whenChildIsMostRecentlyActive() {
+        // Reproduces the bug: a child window pinned under a parent root is
+        // the most recently used window of the IDE app, but pin re-parenting
+        // makes the parent come first in DFS pre-order. cmd+tab landing must
+        // pick the child via windowRecency, not the DFS-first parent.
+        val safari = App(pid = 1, bundleId = "safari", name = "Safari")
+        val ide = App(pid = 2, bundleId = "ide", name = "IDE")
+        val pinnedChild = Window(id = 220, pid = 2, title = "Commit: app.json")
+        val ideRoot = Window(id = 210, pid = 2, title = "main.kt", children = listOf(pinnedChild))
+        val snap = SwitcherSnapshot(
+            withWindows = listOf(
+                AppEntry(safari, listOf(Window(id = 100, pid = 1, title = "s"))),
+                AppEntry(
+                    app = ide,
+                    windows = listOf(ideRoot),
+                    // 220 (child) was activated more recently than 210 (root).
+                    windowRecency = listOf(220, 210),
+                ),
+            ),
+            windowless = emptyList(),
+        )
+        val state = openSwitcher(snap, SwitcherEntry.App)
+        // entry=App from a Safari-front world lands on the second-most-recent
+        // app (IDE), and within IDE on the most-recently-active navigable
+        // window. That is the pinned child 220, not the DFS-first root 210.
+        assertEquals(2, state.selectedAppPid)
+        assertEquals(220L, state.selectedWindowId)
+
+        // Same expectation when reached via NextApp navigation from inside
+        // an open switcher session.
+        val stepped = openSwitcher(snap, SwitcherEntry.Window).apply(SwitcherEvent.NextApp)
+        assertEquals(2, stepped.selectedAppPid)
+        assertEquals(220L, stepped.selectedWindowId)
+    }
+
+    @Test
+    fun stepApp_fallsBackToDfsFirst_whenRecencyMissesScopedWindow() {
+        // windowRecency points at an id outside the app's navigable list — a
+        // stale entry the snapshot pipeline didn't prune yet. Landing must
+        // gracefully fall back to the DFS-first scoped window.
+        val safari = App(pid = 1, bundleId = "safari", name = "Safari")
+        val ide = App(pid = 2, bundleId = "ide", name = "IDE")
+        val snap = SwitcherSnapshot(
+            withWindows = listOf(
+                AppEntry(safari, listOf(Window(id = 100, pid = 1, title = "s"))),
+                AppEntry(
+                    app = ide,
+                    windows = listOf(Window(id = 210, pid = 2, title = "main.kt")),
+                    windowRecency = listOf(999),  // unknown id
+                ),
+            ),
+            windowless = emptyList(),
+        )
+        val state = openSwitcher(snap, SwitcherEntry.App)
+        assertEquals(2, state.selectedAppPid)
+        assertEquals(210L, state.selectedWindowId)
+    }
+
+    @Test
     fun refreshedWith_appBecomesWindowless_keepsCursorOnSameApp() {
         val safari = App(pid = 1, bundleId = "safari", name = "Safari")
         val before = SwitcherSnapshot(

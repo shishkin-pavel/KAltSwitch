@@ -13,6 +13,7 @@ import com.shish.kaltswitch.model.WindowId
 import com.shish.kaltswitch.model.WindowTags
 import com.shish.kaltswitch.model.apply
 import com.shish.kaltswitch.model.filteredSwitcherSnapshot
+import com.shish.kaltswitch.model.mostRecentNavigableInScope
 import com.shish.kaltswitch.model.openSwitcher
 import com.shish.kaltswitch.model.refreshedWith
 import com.shish.kaltswitch.model.scopedApps
@@ -251,7 +252,7 @@ class SwitcherController(
                 val app = snapshot.withWindows.lastOrNull() ?: return
                 cur.state.copy(
                     selectedAppPid = app.app.pid,
-                    selectedWindowId = app.shownNavigableWindows.firstOrNull()?.id,
+                    selectedWindowId = app.mostRecentNavigableInScope(NavScope.Shown)?.id,
                 )
             }
             SwitcherEntry.Window -> {
@@ -596,7 +597,7 @@ class SwitcherController(
         _ui.value = cur.copy(
             state = state.copy(
                 selectedAppPid = nextApp.app.pid,
-                selectedWindowId = nextApp.scopedNavigable(NavScope.Shown).firstOrNull()?.id,
+                selectedWindowId = nextApp.mostRecentNavigableInScope(NavScope.Shown)?.id,
             ),
             previewedWindowId = null,
         )

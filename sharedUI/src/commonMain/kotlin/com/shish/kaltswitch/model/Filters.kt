@@ -499,6 +499,7 @@ fun World.filteredSwitcherSnapshot(
             windows = visible.map { it.toSwitcherWindow() },
             shownTopWindowCount = shownTop,
             demotedWindowIds = demotedIds,
+            windowRecency = log.windowOrder(av.app.pid),
         )
         // shownWindowCount is a derived property on AppEntry now (size of
         // shownNavigableWindows) — no need to pre-compute it here.
