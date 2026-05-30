@@ -36,6 +36,7 @@ import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.TextStyle
@@ -293,8 +294,31 @@ private fun GeneralSection(
             NativeRowDivider()
             CellSizeRow(
                 percent = settings.cellSizePercent,
-                onChange = { onChange(settings.copy(cellSizePercent = it)) },
+                flexEnabled = settings.flexibleCellSize,
+                // Flex only makes sense when the panel-width cap is
+                // expressed as a percentage; in `MaxIconsPerRow` mode
+                // the row count is the user's direct input and a
+                // dynamic shrink would just contradict it.
+                flexInteractive = settings.maxWidthMode == MaxSizeMode.Percent,
+                onPercentChange = {
+                    // Keep min ≤ max as the user narrows the upper
+                    // bound. Without this clamp, sliding cell-size down
+                    // past minCellSize would leave an inverted range
+                    // that `sanitized()` snaps on the next config load
+                    // — correct, but jarring in the UI.
+                    val newMin = settings.minCellSizePercent.coerceAtMost(it)
+                    onChange(settings.copy(cellSizePercent = it, minCellSizePercent = newMin))
+                },
+                onFlexChange = { onChange(settings.copy(flexibleCellSize = it)) },
             )
+            if (settings.flexibleCellSize && settings.maxWidthMode == MaxSizeMode.Percent) {
+                NativeRowDivider()
+                MinCellSizeRow(
+                    minPercent = settings.minCellSizePercent,
+                    cellSizePercent = settings.cellSizePercent,
+                    onChange = { onChange(settings.copy(minCellSizePercent = it)) },
+                )
+            }
             NativeRowDivider()
             IconSizeRow(
                 percent = settings.iconSizePercent,
@@ -363,18 +387,82 @@ private fun PlacementRow(
     }
 }
 
+/**
+ * Cell-size slider + inline "Flexible" toggle. Two controls on one row
+ * because they're conceptually paired — the slider is the user's
+ * preferred cell scale, and the toggle decides whether the runtime
+ * picker is allowed to shrink the cell below that preference to peel
+ * rows off the layout. The toggle dims (and clicks no-op) when the
+ * active panel-width mode is `MaxIconsPerRow`: in that mode the user
+ * sets the row count directly, so a flexible shrink would contradict
+ * their input — we surface the setting's stored value but make it
+ * clear it can't take effect.
+ */
 @Composable
-private fun CellSizeRow(percent: Int, onChange: (Int) -> Unit) {
+private fun CellSizeRow(
+    percent: Int,
+    flexEnabled: Boolean,
+    flexInteractive: Boolean,
+    onPercentChange: (Int) -> Unit,
+    onFlexChange: (Boolean) -> Unit,
+) {
     NativeRow(label = "Cell size") {
         Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
             Box(Modifier.width(180.dp)) {
                 NativeSlider(
                     value = percent.toFloat().coerceIn(50f, 200f),
-                    onValueChange = { onChange(it.toInt().coerceIn(50, 200)) },
+                    onValueChange = { onPercentChange(it.toInt().coerceIn(50, 200)) },
                     valueRange = 50f..200f,
                 )
             }
             NativeText("$percent %", color = AppPalette.textSecondary, fontSize = 12.sp)
+            Box(Modifier.width(16.dp))
+            Row(
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(6.dp),
+                modifier = Modifier.alpha(if (flexInteractive) 1f else 0.4f),
+            ) {
+                NativeText("Flexible", fontSize = 12.sp)
+                NativeToggle(
+                    checked = flexEnabled,
+                    onCheckedChange = { if (flexInteractive) onFlexChange(it) },
+                )
+            }
+        }
+    }
+}
+
+/**
+ * Lower-bound slider for the flexible cell-size picker. The track runs
+ * the full cell-size range (50..200) — same dial as `Cell size` itself
+ * — and an inactive ghost knob sits on the current `cellSizePercent`.
+ * The active knob is constrained to `[50, cellSizePercent]`, so the
+ * user reads min and max simultaneously on one shared scale and can
+ * see at a glance how much room the picker has to shrink.
+ *
+ * Only rendered when flex is on (gating happens in the caller); range
+ * arithmetic does its own coerce so a stale config blob — e.g. min >
+ * cell-size after a config-version migration — still renders sanely.
+ */
+@Composable
+private fun MinCellSizeRow(
+    minPercent: Int,
+    cellSizePercent: Int,
+    onChange: (Int) -> Unit,
+) {
+    val upper = cellSizePercent.coerceIn(50, 200)
+    val clamped = minPercent.coerceIn(50, upper)
+    NativeRow(label = "Min cell size") {
+        Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            Box(Modifier.width(180.dp)) {
+                NativeBoundedSlider(
+                    value = clamped.toFloat(),
+                    onValueChange = { onChange(it.toInt().coerceIn(50, upper)) },
+                    valueRange = 50f..200f,
+                    upperBound = upper.toFloat(),
+                )
+            }
+            NativeText("$clamped %", color = AppPalette.textSecondary, fontSize = 12.sp)
         }
     }
 }

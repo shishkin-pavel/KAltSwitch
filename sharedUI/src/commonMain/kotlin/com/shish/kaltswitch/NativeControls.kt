@@ -28,6 +28,7 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -212,6 +213,21 @@ fun NativeSlider(
     val density = LocalDensity.current
     val thumbDp = 14.dp
     val trackHeightDp = 4.dp
+    // `pointerInput(Unit) { … }` below launches a long-lived coroutine
+    // whose captures freeze at first composition. If we let the gesture
+    // loop call `onValueChange` / `valueRange` directly, those reads
+    // would forever see the values from the slider's *initial* mount —
+    // which on the Settings panel means the parent's `settings.copy(...)`
+    // lambda capturing the initial-default `SwitcherSettings`. Every
+    // later drag of one slider would then overwrite all other fields
+    // with their app-startup defaults (e.g. dragging "Min cell size"
+    // would silently force `maxWidthPercent` back to 0.9 and flip
+    // `flexibleCellSize` off). `rememberUpdatedState` gives us a
+    // `State<>` whose `.value` IS re-read inside the coroutine, so the
+    // gesture loop always sees the latest callback + range without
+    // restarting (which would cancel any in-progress drag).
+    val onChangeState = rememberUpdatedState(onValueChange)
+    val rangeState = rememberUpdatedState(valueRange)
     BoxWithConstraints(
         modifier
             .fillMaxWidth()
@@ -224,12 +240,6 @@ fun NativeSlider(
         val span = (valueRange.endInclusive - valueRange.start).coerceAtLeast(0.0001f)
         val frac = ((value - valueRange.start) / span).coerceIn(0f, 1f)
         val thumbOffsetPx = frac * usable
-
-        fun reportFromOffset(px: Float) {
-            val clamped = px.coerceIn(0f, usable)
-            val newFrac = clamped / usable
-            onValueChange(valueRange.start + newFrac * span)
-        }
 
         // Background track.
         Box(
@@ -265,21 +275,158 @@ fun NativeSlider(
         // Press-and-drag on the entire 22dp row: jump to the press
         // location on initial down, then track every subsequent pointer
         // change while the button stays pressed. `awaitEachGesture`
-        // restarts the loop after each release.
+        // restarts the loop after each release. `pointerInput(Unit)`
+        // ensures the gesture detector is NOT cancelled mid-drag by a
+        // recomposition — but that same stability means the block sees
+        // stale captures unless we read through `*State.value`.
         Box(
             Modifier
                 .fillMaxWidth()
                 .height(22.dp)
                 .pointerInput(Unit) {
                     awaitEachGesture {
+                        // Each tick reads the *current* callback +
+                        // range via the rememberUpdatedState handles,
+                        // not the values captured at first composition.
+                        fun report(px: Float) {
+                            val range = rangeState.value
+                            val rangeSpan =
+                                (range.endInclusive - range.start).coerceAtLeast(0.0001f)
+                            val clamped = px.coerceIn(0f, usable)
+                            onChangeState.value(range.start + clamped / usable * rangeSpan)
+                        }
                         val down = awaitFirstDown(requireUnconsumed = false)
-                        reportFromOffset(down.position.x - thumbPx / 2)
+                        report(down.position.x - thumbPx / 2)
                         down.consume()
                         while (true) {
                             val ev = awaitPointerEvent()
                             val ch = ev.changes.firstOrNull() ?: break
                             if (!ch.pressed) break
-                            reportFromOffset(ch.position.x - thumbPx / 2)
+                            report(ch.position.x - thumbPx / 2)
+                            ch.consume()
+                        }
+                    }
+                },
+        )
+    }
+}
+
+/**
+ * "Capped" variant of [NativeSlider]: the visible track spans the full
+ * [valueRange], a greyed-out *ghost* thumb sits at [upperBound], and the
+ * interactive thumb is constrained to the sub-range `[valueRange.start,
+ * upperBound]`. Used by Settings → Min cell size, where the active
+ * thumb is the min-cell-size setting and the ghost thumb tracks the
+ * current Cell-size upper bound so the user can see both values at once
+ * on one track.
+ *
+ * Stale-capture fix mirrors [NativeSlider] — see that function's doc for
+ * the full rationale.
+ */
+@Composable
+fun NativeBoundedSlider(
+    value: Float,
+    onValueChange: (Float) -> Unit,
+    valueRange: ClosedFloatingPointRange<Float>,
+    upperBound: Float,
+    modifier: Modifier = Modifier,
+) {
+    val density = LocalDensity.current
+    val thumbDp = 14.dp
+    val ghostDp = 12.dp
+    val trackHeightDp = 4.dp
+    val onChangeState = rememberUpdatedState(onValueChange)
+    val rangeState = rememberUpdatedState(valueRange)
+    val boundState = rememberUpdatedState(upperBound)
+    BoxWithConstraints(
+        modifier
+            .fillMaxWidth()
+            .heightIn(min = 22.dp),
+        contentAlignment = Alignment.CenterStart,
+    ) {
+        val widthPx = with(density) { maxWidth.toPx() }
+        val thumbPx = with(density) { thumbDp.toPx() }
+        val ghostPx = with(density) { ghostDp.toPx() }
+        val usable = (widthPx - thumbPx).coerceAtLeast(1f)
+        val span = (valueRange.endInclusive - valueRange.start).coerceAtLeast(0.0001f)
+        val clampedBound = upperBound.coerceIn(valueRange.start, valueRange.endInclusive)
+        val activeValue = value.coerceIn(valueRange.start, clampedBound)
+        val activeFrac = ((activeValue - valueRange.start) / span).coerceIn(0f, 1f)
+        val boundFrac = ((clampedBound - valueRange.start) / span).coerceIn(0f, 1f)
+        val activeThumbPx = activeFrac * usable
+        val boundThumbPx = boundFrac * usable
+
+        // Background track.
+        Box(
+            Modifier
+                .fillMaxWidth()
+                .height(trackHeightDp)
+                .clip(RoundedCornerShape(2.dp))
+                .background(AppPalette.controlTrack),
+        )
+        // Filled portion: start → active thumb only. The stretch from
+        // active to ghost stays on the empty track so the visual reads
+        // as "this slice is the bounded range the active thumb owns".
+        Box(
+            Modifier
+                .width(with(density) { (thumbPx / 2 + activeThumbPx).toDp() })
+                .height(trackHeightDp)
+                .clip(RoundedCornerShape(2.dp))
+                .background(AccentColor),
+        )
+        // Ghost thumb at the upperBound — drawn before the active thumb
+        // so when the two coincide the active (white) thumb covers it.
+        // Slightly smaller + track-coloured fill to read as "marker, not
+        // a handle". Centre-aligning the smaller ghost on the same axis
+        // as the active thumb means its visible centre still hits
+        // exactly the bound position.
+        Box(
+            Modifier
+                .offset(
+                    x = with(density) {
+                        (boundThumbPx + (thumbPx - ghostPx) / 2f).toDp()
+                    },
+                )
+                .size(ghostDp)
+                .clip(CircleShape)
+                .background(AppPalette.controlTrack)
+                .border(1.dp, AppPalette.groupBorder, CircleShape),
+        )
+        // Active thumb.
+        Box(
+            Modifier
+                .offset(x = with(density) { activeThumbPx.toDp() })
+                .size(thumbDp)
+                .clip(CircleShape)
+                .background(Color.White)
+                .border(0.5.dp, AppPalette.groupBorder, CircleShape),
+        )
+        // Gesture row — clamps reported value at `upperBound` so the
+        // active thumb can never visually pass the ghost.
+        Box(
+            Modifier
+                .fillMaxWidth()
+                .height(22.dp)
+                .pointerInput(Unit) {
+                    awaitEachGesture {
+                        fun report(px: Float) {
+                            val range = rangeState.value
+                            val rangeSpan =
+                                (range.endInclusive - range.start).coerceAtLeast(0.0001f)
+                            val bound = boundState.value
+                                .coerceIn(range.start, range.endInclusive)
+                            val clamped = px.coerceIn(0f, usable)
+                            val raw = range.start + clamped / usable * rangeSpan
+                            onChangeState.value(raw.coerceAtMost(bound))
+                        }
+                        val down = awaitFirstDown(requireUnconsumed = false)
+                        report(down.position.x - thumbPx / 2)
+                        down.consume()
+                        while (true) {
+                            val ev = awaitPointerEvent()
+                            val ch = ev.changes.firstOrNull() ?: break
+                            if (!ch.pressed) break
+                            report(ch.position.x - thumbPx / 2)
                             ch.consume()
                         }
                     }

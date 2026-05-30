@@ -42,6 +42,46 @@ class SwitcherSettingsTest {
     }
 
     @Test
+    fun sanitized_clampsMinCellSizeIntoTheCellSizeUpperBound() {
+        // Hand-edited config: minCellSizePercent > cellSizePercent
+        // collapses to a single-point range at the upper bound, so
+        // the flexible picker becomes a no-op until the user dials
+        // min downward. Verifies the "min ≤ max" invariant the
+        // overlay relies on.
+        val s = SwitcherSettings(
+            cellSizePercent = 120,
+            minCellSizePercent = 200,
+        ).sanitized()
+        assertEquals(120, s.cellSizePercent)
+        assertEquals(120, s.minCellSizePercent)
+    }
+
+    @Test
+    fun sanitized_clampsCellSizeBeforeRespectingMinUpperBound() {
+        // Out-of-range cellSizePercent (300) gets clamped to 200; the
+        // min then clamps against the *post-clamp* upper bound, not
+        // the original. 250 -> 200 (because cell-size collapsed to 200).
+        val s = SwitcherSettings(
+            cellSizePercent = 300,
+            minCellSizePercent = 250,
+        ).sanitized()
+        assertEquals(200, s.cellSizePercent)
+        assertEquals(200, s.minCellSizePercent)
+    }
+
+    @Test
+    fun sanitized_keepsValidMinAndMaxInRange() {
+        val s = SwitcherSettings(
+            cellSizePercent = 110,
+            minCellSizePercent = 70,
+            flexibleCellSize = true,
+        ).sanitized()
+        assertEquals(110, s.cellSizePercent)
+        assertEquals(70, s.minCellSizePercent)
+        assertEquals(true, s.flexibleCellSize)
+    }
+
+    @Test
     fun storeBoundary_appliesSanitisationOnSet() {
         // Both config-load (`applyConfig`) and the settings UI go through
         // `setSwitcherSettings`; the store must be the choke-point.

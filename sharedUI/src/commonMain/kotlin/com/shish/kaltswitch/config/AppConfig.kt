@@ -115,8 +115,29 @@ data class SwitcherSettings(
     /** Scale factor (percent) applied to the switcher overlay's app
      *  icon and the surrounding `AppCell` box. 100 = default; range
      *  50..200 (clamped in [sanitized]). Text (app name, window titles)
-     *  and panel-level paddings deliberately stay unscaled. */
+     *  and panel-level paddings deliberately stay unscaled.
+     *
+     *  When [flexibleCellSize] is on, this is the **upper bound** of the
+     *  range the runtime is allowed to pick from; the lower bound is
+     *  [minCellSizePercent]. */
     val cellSizePercent: Int = 100,
+    /** When `true` and [maxWidthMode] = [MaxSizeMode.Percent], the runtime
+     *  auto-shrinks the cell scale toward [minCellSizePercent] to fit more
+     *  apps per row inside the [maxWidthPercent] cap. The picker chooses
+     *  the **largest** scale in `[minCellSizePercent, cellSizePercent]`
+     *  that still fits the desired per-row count — see
+     *  `pickFlexibleCellScale`.
+     *
+     *  Intentionally ignored in [MaxSizeMode.MaxIconsPerRow] mode: there
+     *  the per-row count is the user's direct input and a dynamic shrink
+     *  would just contradict it. The settings UI greys both the toggle
+     *  and the slider in that mode (but keeps the values), so flipping
+     *  back to Percent restores them. */
+    val flexibleCellSize: Boolean = false,
+    /** Floor for the dynamic cell scale picker when [flexibleCellSize] is
+     *  on. Same percent unit as [cellSizePercent]; [sanitized] clamps to
+     *  `50..cellSizePercent` so it can never exceed the upper bound. */
+    val minCellSizePercent: Int = 70,
     /** Icon-glyph size expressed as a **percentage of the cell's max
      *  inner width** (i.e. of the area between the cell's horizontal
      *  paddings, at the cell's widest). 100 = fills the cell width
@@ -144,17 +165,26 @@ data class SwitcherSettings(
  * to ranges the settings sliders also enforce — keeps a hand-edited
  * config from producing an unusable panel.
  */
-fun SwitcherSettings.sanitized(): SwitcherSettings = copy(
-    showDelayMs = showDelayMs.coerceAtLeast(0L),
-    previewDelayMs = previewDelayMs.coerceAtLeast(0L),
-    repeatInitialDelayMs = repeatInitialDelayMs.coerceAtLeast(0L),
-    repeatIntervalMs = repeatIntervalMs.coerceAtLeast(1L),
-    maxWidthPercent = maxWidthPercent.coerceIn(0.3, 1.0),
-    maxIconsPerRow = maxIconsPerRow.coerceIn(1, 50),
-    selectionExpandDelayMs = selectionExpandDelayMs.coerceAtLeast(0L),
-    cellSizePercent = cellSizePercent.coerceIn(50, 200),
-    iconSizePercent = iconSizePercent.coerceIn(20, 100),
-)
+fun SwitcherSettings.sanitized(): SwitcherSettings {
+    val clampedCellSize = cellSizePercent.coerceIn(50, 200)
+    return copy(
+        showDelayMs = showDelayMs.coerceAtLeast(0L),
+        previewDelayMs = previewDelayMs.coerceAtLeast(0L),
+        repeatInitialDelayMs = repeatInitialDelayMs.coerceAtLeast(0L),
+        repeatIntervalMs = repeatIntervalMs.coerceAtLeast(1L),
+        maxWidthPercent = maxWidthPercent.coerceIn(0.3, 1.0),
+        maxIconsPerRow = maxIconsPerRow.coerceIn(1, 50),
+        selectionExpandDelayMs = selectionExpandDelayMs.coerceAtLeast(0L),
+        cellSizePercent = clampedCellSize,
+        // Min is bounded above by the upper bound so the range
+        // `[minCellSizePercent, cellSizePercent]` is always non-empty;
+        // a hand-edited config with min > cell-size collapses to a
+        // single-point range at cell-size (i.e. flexible is effectively
+        // a no-op until the user re-dials min downward).
+        minCellSizePercent = minCellSizePercent.coerceIn(50, clampedCellSize),
+        iconSizePercent = iconSizePercent.coerceIn(20, 100),
+    )
+}
 
 /**
  * Persisted user configuration. Versioned so we can migrate gracefully if

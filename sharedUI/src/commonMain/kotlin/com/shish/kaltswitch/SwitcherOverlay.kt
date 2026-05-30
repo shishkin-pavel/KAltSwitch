@@ -11,9 +11,8 @@ import androidx.compose.foundation.border
 import androidx.compose.foundation.focusable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
-import androidx.compose.foundation.layout.ExperimentalLayoutApi
-import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxHeight
@@ -82,8 +81,12 @@ import androidx.compose.ui.unit.sp
 import androidx.compose.ui.window.Popup
 import androidx.compose.ui.window.PopupPositionProvider
 import androidx.compose.ui.window.PopupProperties
+import com.shish.kaltswitch.config.CellLayoutPlan
 import com.shish.kaltswitch.config.MaxSizeMode
+import com.shish.kaltswitch.config.PANEL_HORIZONTAL_PADDING_TOTAL_DP
 import com.shish.kaltswitch.config.SwitcherSettings
+import com.shish.kaltswitch.config.fitPerRow
+import com.shish.kaltswitch.config.planCellLayout
 import com.shish.kaltswitch.icon.rememberAppIcon
 import com.shish.kaltswitch.model.BadgeRules
 import com.shish.kaltswitch.model.ResolvedBadge
@@ -128,12 +131,24 @@ fun SwitcherOverlay(
     var panelBounds by remember { mutableStateOf<IntRect?>(null) }
     val reportPanelBounds: (IntRect?) -> Unit = { panelBounds = it }
 
-    // Targeted scale for the icon-and-cell visual only. Read inside
+    // User-configured upper bound on the cell visual. Read inside
     // `AppCell` and `AppIconBox` so the multiplier hits cell width
     // range, padding, corner, border, vertical inner spacing — but NOT
     // app-name text, window-row text/paddings, panel-level paddings,
-    // FlowRow gaps, or badges. See `LocalIconCellScale`.
-    val iconCellScale = (switcherSettings.cellSizePercent / 100f).coerceIn(0.5f, 2f)
+    // per-row gaps, or badges. See `LocalIconCellScale`.
+    val maxCellScale = (switcherSettings.cellSizePercent / 100f).coerceIn(0.5f, 2f)
+    // Lower bound for the flexible picker. Sanitized config guarantees
+    // `minCellSizePercent <= cellSizePercent`, but we still clamp here
+    // so the inverted-edge case of a hand-edited config can't drive
+    // `pickFlexibleCellScale` past `maxScale`.
+    val minCellScale = (switcherSettings.minCellSizePercent / 100f)
+        .coerceIn(0.5f, maxCellScale)
+    // Flexible mode is only active in `Percent` width mode — in
+    // `MaxIconsPerRow` the user's pinned the count themselves, so a
+    // dynamic shrink would just contradict their input.
+    val flexibleScale = switcherSettings.flexibleCellSize &&
+        switcherSettings.maxWidthMode == MaxSizeMode.Percent
+    val totalEntries = ui.state.snapshot.all.size
     // Icon-glyph size as a fraction of the cell's max inner width
     // (cell `widthIn(max=132*cellScale)` minus the cell's 6 dp×2
     // horizontal padding ⇒ 120 dp inner at the widest). Keeping the
@@ -143,28 +158,20 @@ fun SwitcherOverlay(
     // horizontally.
     val iconFillFraction = (switcherSettings.iconSizePercent / 100f).coerceIn(0.2f, 1f)
 
-    CompositionLocalProvider(
-        LocalIconCellScale provides iconCellScale,
-        LocalIconFillFraction provides iconFillFraction,
-        LocalSelectionExpandDelayMs provides switcherSettings.selectionExpandDelayMs,
-        LocalPanelBoundsInWindow provides panelBounds,
-        LocalReportPanelBounds provides reportPanelBounds,
-    ) {
-    // The outer Box fills the *entire Compose scene*, which since iter48
-    // is sized to the captured screen's visibleFrame and pinned to that
-    // screen rect via Swift updating the Compose-host NSView's
-    // frame.origin on every NSPanel `setFrame`. That means Compose's
-    // coordinate system is screen-stable: the NSPanel can resize and
-    // reposition freely (animation, recentering, etc.) without dragging
-    // Compose content along — so the brief gap between AppKit moving
-    // the window's left edge and Compose rendering at the new
-    // panel-relative position no longer manifests as a visible left/right
-    // shimmer.
-    //
-    // No contentAlignment on this Box — the inner positioning Box
-    // handles its own placement via `align(TopCenter)` + a captured
-    // top-y offset (see below).
-    Box(
+    // `BoxWithConstraints` instead of the historic `Box(fillMaxSize)`
+    // because we need the scene width in *composition* scope — not just
+    // at layout time — so the flexible cell-size picker can run BEFORE
+    // anything is measured. Previously the picker read the scene width
+    // out of `Modifier.layout`'s `constraints`, which forced a two-pass
+    // composition (max-scale first frame → state write → recompose at
+    // the picked scale) that the user perceived as the panel jerking
+    // into place on every session open. With the cap known up front,
+    // `iconCellScale` is final on the very first composition; the first
+    // lookahead measures the correct panel size; `capturedTopY` is set
+    // once against that size and never moves again — restoring the
+    // "panel grows downward / shrinks upward toward its anchor, never
+    // re-centres" invariant the user relies on.
+    BoxWithConstraints(
         Modifier
             .fillMaxSize()
             .focusRequester(focus)
@@ -183,14 +190,65 @@ fun SwitcherOverlay(
             // gate, and the gate-check would early-return.
             .onPointerEvent(PointerEventType.Move, PointerEventPass.Initial) { onPointerMoved() },
     ) {
+        // `BoxWithConstraints` exposes the cap in Dp at composition time
+        // — so the row layout is finalised BEFORE any measurement, no
+        // two-pass jitter. `MaxIconsPerRow` uses no width cap (the user
+        // bounds the row count directly); the Percent mode caps width
+        // against `maxWidthPercent`. Subtract the panel padding to get
+        // the actual cell area `planCellLayout` reasons over.
+        val sceneWidthDp = maxWidth.value
+        val capDp = if (switcherSettings.maxWidthMode == MaxSizeMode.Percent) {
+            sceneWidthDp * switcherSettings.maxWidthPercent.toFloat()
+        } else {
+            sceneWidthDp
+        }
+        val cellAreaDp = (capDp - PANEL_HORIZONTAL_PADDING_TOTAL_DP).coerceAtLeast(0f)
+
+        // Per-row plan — both cellsPerRow and scale come from one place
+        // so the SwitcherPanel can chunk entries into explicit rows
+        // without re-deriving the count.
+        val layoutPlan: CellLayoutPlan = when {
+            totalEntries <= 0 -> CellLayoutPlan(cellsPerRow = 0, scale = maxCellScale)
+            switcherSettings.maxWidthMode == MaxSizeMode.MaxIconsPerRow -> {
+                // User's MaxIconsPerRow is a preferred cap, not a hard
+                // promise: if the cell area physically holds fewer cells
+                // at maxScale (rare with the full sceneWidth, but a
+                // narrow display + a huge `cellSizePercent` can hit it),
+                // we clamp down so a row never overflows off-screen.
+                val userCap = switcherSettings.maxIconsPerRow.coerceAtLeast(1)
+                val physicalFit = fitPerRow(cellAreaDp, maxCellScale)
+                val n = minOf(userCap, physicalFit, totalEntries).coerceAtLeast(1)
+                CellLayoutPlan(cellsPerRow = n, scale = maxCellScale)
+            }
+            else -> planCellLayout(
+                cellAreaDp = cellAreaDp,
+                entriesCount = totalEntries,
+                // Non-flex path collapses `planCellLayout` to "fit as
+                // many as cellSizePercent allows" by passing the same
+                // value for min and max — keeps the call shape uniform
+                // and the planner's edge handling owns both paths.
+                minScale = if (flexibleScale) minCellScale else maxCellScale,
+                maxScale = maxCellScale,
+            )
+        }
+        val iconCellScale = layoutPlan.scale
+        val cellsPerRow = layoutPlan.cellsPerRow
+
+        CompositionLocalProvider(
+            LocalIconCellScale provides iconCellScale,
+            LocalIconFillFraction provides iconFillFraction,
+            LocalSelectionExpandDelayMs provides switcherSettings.selectionExpandDelayMs,
+            LocalPanelBoundsInWindow provides panelBounds,
+            LocalReportPanelBounds provides reportPanelBounds,
+        ) {
         // Outer LookaheadScope: gives the wrapper Box's `Modifier.layout`
         // access to `IntrinsicMeasureScope.isLookingAhead`, which is how
         // it distinguishes the once-per-content-change *target* size
         // (reported to Swift via onPanelSize) from the per-frame
         // *animated* size from animateContentSize on the visible Box
         // inside SwitcherPanel. Cell-level animateBounds uses a
-        // *different*, inner LookaheadScope wrapping FlowRow — see
-        // SwitcherPanel.
+        // *different*, inner LookaheadScope wrapping the rows-Column —
+        // see SwitcherPanel.
         LookaheadScope {
             // Captured at the first lookahead measurement, this Y is
             // where the panel's top edge sits in scene coordinates for
@@ -203,6 +261,11 @@ fun SwitcherOverlay(
             // Compose's `Modifier.offset { … }` re-reads this state
             // during placement only, so updating the value doesn't
             // invalidate composition; it just re-places the wrapper.
+            //
+            // The flexible cell-size picker runs in *composition* scope
+            // above this layout (see the surrounding BoxWithConstraints),
+            // so `iconCellScale` is already final when this measurement
+            // fires — the first capture is also the only one needed.
             var capturedTopY by remember { mutableStateOf<Int?>(null) }
             Box(
                 Modifier
@@ -213,15 +276,15 @@ fun SwitcherOverlay(
                         // current scene width (= screen width since
                         // iter48). Pre-iter48 the cap was effectively
                         // applied via the NSPanel size, which bounded
-                        // FlowRow's parent constraint; now that the
+                        // the panel's parent constraint; now that the
                         // Compose host spans the full screen, we have
                         // to enforce the cap here on the wrapper.
                         val sceneWidth = constraints.maxWidth
                         val sceneHeight = constraints.maxHeight
-                        // `MaxIconsPerRow` mode caps the row count via
-                        // `FlowRow.maxItemsInEachRow` (see SwitcherPanel).
-                        // No width cap here — the panel grows naturally
-                        // until that row count is reached, with sceneWidth
+                        // `MaxIconsPerRow` mode caps the per-row count
+                        // upstream (in SwitcherOverlay's `layoutPlan`),
+                        // so no width cap here — the panel sizes
+                        // naturally to its row content, with sceneWidth
                         // as the only ultimate bound.
                         val capPx = if (switcherSettings.maxWidthMode == MaxSizeMode.Percent) {
                             (sceneWidth * switcherSettings.maxWidthPercent).toInt()
@@ -229,11 +292,12 @@ fun SwitcherOverlay(
                             sceneWidth
                         }
                         val effectiveMaxWidth = capPx.coerceIn(0, sceneWidth)
-                        // Override parent maxHeight so FlowRow can wrap
-                        // to extra rows without being clamped (same as
-                        // iter45). MaxWidth is the user-configured cap,
-                        // so FlowRow wraps within the user's preferred
-                        // width and onPanelSize reports the cap-respecting
+                        // Override parent maxHeight so the rows-Column
+                        // can stack vertically without being clamped
+                        // (same as iter45 when this was a FlowRow).
+                        // MaxWidth is the user-configured cap, so rows
+                        // are bounded by the user's preferred width and
+                        // onPanelSize reports the cap-respecting
                         // measured size to Swift.
                         val placeable = measurable.measure(
                             constraints.copy(
@@ -262,11 +326,6 @@ fun SwitcherOverlay(
                         }
                     }
             ) {
-                val maxItemsPerRow = if (switcherSettings.maxWidthMode == MaxSizeMode.MaxIconsPerRow) {
-                    switcherSettings.maxIconsPerRow
-                } else {
-                    Int.MAX_VALUE
-                }
                 SwitcherPanel(
                     ui = ui,
                     iconsByPid = iconsByPid,
@@ -276,7 +335,7 @@ fun SwitcherOverlay(
                     onPointAt = onPointAt,
                     onCommit = onCommit,
                     onGrantAxClick = onGrantAxClick,
-                    maxItemsPerRow = maxItemsPerRow,
+                    cellsPerRow = cellsPerRow,
                 )
             }
         }
@@ -450,7 +509,7 @@ private val LocalReportPanelBounds = compositionLocalOf<((IntRect?) -> Unit)?> {
  * User-controlled scale factor (default 1f) applied to the cell visual
  * — width range, padding, corner, border, vertical inner spacing — but
  * NOT to the icon glyph itself (see [LocalIconScale] for that). Text
- * styling, window rows, panel paddings, FlowRow gaps, and badges are
+ * styling, window rows, panel paddings, per-row gaps, and badges are
  * intentionally *outside* the scope so the icon-cell grows/shrinks
  * independently of textual layout.
  *
@@ -706,7 +765,7 @@ private fun contrastingTextColor(bg: Color): Color {
     return if (lum > 0.55) Color.Black else Color.White
 }
 
-@OptIn(ExperimentalLayoutApi::class, ExperimentalComposeUiApi::class)
+@OptIn(ExperimentalComposeUiApi::class)
 @Composable
 private fun SwitcherPanel(
     ui: SwitcherUiState,
@@ -717,13 +776,13 @@ private fun SwitcherPanel(
     onPointAt: (appIndex: Int, windowId: WindowId?) -> Unit,
     onCommit: () -> Unit,
     onGrantAxClick: () -> Unit,
-    maxItemsPerRow: Int,
+    cellsPerRow: Int,
 ) {
     val state = ui.state
     val entries = state.snapshot.all
-    // Without AX trust the FlowRow may legitimately be empty (NSWorkspace
-    // still lists apps but window data is hidden); we still want the panel
-    // to render so the banner is visible.
+    // Without AX trust the entries list may legitimately be empty
+    // (NSWorkspace still lists apps but window data is hidden); we still
+    // want the panel to render so the banner is visible.
     if (entries.isEmpty() && axTrusted) return
 
     val withWindowsCount = state.snapshot.withWindows.size
@@ -774,59 +833,48 @@ private fun SwitcherPanel(
                     modifier = Modifier.align(Alignment.CenterHorizontally),
                 )
             }
-            // Split entries into the show bucket (rendered as direct
-            // children of the outer FlowRow) and the demote bucket
-            // (wrapped in a single grey-backdrop Box). Wrapping all
-            // demoted cells in ONE Box gives them a uniform background
-            // height regardless of any single cell's content height — a
-            // demoted app *with* windows is taller than its windowless
-            // siblings, but the Box's bg fills the row's max height so
-            // shorter cells no longer leave a transparent gap below them.
+            // Split entries into the show bucket and the demote bucket.
+            // The demote bucket is wrapped in a single grey-backdrop Box
+            // so the colour fill spans uniform height across rows of
+            // mixed-height cells (a demoted app *with* windows is taller
+            // than its windowless siblings; per-cell bg would leave a
+            // transparent strip under shorter cells).
             val showEntries = entries.subList(0, withWindowsCount.coerceAtMost(entries.size))
             val demoteEntries = if (withWindowsCount < entries.size) {
                 entries.subList(withWindowsCount, entries.size)
             } else emptyList()
-            // Inner LookaheadScope tracks cell bounds *relative to
-            // FlowRow*. This is deliberately separate from the outer
-            // LookaheadScope (around SwitcherPanel) used by the
-            // visible Box's `Modifier.layout` for size reporting. Why
-            // two scopes:
-            //
-            // The outer scope's coordinate system is rooted at the
-            // SwitcherOverlay outer Box (fillMaxSize NSPanel). When
-            // Compose's two-pass session-start measurement happens —
-            // first at the ~90%-screen panel size, then at the
-            // shrunken content size after Swift's setContentSize —
-            // the visible Box's TopCenter-aligned position within
-            // the outer Box shifts horizontally (the centering offset
-            // changes as the outer Box shrinks). Cells using the
-            // outer scope would inherit that shift and animate
-            // sliding right-to-left for ~200 ms on every session
-            // open. Pinning cell bounds to *inner* coordinates (= a
-            // FlowRow-rooted scope) keeps cell positions invariant
-            // across this two-pass dance, so animateBounds only
-            // animates the cell motion we actually want — reorders
-            // and bucket transitions mid-session.
+            val perRow = cellsPerRow.coerceAtLeast(1)
+            // Inner LookaheadScope tracks cell bounds relative to the
+            // rows-Column. Deliberately separate from the outer
+            // SwitcherOverlay LookaheadScope: the outer scope's coords
+            // are rooted in the fillMaxSize Box, and its TopCenter
+            // alignment shifts horizontally during Compose's two-pass
+            // session-start measurement (90 %-screen panel → shrunken
+            // content size); cells using the outer scope would inherit
+            // that shift and animate sliding right-to-left on every
+            // session open. Pinning cell bounds to inner coordinates
+            // (rooted at the panel-inside Column) keeps positions
+            // invariant under that shift, so `animateBounds` only
+            // animates motion we actually want — reorders and bucket
+            // transitions mid-session.
             LookaheadScope {
                 val tileMotion = remember {
                     BoundsTransform { _, _ ->
                         tween(durationMillis = 200, easing = FastOutSlowInEasing)
                     }
                 }
-                // One movable cell per pid. Without this the cell composable
-                // is torn down at the show-bucket call site and rebuilt at
-                // the demote-bucket call site (or vice versa) when the
-                // filter rules promote/demote an app mid-session — the
-                // composable parents are different (outer FlowRow vs the
-                // inner FlowRow inside the demote backdrop Box), so a
-                // plain `key(pid)` can't preserve identity across that
-                // boundary. animateBounds tracks position state on the
-                // cell's Modifier.Node, which dies with the cell instance,
-                // so a fresh instance has no "from" bounds and the bucket
-                // transition lands instantly. movableContentOf moves the
-                // entire layout subtree between call sites so the
-                // animateBounds node — and its remembered "from" bounds —
-                // travels with the cell, producing a real fly animation.
+                // One movable cell per pid — keyed in this outer map so
+                // the SAME composable instance moves between call sites
+                // when the user's filter rules promote/demote an app
+                // mid-session, or when chunking shuffles which physical
+                // `Row` a cell lands in. With a plain `key(pid)`, the
+                // cell would be torn down at one call site and rebuilt
+                // at the new one, losing the `animateBounds` "from"
+                // bounds — the transition would land instantly instead
+                // of flying. `movableContentOf` drags the entire
+                // sub-tree (including the animateBounds Modifier.Node
+                // and its remembered bounds) between call sites, so the
+                // animation survives the move.
                 val cellsByPid = remember { mutableMapOf<Int, @Composable (AppCellArgs) -> Unit>() }
                 val livePids = entries.mapTo(HashSet()) { it.app.pid }
                 cellsByPid.keys.retainAll(livePids)
@@ -873,26 +921,41 @@ private fun SwitcherPanel(
                         }
                     }
                 }
-                FlowRow(
-                    horizontalArrangement = Arrangement.spacedBy(6.dp, Alignment.CenterHorizontally),
+
+                // Outer per-row Column. Show rows render first, then
+                // the demote bucket (its own grey-backed Box, always on
+                // a new row). Each `Row(spacedBy(6.dp, CenterHorizontally))`
+                // keeps cells centred on the panel's vertical axis even
+                // when the last row is under-filled (down to a single
+                // cell — see `planCellLayout`'s "uneven last row" docs).
+                Column(
                     verticalArrangement = Arrangement.spacedBy(8.dp),
-                    maxItemsInEachRow = maxItemsPerRow,
+                    horizontalAlignment = Alignment.CenterHorizontally,
                 ) {
-                    showEntries.forEachIndexed { showIndex, entry ->
-                        cellsByPid.getValue(entry.app.pid)(
-                            cellArgs(
-                                entry = entry,
-                                iconBytes = iconsByPid[entry.app.pid],
-                                isDemoted = false,
-                                appIndex = showIndex,
-                                cursorAppIndex = state.cursor.appIndex,
-                                selectedWindowId = state.selectedWindowId,
-                                badgeRules = badgeRules,
-                                tagByWindowId = tagsByPid[entry.app.pid].orEmpty(),
-                                onPointAt = onPointAt,
-                                onCommit = onCommit,
-                            )
-                        )
+                    val showRows = showEntries.chunked(perRow)
+                    showRows.forEachIndexed { rowIndex, rowEntries ->
+                        Row(
+                            horizontalArrangement = Arrangement.spacedBy(6.dp, Alignment.CenterHorizontally),
+                            verticalAlignment = Alignment.Top,
+                        ) {
+                            rowEntries.forEachIndexed { colIndex, entry ->
+                                val appIndex = rowIndex * perRow + colIndex
+                                cellsByPid.getValue(entry.app.pid)(
+                                    cellArgs(
+                                        entry = entry,
+                                        iconBytes = iconsByPid[entry.app.pid],
+                                        isDemoted = false,
+                                        appIndex = appIndex,
+                                        cursorAppIndex = state.cursor.appIndex,
+                                        selectedWindowId = state.selectedWindowId,
+                                        badgeRules = badgeRules,
+                                        tagByWindowId = tagsByPid[entry.app.pid].orEmpty(),
+                                        onPointAt = onPointAt,
+                                        onCommit = onCommit,
+                                    )
+                                )
+                            }
+                        }
                     }
                     if (demoteEntries.isNotEmpty()) {
                         Box(
@@ -901,25 +964,34 @@ private fun SwitcherPanel(
                                 .background(SwitcherDemoteBg)
                                 .padding(horizontal = 4.dp, vertical = 4.dp),
                         ) {
-                            FlowRow(
-                                horizontalArrangement = Arrangement.spacedBy(6.dp, Alignment.CenterHorizontally),
+                            val demoteRows = demoteEntries.chunked(perRow)
+                            Column(
                                 verticalArrangement = Arrangement.spacedBy(6.dp),
+                                horizontalAlignment = Alignment.CenterHorizontally,
                             ) {
-                                demoteEntries.forEachIndexed { demoteIndex, entry ->
-                                    cellsByPid.getValue(entry.app.pid)(
-                                        cellArgs(
-                                            entry = entry,
-                                            iconBytes = iconsByPid[entry.app.pid],
-                                            isDemoted = true,
-                                            appIndex = withWindowsCount + demoteIndex,
-                                            cursorAppIndex = state.cursor.appIndex,
-                                            selectedWindowId = state.selectedWindowId,
-                                            badgeRules = badgeRules,
-                                            tagByWindowId = tagsByPid[entry.app.pid].orEmpty(),
-                                            onPointAt = onPointAt,
-                                            onCommit = onCommit,
-                                        )
-                                    )
+                                demoteRows.forEachIndexed { rowIndex, rowEntries ->
+                                    Row(
+                                        horizontalArrangement = Arrangement.spacedBy(6.dp, Alignment.CenterHorizontally),
+                                        verticalAlignment = Alignment.Top,
+                                    ) {
+                                        rowEntries.forEachIndexed { colIndex, entry ->
+                                            val appIndex = withWindowsCount + rowIndex * perRow + colIndex
+                                            cellsByPid.getValue(entry.app.pid)(
+                                                cellArgs(
+                                                    entry = entry,
+                                                    iconBytes = iconsByPid[entry.app.pid],
+                                                    isDemoted = true,
+                                                    appIndex = appIndex,
+                                                    cursorAppIndex = state.cursor.appIndex,
+                                                    selectedWindowId = state.selectedWindowId,
+                                                    badgeRules = badgeRules,
+                                                    tagByWindowId = tagsByPid[entry.app.pid].orEmpty(),
+                                                    onPointAt = onPointAt,
+                                                    onCommit = onCommit,
+                                                )
+                                            )
+                                        }
+                                    }
                                 }
                             }
                         }
@@ -1280,14 +1352,14 @@ private fun WindowList(
     val demoteBadges = if (shownTopWindowCount >= windowBadges.size) emptyList() else windowBadges.drop(shownTopWindowCount)
     // Cell-local LookaheadScope: window-row animateBounds tracks
     // positions in coordinates rooted at THIS WindowList, not the
-    // outer FlowRow scope used by AppCell. That isolation is
+    // outer rows-Column scope used by AppCell. That isolation is
     // load-bearing — when the cell itself moves between active and
     // demote buckets via its per-pid movableContent (see
     // SwitcherPanel), the cell's contents (= this WindowList) ride
-    // along as a unit. If window rows shared the FlowRow-level
-    // scope, each row would also see the cell-level move as a
-    // bounds delta and fire its own animation on top of the cell's,
-    // producing visual stacking.
+    // along as a unit. If window rows shared the cell-level scope,
+    // each row would also see the cell-level move as a bounds delta
+    // and fire its own animation on top of the cell's, producing
+    // visual stacking.
     LookaheadScope {
         val rowMotion = remember {
             BoundsTransform { _, _ ->
