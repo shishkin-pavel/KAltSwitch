@@ -321,6 +321,33 @@ class SwitcherTest {
     }
 
     @Test
+    fun windowEntry_defaultCursor_skipsCurrentWindow_whenRecencyKnowsOnlyIt() {
+        // Fresh-launch / just-focused-app reproduction. seedActivationLog (and
+        // the focus handler when a multi-window app first comes forward)
+        // records exactly one window event — the focused window — so
+        // windowRecency carries a single entry. A single cmd+` must still
+        // toggle to the OTHER window. Returning that sole recency entry (the
+        // already-focused window) makes the default cursor land on the current
+        // window; auto-committing it is a no-op, which is the user-reported
+        // "single cmd+` does nothing until you switch once" bug.
+        val ide = App(pid = 1, bundleId = "ide", name = "IDE")
+        val focused = Window(id = 210, pid = 1, title = "main.kt")
+        val other = Window(id = 220, pid = 1, title = "other.kt")
+        val snap = SwitcherSnapshot(
+            withWindows = listOf(
+                AppEntry(
+                    app = ide,
+                    windows = listOf(focused, other),
+                    windowRecency = listOf(210),
+                ),
+            ),
+            windowless = emptyList(),
+        )
+        val state = openSwitcher(snap, SwitcherEntry.Window)
+        assertEquals(220L, state.selectedWindowId)
+    }
+
+    @Test
     fun stepApp_landsOnPinnedChild_whenChildIsMostRecentlyActive() {
         // Reproduces the bug: a child window pinned under a parent root is
         // the most recently used window of the IDE app, but pin re-parenting

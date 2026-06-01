@@ -285,6 +285,13 @@ internal fun AppEntry.mostRecentNavigableInScope(scope: NavScope): Window? {
  * pinned child window, DFS index 0 is the parent root and index 1 may be a
  * sibling child or the very window the user is on. Recency-based selection
  * gives the toggle/alternate semantic regardless of tree shape.
+ *
+ * When recency knows **only** the current window (one navigable hit — the
+ * just-focused window right after launch / app-foregrounding, where
+ * `seedActivationLog` recorded a single window event), fall back to the first
+ * navigable window that *isn't* it. Returning the lone recency hit would land
+ * the cursor on the already-focused window, making a single cmd+\` a no-op
+ * until the user switches once and a second window enters recency.
  */
 internal fun AppEntry.secondMostRecentNavigableInScope(scope: NavScope): Window? {
     val nav = scopedNavigable(scope)
@@ -301,7 +308,10 @@ internal fun AppEntry.secondMostRecentNavigableInScope(scope: NavScope): Window?
         }
         return hit
     }
-    return first ?: nav.first()
+    // Only the current window is in recency: toggle to the first other
+    // navigable window, or stay put if it's genuinely the only one.
+    val current = first ?: return nav.first()
+    return nav.firstOrNull { it.id != current.id } ?: current
 }
 
 /**
