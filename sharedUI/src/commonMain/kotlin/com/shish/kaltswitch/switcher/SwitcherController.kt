@@ -2,12 +2,14 @@ package com.shish.kaltswitch.switcher
 
 import com.shish.kaltswitch.log.log
 import com.shish.kaltswitch.model.ActionScope
+import com.shish.kaltswitch.model.AppEntry
 import com.shish.kaltswitch.model.NavScope
 import com.shish.kaltswitch.model.Pid
 import com.shish.kaltswitch.model.SwitcherAction
 import com.shish.kaltswitch.model.SwitcherCursor
 import com.shish.kaltswitch.model.SwitcherEntry
 import com.shish.kaltswitch.model.SwitcherEvent
+import com.shish.kaltswitch.model.SwitcherSnapshot
 import com.shish.kaltswitch.model.SwitcherState
 import com.shish.kaltswitch.model.WindowId
 import com.shish.kaltswitch.model.WindowTags
@@ -690,6 +692,32 @@ class SwitcherController(
                     log("[ctl] tags pruned: now ${pruned.byDigit}")
                 }
                 val cur = _ui.value ?: return@collect
+                // Diagnostic: an app entering/leaving the live session
+                // snapshot is exactly the "switcher shows app then animates
+                // it away" bug surface, and was previously unlogged (the
+                // block below only logs cursor moves). Tag each removed/added
+                // app with its section (Show=withWindows / Demote=windowless)
+                // and window count so the transition type is unambiguous from
+                // the log alone: a removed Show app with wins>0 = window-drop
+                // lag; a removed Show app with wins=0 = it was sitting as
+                // windowless-default-Show and just flipped to Hide (accessory
+                // policy / windowless-rule lag).
+                run {
+                    val old = cur.state.snapshot
+                    val new = newSnapshot
+                    val oldPids = old.all.mapTo(HashSet()) { it.app.pid }
+                    val newPids = new.all.mapTo(HashSet()) { it.app.pid }
+                    if (oldPids != newPids) {
+                        fun desc(s: SwitcherSnapshot, e: AppEntry): String {
+                            val idx = s.all.indexOf(e)
+                            val section = if (idx in 0 until s.shownAppCount) "Show" else "Demote"
+                            return "(${e.app.pid},${e.app.name},$section,wins=${e.windows.size})"
+                        }
+                        val removed = old.all.filter { it.app.pid !in newPids }.map { desc(old, it) }
+                        val added = new.all.filter { it.app.pid !in oldPids }.map { desc(new, it) }
+                        log("[diag-snap] session app-set changed removed=$removed added=$added")
+                    }
+                }
                 val refreshed = cur.state.refreshedWith(newSnapshot)
                 if (refreshed == cur.state) return@collect
                 val selectionChanged =

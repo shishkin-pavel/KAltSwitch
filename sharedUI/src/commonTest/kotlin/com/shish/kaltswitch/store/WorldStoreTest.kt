@@ -535,6 +535,67 @@ class WorldStoreTest {
         assertNull(store.state.value.pinAnchorByWindow[10])
     }
 
+    // ─────────────── CG-resurrection tombstones ───────────────
+    //
+    // After a WindowServer-confirmed AX destruction, `CGWindowListCopyWindowInfo`
+    // keeps listing the dead window for up to ~2 s. Without a gate the next
+    // `applyCgSnapshot` re-adds it (the "add brand-new CG window" branch) and
+    // the just-dropped row zombies back — the "Finder reappears then animates
+    // away ~3 s after closing its last window" bug. `dropWindowsByCgWindowIds`
+    // tombstones the cgwid; `applyCgSnapshot` refuses to re-add a tombstoned
+    // id and self-clears the tombstone once CG stops listing it.
+
+    @Test
+    fun dropWindowsByCgWindowIds_tombstoneBlocksLaggingCgReAdd() {
+        val store = WorldStore()
+        // AX + CG both know the window.
+        store.applyAxSnapshot(
+            pid = 1,
+            axWindows = listOf(window(id = 11, pid = 1).copy(cgWindowId = 101)),
+        )
+        store.applyCgSnapshot(
+            allCgWindows = listOf(window(id = 0, pid = 1).copy(cgWindowId = 101)),
+        )
+        assertEquals(1, store.state.value.windowsByPid[1]?.size)
+
+        // AX-destroy fast path: WindowServer-confirmed drop.
+        store.dropWindowsByCgWindowIds(pid = 1, cgWindowIds = listOf(101))
+        assertNull(store.state.value.windowsByPid[1])
+
+        // CG poll still lists 101 (its view lags the destruction). Must NOT
+        // resurrect the window.
+        store.applyCgSnapshot(
+            allCgWindows = listOf(window(id = 0, pid = 1).copy(cgWindowId = 101)),
+        )
+        assertNull(store.state.value.windowsByPid[1])
+
+        // Still lagging a second poll — still suppressed.
+        store.applyCgSnapshot(
+            allCgWindows = listOf(window(id = 0, pid = 1).copy(cgWindowId = 101)),
+        )
+        assertNull(store.state.value.windowsByPid[1])
+    }
+
+    @Test
+    fun cgTombstone_selfClears_onceCgStopsListingTheId() {
+        val store = WorldStore()
+        store.applyCgSnapshot(
+            allCgWindows = listOf(window(id = 0, pid = 1).copy(cgWindowId = 101)),
+        )
+        store.dropWindowsByCgWindowIds(pid = 1, cgWindowIds = listOf(101))
+        assertNull(store.state.value.windowsByPid[1])
+
+        // CG finally drops 101 → tombstone self-clears.
+        store.applyCgSnapshot(allCgWindows = emptyList())
+
+        // A later window reusing cgwid 101 (WindowServer only reuses ids
+        // slowly) is now allowed through again — the gate isn't permanent.
+        store.applyCgSnapshot(
+            allCgWindows = listOf(window(id = 0, pid = 1).copy(cgWindowId = 101)),
+        )
+        assertEquals(1, store.state.value.windowsByPid[1]?.size)
+    }
+
     @Test
     fun setWindowMinimizedOptimistic_unknownId_isNoOp() {
         val store = WorldStore()

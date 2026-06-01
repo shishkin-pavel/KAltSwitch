@@ -4,6 +4,7 @@ import com.shish.kaltswitch.config.AccentColorChoice
 import com.shish.kaltswitch.config.AppConfig
 import com.shish.kaltswitch.config.SwitcherSettings
 import com.shish.kaltswitch.config.sanitized
+import com.shish.kaltswitch.log.log
 import com.shish.kaltswitch.model.ActivationEvent
 import com.shish.kaltswitch.model.ActivationLog
 import com.shish.kaltswitch.model.App
@@ -52,6 +53,29 @@ class WorldStore(initial: World = World(ActivationLog(), emptyMap(), emptyMap())
 
     private val _axTrusted = MutableStateFlow(true)
     val axTrusted: StateFlow<Boolean> = _axTrusted.asStateFlow()
+
+    /**
+     * cgWindowIds that [dropWindowsByCgWindowIds] removed after a
+     * WindowServer-confirmed AX destruction. [applyCgSnapshot] refuses to
+     * re-add a CG window whose id is in here.
+     *
+     * Why this exists: `CGWindowListCopyWindowInfo` keeps enumerating a just-
+     * closed window for up to ~2 s after AX (+ a WindowServer probe) confirmed
+     * it dead. Without this gate the next CG poll hits the "add brand-new CG
+     * window" branch and resurrects the window we just dropped — the row
+     * zombies back into the switcher and only really disappears once CG's view
+     * finally catches up (the "Finder reappears then animates away ~3 s after
+     * closing its last window" bug).
+     *
+     * Self-clearing: a tombstone is removed the moment a CG snapshot stops
+     * listing that cgwid (CG has caught up — a later window reusing the id,
+     * which WindowServer does only slowly, is then allowed through). So the
+     * set holds at most a handful of entries — windows closed within the last
+     * poll or two — and needs no wall-clock TTL. Mirrors the per-pid AX-side
+     * tombstone in `AxAppWatcher` (which guards the *AX* re-add path); this one
+     * guards the *CG* re-add path, the layer that watcher can't reach.
+     */
+    private val _cgWidTombstones = MutableStateFlow<Set<Long>>(emptySet())
 
     private val _activeAppPid = MutableStateFlow<Pid?>(null)
     val activeAppPid: StateFlow<Pid?> = _activeAppPid.asStateFlow()
@@ -465,6 +489,11 @@ class WorldStore(initial: World = World(ActivationLog(), emptyMap(), emptyMap())
      */
     fun dropWindowsByCgWindowIds(pid: Pid, cgWindowIds: List<Long>) {
         if (cgWindowIds.isEmpty()) return
+        // Tombstone first, before the early-return below — these cgwids are
+        // WindowServer-confirmed dead, so suppress the CG re-add path even if
+        // the window isn't in the store yet (an in-flight CG poll may add it
+        // a beat after this drop). See [_cgWidTombstones].
+        _cgWidTombstones.update { it + cgWindowIds }
         val toDrop = cgWindowIds.toHashSet()
         val existing = currentWindowsFor(pid)
         val updated = existing.filter { w ->
@@ -596,6 +625,11 @@ class WorldStore(initial: World = World(ActivationLog(), emptyMap(), emptyMap())
             .groupBy { it.pid }
             .mapValues { entry -> entry.value.mapNotNullTo(HashSet()) { it.cgWindowId } }
 
+        // Snapshot the tombstones once for this reconciliation pass: a cgwid
+        // here was authoritatively destroyed and must not be re-added even
+        // though CG still lists it. See [_cgWidTombstones].
+        val tombstones = _cgWidTombstones.value
+
         // Pids we need to recompute: union of (pids currently in store)
         // and (pids in the new snapshot).
         val touchedPids: Set<Pid> = _state.value.windowsByPid.keys + newCgByKey.keys.map { it.first }
@@ -623,13 +657,33 @@ class WorldStore(initial: World = World(ActivationLog(), emptyMap(), emptyMap())
                     }
                 }
             }
-            // Add brand-new CG-observed windows for this pid.
+            // Add brand-new CG-observed windows for this pid — unless the
+            // cgwid is tombstoned (WindowServer-confirmed dead, CG just hasn't
+            // caught up). Re-adding it would resurrect a window we already
+            // dropped. See [_cgWidTombstones].
             for ((key, w) in newCgByKey) {
                 if (key.first != pid) continue
                 if (key.second in handledFromNew) continue
+                if (key.second in tombstones) {
+                    log("[store] cg re-add suppressed (tombstoned) pid=$pid cgwid=${key.second}")
+                    continue
+                }
                 updated += w.copy(sources = w.sources + WindowSource.CG)
             }
             commitWindowsFor(pid, updated)
+        }
+
+        // Self-clear tombstones for cgwids CG no longer lists: its view has
+        // caught up with the destruction, so the gate has done its job. Keep
+        // the ones still present (the window is still zombieing in CG). This
+        // is what bounds the set without a wall-clock TTL — see
+        // [_cgWidTombstones].
+        if (tombstones.isNotEmpty()) {
+            val presentCgIds = newCgByKey.keys.mapTo(HashSet()) { it.second }
+            _cgWidTombstones.update { current ->
+                val kept = current.intersect(presentCgIds)
+                if (kept.size == current.size) current else kept
+            }
         }
     }
 

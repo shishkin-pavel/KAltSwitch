@@ -246,6 +246,27 @@ final class AxAppWatcher {
                 )
                 tombstoneDroppedCgWid(cgWid)
                 syncActiveStateFromSystem(store: store)
+                // A last-window close can flip the app's activationPolicy
+                // (.regular → .accessory for menubar-style apps — KAltSwitch,
+                // Bitwarden, …). That transition fires no NSWorkspace
+                // notification, and because this fast path returns WITHOUT
+                // refreshAllWindows it would otherwise never re-poll the app
+                // record — so the stale .regular lingers and the app wrongly
+                // stays in the switcher's Show bucket (windowless apps default
+                // to Show; only `default-hide-accessory-windowless` removes
+                // them, and that needs the .accessory policy) until some
+                // unrelated event re-polls it.
+                //
+                // Re-poll now, and again shortly after: some apps (KAltSwitch
+                // itself) defer setActivationPolicy to a later runloop tick, so
+                // the immediate read can still observe the pre-flip policy.
+                // Not app-specific — any deferred .regular→.accessory flip is
+                // covered by the delayed pass.
+                let repollPid = pid
+                onWindowsChanged?(repollPid)
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.25) { [weak self] in
+                    self?.onWindowsChanged?(repollPid)
+                }
                 return
             }
             // Window is still alive in WindowServer — AX is just
