@@ -419,10 +419,45 @@ final class AppRegistry {
             // window.
             axOk = watcher?.makeWindowMain(windowId: wid) ?? false
         }
-        let nsAppOk = NSRunningApplication(processIdentifier: pid)?.activate() ?? false
+        // When the AX raise landed (`axOk`), it already performed the z-order
+        // lift, so a plain `.activate()` suffices. When it didn't — no AX
+        // permission, or a phantom/cross-Space window with no live AX element —
+        // the option-less `.activate()` no-ops on macOS 14+ from our background
+        // non-active process, leaving the window focused but never raised. The
+        // deprecated `.activate(options: .activateAllWindows)` still raises the
+        // app's windows in z-order from the background and needs no AX, so it's
+        // the no-AX path's only way to make the commit visible. See
+        // docs/superpowers/specs/2026-06-02-no-ax-window-raise-design.md.
+        let nsApp = NSRunningApplication(processIdentifier: pid)
+        let nsAppOk: Bool
+        let activatePath: String
+        if axOk {
+            nsAppOk = nsApp?.activate() ?? false
+            activatePath = "plain"
+        } else {
+            // No AX raise available (no permission, or a phantom/cross-Space
+            // window with no live AX element). The option-less `.activate()`
+            // no-ops on macOS 14+ from our background non-active process, so we
+            // use the deprecated `.activate(options: .activateAllWindows)` —
+            // it still raises the app's windows in z-order from the background
+            // and needs no AX.
+            //
+            // Selecting a *specific* window of a multi-window app is not
+            // possible without AX: `.activateAllWindows` raises all the app's
+            // windows and lets the app pick its own main window (the
+            // last-active one), and there is no non-AX cross-process API to
+            // raise/focus one particular window (`kAXRaiseAction` is AX-only).
+            // Re-asserting the SLPS front-switch after activation was tried and
+            // made it worse (the app stopped coming forward), so we don't.
+            // The switcher compensates by dropping to app-only selection when
+            // AX is absent. See the no-AX spec under docs/superpowers/specs/.
+            nsAppOk = nsApp?.activate(options: [.activateAllWindows]) ?? false
+            activatePath = "allWindows"
+        }
         log("[reg] commit pid=\(pid) ax=\(windowId ?? 0) cg=\(cgWid ?? 0) " +
             "spaceSwitch=\(spaceSwitched ? "yes" : "no") " +
-            "cgs=\(cgsOk ? "ok" : "fail") axRaise=\(axOk ? "ok" : "fail") nsapp=\(nsAppOk ? "ok" : "fail")")
+            "cgs=\(cgsOk ? "ok" : "fail") axRaise=\(axOk ? "ok" : "fail") " +
+            "nsapp=\(activatePath):\(nsAppOk ? "ok" : "fail")")
     }
 
     private func checkTrust() {

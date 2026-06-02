@@ -224,6 +224,16 @@ class SwitcherController(
                 return
             }
         } else {
+            // App-only mode: cmd+` can't step windows without AX. Instead it
+            // commits the selected app and ends the session — the platform
+            // layer then restores the native cmd+`, so the user's next press
+            // (cmd still held) cycles the just-activated app's windows via
+            // macOS. cmd+tab (App entry) still advances apps. See no-AX spec.
+            if (!store.axTrusted.value && entry == SwitcherEntry.Window) {
+                log("[ctl] cmd+grave (app-only) → commit selected app")
+                _ui.value?.let { commit(it) }
+                return
+            }
             val event = if (reverse) reverseEventFor(entry) else forwardEventFor(entry)
             // Hot-key path → Shown scope: cmd+tab cycles only through the
             // inspector's `Show` apps, the demoted ones are skipped. Arrow
@@ -612,7 +622,9 @@ class SwitcherController(
         val snapshot = world.filteredSwitcherSnapshot(
             filters = filters,
             pinning = pinning,
-            currentSpaceOnly = store.currentSpaceOnly.value,
+            // Without AX, never filter by Space — show every app regardless of
+            // which Space its windows are on (see [launchSnapshotCollector]).
+            currentSpaceOnly = store.currentSpaceOnly.value && store.axTrusted.value,
             visibleSpaceIds = store.visibleSpaceIds.value,
         )
         val state = openSwitcher(snapshot, entry)
@@ -652,6 +664,15 @@ class SwitcherController(
 
     private fun navigate(event: SwitcherEvent, scope: NavScope) {
         val cur = _ui.value ?: return
+        // App-only mode (no Accessibility): a specific window can't be focused
+        // cross-process without AX, so we don't let the user walk through
+        // windows. Window-stepping (cmd+`, up/down arrows) is a no-op; only
+        // app-stepping moves the cursor. See the no-AX spec under docs/superpowers.
+        if (!store.axTrusted.value &&
+            (event == SwitcherEvent.NextWindow || event == SwitcherEvent.PrevWindow)
+        ) {
+            return
+        }
         val nextState = cur.state.apply(event, scope)
         if (nextState == cur.state) return
         // Cursor moved → previous preview-raise is no longer relevant.
@@ -666,12 +687,21 @@ class SwitcherController(
      */
     private fun launchSnapshotCollector() {
         snapshotJob?.cancel()
+        // Without AX we show every app regardless of Space: we can't focus a
+        // specific window or page Spaces, so per-Space filtering buys nothing,
+        // and the CG-only list (no AX event stream) would otherwise lag a Space
+        // change. Fold AX into the current-space toggle so the Space filter is
+        // off whenever AX is absent; restored to the user's setting when AX is
+        // granted. Pre-combined to keep the outer combine at five flows.
+        val effectiveCurrentSpaceOnly = combine(store.currentSpaceOnly, store.axTrusted) {
+            currentSpaceOnly, axTrusted -> currentSpaceOnly && axTrusted
+        }
         snapshotJob = scope.launch {
             combine(
                 store.state,
                 store.filters,
                 store.pinning,
-                store.currentSpaceOnly,
+                effectiveCurrentSpaceOnly,
                 store.visibleSpaceIds,
             ) { world, filters, pinning, currentSpaceOnly, visibleSpaceIds ->
                 world.filteredSwitcherSnapshot(
@@ -763,7 +793,14 @@ class SwitcherController(
     private fun commit(cur: SwitcherUiState) {
         val app = cur.state.selectedAppEntry?.app
         val window = cur.state.selectedWindow
-        log("[ctl] commit cursor=${cur.state.cursor} app=${app?.pid}/${app?.name} window=${window?.id}/${window?.title}")
+        // App-only mode (no AX): we can't target a specific window, so commit
+        // at app level. A null windowId routes the platform layer to app
+        // activation (SLPSMode.allWindows) instead of a phantom window target,
+        // and keeps the recency log from recording a window the user never
+        // actually got to pick. See the no-AX spec under docs/superpowers.
+        val commitWindowId = if (store.axTrusted.value) window?.id else null
+        log("[ctl] commit cursor=${cur.state.cursor} app=${app?.pid}/${app?.name} " +
+            "window=${window?.id}/${window?.title} commitWid=$commitWindowId")
         closeSession()
         if (app != null) {
             // Record the user's intent into the activation log *synchronously*
@@ -774,8 +811,8 @@ class SwitcherController(
             // inspector's row order moves on every commit; later AX echoes
             // (when they do arrive) dedupe naturally — `appOrder()` walks
             // newest-first and emits each pid once.
-            store.recordActivation(app.pid, window?.id)
-            onCommitActivation?.invoke(app.pid, window?.id)
+            store.recordActivation(app.pid, commitWindowId)
+            onCommitActivation?.invoke(app.pid, commitWindowId)
         }
     }
 

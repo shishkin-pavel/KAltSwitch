@@ -1,5 +1,6 @@
 import SwiftUI
 import AppKit
+import ApplicationServices
 import Carbon.HIToolbox
 import ServiceManagement
 import ComposeAppMac
@@ -95,8 +96,14 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         // Global hotkeys + cmd-release detection feed the Kotlin SwitcherController.
         hotkeyController = HotkeyController(controller: controller)
         hotkeyController?.start()
+        // With AX we own cmd+` permanently; without AX it stays native until a
+        // session opens (see setOverlayActive).
+        applyGraveOwnership(own: AXIsProcessTrusted())
 
         registry.onAxTrustChanged = { [weak self] trusted in
+            // With AX granted we own cmd+` permanently; when revoked, fall back
+            // to native (a session can still claim it transiently).
+            self?.applyGraveOwnership(own: trusted)
             guard trusted else { return }
             self?.hotkeyController?.start()
             self?.hotkeyController?.reinstallFlagsChangedTap()
@@ -508,6 +515,14 @@ class AppDelegate: NSObject, NSApplicationDelegate {
 
     private func setOverlayActive(_ active: Bool) {
         guard let panel = overlayWindow else { return }
+        // Without AX, claim cmd+` for the lifetime of the session so it commits
+        // the selected app instead of letting macOS's native cmd+` cycle the
+        // wrong (pre-session) app. Restored to native when the session closes,
+        // so the user's next cmd+` cycles the just-activated app's windows.
+        // With AX we own cmd+` permanently (window-stepping), so leave it.
+        if !AXIsProcessTrusted() {
+            applyGraveOwnership(own: active)
+        }
         if active {
             // Re-enumerate cross-space (CGWindowList) windows before the
             // panel paints, so the user sees off-space rows on the very
@@ -533,7 +548,11 @@ class AppDelegate: NSObject, NSApplicationDelegate {
 
     func applicationWillFinishLaunching(_ notification: Notification) {
         StderrRedirectKt.redirectStderrToLogFile()
-        setSymbolicHotKeysEnabled(false)
+        // Disable the system cmd+tab / cmd+shift+tab so our Carbon hot keys win
+        // — app-switching is ours regardless of Accessibility. The system
+        // cmd+` ("key above tab") is left to `applyGraveOwnership`, which only
+        // disables it when AX is present; without AX it stays native.
+        setSymbolicHotKeysEnabled(false, [.commandTab, .commandShiftTab])
         installSignalHandlers()
         launchHotkeyWatchdog()
         installMainMenu()
@@ -577,6 +596,32 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     private func gracefulShutdown() {
         hotkeyController?.stop()
         setSymbolicHotKeysEnabled(true)
+    }
+
+    /// Decide who owns cmd+` ("key above tab"). When `own` is true we take it —
+    /// disable the system symbolic hot key so our Carbon registration wins, and
+    /// register our handler. When false we relinquish — unregister our handler
+    /// and re-enable the system hot key, restoring macOS's native
+    /// window-cycling on cmd+`. Both halves are idempotent. cmd+tab is
+    /// unaffected — it stays ours in all states.
+    ///
+    /// Ownership is driven by two signals:
+    ///   - With Accessibility, we own it permanently (full window-stepping mode)
+    ///     — set at launch and on every AX-trust flip.
+    ///   - Without Accessibility, we own it *only for the duration of a switcher
+    ///     session* (see `setOverlayActive`): during the session cmd+` commits
+    ///     the selected app; outside it the key stays native. This keeps macOS's
+    ///     native cmd+` working when the switcher is closed, while preventing it
+    ///     from cycling the wrong (pre-session) app while the switcher is open.
+    private func applyGraveOwnership(own: Bool) {
+        if own {
+            setSymbolicHotKeysEnabled(false, [.commandKeyAboveTab])
+            hotkeyController?.setGraveHotkeysEnabled(true)
+        } else {
+            hotkeyController?.setGraveHotkeysEnabled(false)
+            setSymbolicHotKeysEnabled(true, [.commandKeyAboveTab])
+        }
+        log("[swift] grave ownership: \(own ? "ours" : "native")")
     }
 
     private func installMainMenu() {

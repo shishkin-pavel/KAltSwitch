@@ -23,7 +23,13 @@ import ComposeAppMac
 /// controller initialises.
 final class HotkeyController {
     private let controller: SwitcherController
+    /// Always-on hot keys: cmd+tab / cmd+shift+tab / cmd+Esc. App-switching
+    /// works without Accessibility, so these are registered unconditionally.
     private var hotKeyRefs: [EventHotKeyRef] = []
+    /// cmd+` / cmd+shift+` — gated on Accessibility. Without AX we can't focus
+    /// a specific window, so we leave the key to macOS's native window-cycling
+    /// (see `setGraveHotkeysEnabled`).
+    private var graveHotKeyRefs: [EventHotKeyRef] = []
     private var eventHandler: EventHandlerRef?
     private var eventTap: CFMachPort?
     private var runLoopSource: CFRunLoopSource?
@@ -85,6 +91,8 @@ final class HotkeyController {
     func stop() {
         for ref in hotKeyRefs { UnregisterEventHotKey(ref) }
         hotKeyRefs.removeAll()
+        for ref in graveHotKeyRefs { UnregisterEventHotKey(ref) }
+        graveHotKeyRefs.removeAll()
         if let h = eventHandler {
             RemoveEventHandler(h)
             eventHandler = nil
@@ -137,14 +145,37 @@ final class HotkeyController {
     }
 
     private func registerHotkeys() {
-        register(keyCode: UInt32(kVK_Tab), mods: UInt32(cmdKey), id: HotkeyController.idCmdTab)
-        register(keyCode: UInt32(kVK_Tab), mods: UInt32(cmdKey | shiftKey), id: HotkeyController.idCmdShiftTab)
-        register(keyCode: UInt32(kVK_ANSI_Grave), mods: UInt32(cmdKey), id: HotkeyController.idCmdGrave)
-        register(keyCode: UInt32(kVK_ANSI_Grave), mods: UInt32(cmdKey | shiftKey), id: HotkeyController.idCmdShiftGrave)
-        register(keyCode: UInt32(kVK_Escape), mods: UInt32(cmdKey), id: HotkeyController.idCmdEsc)
+        // cmd+` / cmd+shift+` are deliberately omitted here — they're gated on
+        // Accessibility via `setGraveHotkeysEnabled` so that without AX the key
+        // falls through to macOS's native window switcher.
+        hotKeyRefs.append(contentsOf: [
+            register(keyCode: UInt32(kVK_Tab), mods: UInt32(cmdKey), id: HotkeyController.idCmdTab),
+            register(keyCode: UInt32(kVK_Tab), mods: UInt32(cmdKey | shiftKey), id: HotkeyController.idCmdShiftTab),
+            register(keyCode: UInt32(kVK_Escape), mods: UInt32(cmdKey), id: HotkeyController.idCmdEsc),
+        ].compactMap { $0 })
     }
 
-    private func register(keyCode: UInt32, mods: UInt32, id: UInt32) {
+    /// Register (or tear down) the cmd+` / cmd+shift+` hot keys. Gated on
+    /// Accessibility: with AX we own the key (the system symbolic hot key is
+    /// disabled by the AppDelegate so ours wins); without AX we unregister and
+    /// let macOS's native "key above tab" window cycling take over. Idempotent.
+    func setGraveHotkeysEnabled(_ enabled: Bool) {
+        if enabled {
+            guard graveHotKeyRefs.isEmpty else { return }
+            graveHotKeyRefs.append(contentsOf: [
+                register(keyCode: UInt32(kVK_ANSI_Grave), mods: UInt32(cmdKey), id: HotkeyController.idCmdGrave),
+                register(keyCode: UInt32(kVK_ANSI_Grave), mods: UInt32(cmdKey | shiftKey), id: HotkeyController.idCmdShiftGrave),
+            ].compactMap { $0 })
+            log("[hk] grave hotkeys registered count=\(graveHotKeyRefs.count)")
+        } else {
+            guard !graveHotKeyRefs.isEmpty else { return }
+            for ref in graveHotKeyRefs { UnregisterEventHotKey(ref) }
+            graveHotKeyRefs.removeAll()
+            log("[hk] grave hotkeys unregistered — native cmd+` restored")
+        }
+    }
+
+    private func register(keyCode: UInt32, mods: UInt32, id: UInt32) -> EventHotKeyRef? {
         let hotKeyID = EventHotKeyID(signature: HotkeyController.signature, id: id)
         var ref: EventHotKeyRef?
         let status = RegisterEventHotKey(
@@ -156,11 +187,11 @@ final class HotkeyController {
             &ref
         )
         if status == noErr, let ref = ref {
-            hotKeyRefs.append(ref)
-        } else {
-            NSLog("KAltSwitch: RegisterEventHotKey(keyCode=%u, mods=0x%x) failed: %d",
-                  keyCode, mods, status)
+            return ref
         }
+        NSLog("KAltSwitch: RegisterEventHotKey(keyCode=%u, mods=0x%x) failed: %d",
+              keyCode, mods, status)
+        return nil
     }
 
     fileprivate func handleHotkey(id: UInt32) {

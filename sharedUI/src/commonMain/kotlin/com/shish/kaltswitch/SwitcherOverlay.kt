@@ -785,6 +785,14 @@ private fun SwitcherPanel(
     // want the panel to render so the banner is visible.
     if (entries.isEmpty() && axTrusted) return
 
+    // App-only mode: without AX we can't focus a specific window, so we don't
+    // show a per-window selection at all — the app-cell outline (driven by
+    // `state.cursor.appIndex`) stays, but no window row is highlighted. Passing
+    // a null highlighted-window id makes every `isActive` check downstream fall
+    // to false. The controller mirrors this: window-stepping is a no-op and
+    // commit activates at app level. See the no-AX spec under docs/superpowers.
+    val highlightedWindowId = if (axTrusted) state.selectedWindowId else null
+
     val withWindowsCount = state.snapshot.withWindows.size
     val reportPanelBounds = LocalReportPanelBounds.current
 
@@ -947,7 +955,7 @@ private fun SwitcherPanel(
                                         isDemoted = false,
                                         appIndex = appIndex,
                                         cursorAppIndex = state.cursor.appIndex,
-                                        selectedWindowId = state.selectedWindowId,
+                                        selectedWindowId = highlightedWindowId,
                                         badgeRules = badgeRules,
                                         tagByWindowId = tagsByPid[entry.app.pid].orEmpty(),
                                         onPointAt = onPointAt,
@@ -983,7 +991,7 @@ private fun SwitcherPanel(
                                                     isDemoted = true,
                                                     appIndex = appIndex,
                                                     cursorAppIndex = state.cursor.appIndex,
-                                                    selectedWindowId = state.selectedWindowId,
+                                                    selectedWindowId = highlightedWindowId,
                                                     badgeRules = badgeRules,
                                                     tagByWindowId = tagsByPid[entry.app.pid].orEmpty(),
                                                     onPointAt = onPointAt,
