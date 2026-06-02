@@ -300,8 +300,15 @@ final class AppRegistry {
     /// status badge update without further plumbing.
     func toggleHide(pid: pid_t) {
         guard let nsApp = NSRunningApplication(processIdentifier: pid) else { return }
-        let ok = if nsApp.isHidden { nsApp.unhide() } else { nsApp.hide() }
-        log("[reg] toggleHide pid=\(pid) wasHidden=\(nsApp.isHidden) → \(ok ? "ok" : "fail")")
+        // Read isHidden *before* the call — `hide()`/`unhide()` are async, so
+        // the flag has not flipped yet immediately afterwards. The Bool these
+        // return is only "did AppKit accept the request" and is unreliable
+        // (`hide()` routinely returns false while still hiding the app), so we
+        // log it as `accepted=` rather than pretending it's the outcome. The
+        // real outcome arrives via the NSWorkspace didHide/didUnhide path.
+        let wasHidden = nsApp.isHidden
+        let accepted = wasHidden ? nsApp.unhide() : nsApp.hide()
+        log("[reg] toggleHide pid=\(pid) wasHidden=\(wasHidden) action=\(wasHidden ? "unhide" : "hide") accepted=\(accepted)")
     }
 
     /// `W` — press the window's red-circle close button via AX. Forwards
