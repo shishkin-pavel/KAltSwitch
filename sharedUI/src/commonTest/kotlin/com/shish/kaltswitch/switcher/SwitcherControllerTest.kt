@@ -803,8 +803,9 @@ class SwitcherControllerTest {
     @Test
     fun action_toggleHide_advancesCursorToNextApp() = runTest {
         // cmd+tab → IDE selected (most-recent Show app sits at idx 1).
-        // Press H on a not-yet-hidden app → cursor advances to the next
-        // Shown app (wraps to Safari at idx 0).
+        // Press H on a not-yet-hidden app → cursor steps to an adjacent
+        // Shown app. IDE is the last Shown app, so the step clamps back to
+        // its neighbour Safari at idx 0 (NOT a wrap — see the 3-app test).
         val store = seededStore()
         val ctl = SwitcherController(store, scope = backgroundScope)
             .also { it.onPerformAction = { _, _, _ -> /* no-op */ } }
@@ -816,6 +817,39 @@ class SwitcherControllerTest {
 
         assertEquals(1, ctl.ui.value?.state?.selectedAppPid)
         assertEquals(11L, ctl.ui.value?.state?.selectedWindowId)
+    }
+
+    @Test
+    fun action_toggleHide_onLastShownApp_clampsToPrevious_notWrap() = runTest {
+        // Three Shown apps in recency order: A(1) idx0, B(2) idx1, C(3) idx2.
+        // Park the cursor on the LAST one (C) and hide it. The cursor must
+        // step to its neighbour B (idx1), NOT wrap around to A (idx0).
+        val a = App(pid = 1, bundleId = "a", name = "A")
+        val b = App(pid = 2, bundleId = "b", name = "B")
+        val c = App(pid = 3, bundleId = "c", name = "C")
+        val wa = Window(id = 11, pid = 1, title = "A")
+        val wb = Window(id = 21, pid = 2, title = "B")
+        val wc = Window(id = 31, pid = 3, title = "C")
+        val log = ActivationLog()
+            .record(ActivationEvent(pid = 3, windowId = 31))
+            .record(ActivationEvent(pid = 2, windowId = 21))
+            .record(ActivationEvent(pid = 1, windowId = 11))  // A most recent → idx0
+        val store = WorldStore(World(
+            log = log,
+            runningApps = mapOf(1 to a, 2 to b, 3 to c),
+            windowsByPid = mapOf(1 to listOf(wa), 2 to listOf(wb), 3 to listOf(wc)),
+        ))
+        val ctl = SwitcherController(store, scope = backgroundScope)
+            .also { it.onPerformAction = { _, _, _ -> /* no-op */ } }
+        ctl.onShortcut(SwitcherEntry.App)
+        advanceTimeBy(50)
+        // Default cursor is idx1 (B). Step once to reach the last app C.
+        ctl.onNavigate(SwitcherEvent.NextApp, NavScope.All)
+        assertEquals(3, ctl.ui.value?.state?.selectedAppPid)
+
+        ctl.onAction(SwitcherAction.ToggleHide)
+
+        assertEquals(2, ctl.ui.value?.state?.selectedAppPid)
     }
 
     @Test

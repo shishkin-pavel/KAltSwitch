@@ -604,7 +604,13 @@ class SwitcherController(
         val apps = state.snapshot.scopedApps(NavScope.Shown)
         val curIdx = apps.indexOfFirst { it.app.pid == pid }
         if (curIdx < 0 || apps.size <= 1) return
-        val nextApp = apps[(curIdx + 1) % apps.size]
+        // Step to an *adjacent* Shown app — next if there is one, otherwise
+        // the previous. The old `(curIdx + 1) % size` wrapped around, so
+        // hiding the last Shown app flung the cursor all the way back to the
+        // first app (a jump across the whole row) instead of settling on the
+        // neighbour the hidden app vacated.
+        val nextIdx = if (curIdx + 1 < apps.size) curIdx + 1 else curIdx - 1
+        val nextApp = apps[nextIdx]
         log("[ctl] advanceAppCursorAfterDemote → pid=${nextApp.app.pid}")
         _ui.value = cur.copy(
             state = state.copy(
