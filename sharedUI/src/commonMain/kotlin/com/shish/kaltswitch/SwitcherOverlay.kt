@@ -930,79 +930,100 @@ private fun SwitcherPanel(
                     }
                 }
 
-                // Outer per-row Column. Show rows render first, then
-                // the demote bucket (its own grey-backed Box, always on
-                // a new row). Each `Row(spacedBy(6.dp, CenterHorizontally))`
-                // keeps cells centred on the panel's vertical axis even
-                // when the last row is under-filled (down to a single
-                // cell — see `planCellLayout`'s "uneven last row" docs).
+                // Outer per-row Column. The planner's `perRow` already
+                // counts ALL entries (show + demote), so when the whole set
+                // fits one row we render it as ONE row — show cells followed
+                // by the grey demote bucket as a trailing inline segment.
+                // Flexible sizing shrank the cells precisely to buy that
+                // room; peeling the demote bucket onto its own row would
+                // waste it. Only when the set genuinely needs >1 row do we
+                // fall back to stacked show rows + a full-width grey demote
+                // row beneath. Each `Row(spacedBy(6.dp, CenterHorizontally))`
+                // keeps cells centred on the panel's vertical axis even when
+                // a row is under-filled (see `planCellLayout`'s docs).
                 Column(
                     verticalArrangement = Arrangement.spacedBy(8.dp),
                     horizontalAlignment = Alignment.CenterHorizontally,
                 ) {
-                    val showRows = showEntries.chunked(perRow)
-                    showRows.forEachIndexed { rowIndex, rowEntries ->
-                        Row(
-                            horizontalArrangement = Arrangement.spacedBy(6.dp, Alignment.CenterHorizontally),
-                            verticalAlignment = Alignment.Top,
-                        ) {
-                            rowEntries.forEachIndexed { colIndex, entry ->
-                                val appIndex = rowIndex * perRow + colIndex
-                                cellsByPid.getValue(entry.app.pid)(
-                                    cellArgs(
-                                        entry = entry,
-                                        iconBytes = iconsByPid[entry.app.pid],
-                                        isDemoted = false,
-                                        appIndex = appIndex,
-                                        cursorAppIndex = state.cursor.appIndex,
-                                        selectedWindowId = highlightedWindowId,
-                                        badgeRules = badgeRules,
-                                        tagByWindowId = tagsByPid[entry.app.pid].orEmpty(),
-                                        onPointAt = onPointAt,
-                                        onCommit = onCommit,
-                                    )
+                    // One movable cell, addressed by its global app index so
+                    // the cursor outline / hover wiring stays correct whether
+                    // the entry renders in a show row or the demote bucket.
+                    val emitCell: @Composable (com.shish.kaltswitch.model.AppEntry, Boolean, Int) -> Unit =
+                        { entry, demoted, appIndex ->
+                            cellsByPid.getValue(entry.app.pid)(
+                                cellArgs(
+                                    entry = entry,
+                                    iconBytes = iconsByPid[entry.app.pid],
+                                    isDemoted = demoted,
+                                    appIndex = appIndex,
+                                    cursorAppIndex = state.cursor.appIndex,
+                                    selectedWindowId = highlightedWindowId,
+                                    badgeRules = badgeRules,
+                                    tagByWindowId = tagsByPid[entry.app.pid].orEmpty(),
+                                    onPointAt = onPointAt,
+                                    onCommit = onCommit,
                                 )
-                            }
+                            )
                         }
-                    }
-                    if (demoteEntries.isNotEmpty()) {
+
+                    // Demoted/hidden apps in their own grey-backdrop Box.
+                    // `chunked(perRow)` yields a single Row when the bucket
+                    // fits one row (the inline case) and stacks rows
+                    // otherwise. appIndex continues the global order past the
+                    // show entries (`withWindowsCount`).
+                    val demoteBucket: @Composable () -> Unit = {
+                        // No padding: the grey backdrop hugs the demote cells
+                        // exactly. Horizontally this makes the inline single-
+                        // row width match the planner's budget to the dp (the
+                        // 6dp `spacedBy` before the bucket already supplies a
+                        // normal inter-cell gap); vertically it aligns the
+                        // demote cells with the show cells in that same row.
                         Box(
                             modifier = Modifier
                                 .clip(RoundedCornerShape(10.dp))
-                                .background(SwitcherDemoteBg)
-                                .padding(horizontal = 4.dp, vertical = 4.dp),
+                                .background(SwitcherDemoteBg),
                         ) {
-                            val demoteRows = demoteEntries.chunked(perRow)
                             Column(
                                 verticalArrangement = Arrangement.spacedBy(6.dp),
                                 horizontalAlignment = Alignment.CenterHorizontally,
                             ) {
-                                demoteRows.forEachIndexed { rowIndex, rowEntries ->
+                                demoteEntries.chunked(perRow).forEachIndexed { rowIndex, rowEntries ->
                                     Row(
                                         horizontalArrangement = Arrangement.spacedBy(6.dp, Alignment.CenterHorizontally),
                                         verticalAlignment = Alignment.Top,
                                     ) {
                                         rowEntries.forEachIndexed { colIndex, entry ->
-                                            val appIndex = withWindowsCount + rowIndex * perRow + colIndex
-                                            cellsByPid.getValue(entry.app.pid)(
-                                                cellArgs(
-                                                    entry = entry,
-                                                    iconBytes = iconsByPid[entry.app.pid],
-                                                    isDemoted = true,
-                                                    appIndex = appIndex,
-                                                    cursorAppIndex = state.cursor.appIndex,
-                                                    selectedWindowId = highlightedWindowId,
-                                                    badgeRules = badgeRules,
-                                                    tagByWindowId = tagsByPid[entry.app.pid].orEmpty(),
-                                                    onPointAt = onPointAt,
-                                                    onCommit = onCommit,
-                                                )
-                                            )
+                                            emitCell(entry, true, withWindowsCount + rowIndex * perRow + colIndex)
                                         }
                                     }
                                 }
                             }
                         }
+                    }
+
+                    val allOnOneRow = showEntries.size + demoteEntries.size <= perRow
+                    if (allOnOneRow) {
+                        Row(
+                            horizontalArrangement = Arrangement.spacedBy(6.dp, Alignment.CenterHorizontally),
+                            verticalAlignment = Alignment.Top,
+                        ) {
+                            showEntries.forEachIndexed { colIndex, entry ->
+                                emitCell(entry, false, colIndex)
+                            }
+                            if (demoteEntries.isNotEmpty()) demoteBucket()
+                        }
+                    } else {
+                        showEntries.chunked(perRow).forEachIndexed { rowIndex, rowEntries ->
+                            Row(
+                                horizontalArrangement = Arrangement.spacedBy(6.dp, Alignment.CenterHorizontally),
+                                verticalAlignment = Alignment.Top,
+                            ) {
+                                rowEntries.forEachIndexed { colIndex, entry ->
+                                    emitCell(entry, false, rowIndex * perRow + colIndex)
+                                }
+                            }
+                        }
+                        if (demoteEntries.isNotEmpty()) demoteBucket()
                     }
                 }
             }
