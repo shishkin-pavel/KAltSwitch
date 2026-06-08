@@ -62,6 +62,10 @@ final class AppRegistry {
     /// closure runs only if the token still matches.
     private var commitToken: Int = 0
 
+    /// DIAG (temporary): accumulates per-app `upsertAppRecord` time during a
+    /// `respawnAllWatchers` pass so we can attribute the main-thread block.
+    private var diagUpsertMs: Double = 0
+
     init(store: WorldStore) {
         self.store = store
     }
@@ -481,11 +485,23 @@ final class AppRegistry {
     }
 
     private func respawnAllWatchers() {
+        // DIAG (temporary): this runs on main (Timer callback). Measure how long
+        // tearing down + spawning every watcher blocks the main thread on an
+        // AX grant. Remove once the post-grant lag is root-caused.
+        let diagT0 = CFAbsoluteTimeGetCurrent()
         for (_, w) in watchers { w.stop() }
         watchers.removeAll()
+        let diagStopMs = (CFAbsoluteTimeGetCurrent() - diagT0) * 1000
+        diagUpsertMs = 0
+        let diagSpawn0 = CFAbsoluteTimeGetCurrent()
         for nsApp in NSWorkspace.shared.runningApplications {
-            spawn(for: nsApp)
+            // Skip the record/icon re-render — it's AX-independent and already
+            // populated; only the AXObserver needs recreating now that we're
+            // trusted. This is what keeps the grant from freezing the panel.
+            spawn(for: nsApp, upsertRecord: false)
         }
+        let diagSpawnMs = (CFAbsoluteTimeGetCurrent() - diagSpawn0) * 1000
+        log("[diag-reg] respawnAllWatchers count=\(watchers.count) mainBlockedMs=\(Int((CFAbsoluteTimeGetCurrent() - diagT0) * 1000)) stopMs=\(Int(diagStopMs)) spawnMs=\(Int(diagSpawnMs)) upsertMs=\(Int(diagUpsertMs))")
         // The previous AXObserver on the Dock dies with the trust flip
         // too — rebuild so we keep getting AXValueChanged for badges.
         dockBadgeWatcher?.stop()
@@ -542,13 +558,24 @@ final class AppRegistry {
 
     // MARK: - Spawn / push
 
-    private func spawn(for nsApp: NSRunningApplication) {
+    /// `upsertRecord: false` recreates only the AX watcher (fresh `AXObserver`)
+    /// without re-reading the app record. Used by [respawnAllWatchers] on an
+    /// AX-trust grant: the record (name / policy / icon PNG) comes from
+    /// `NSRunningApplication` and is independent of Accessibility, so it was
+    /// already populated at `start()` / launch — re-rendering all icons here
+    /// would pointlessly block the main thread (≈ 5 ms/app icon PNG encode ×
+    /// every running app) and freeze the open switcher panel.
+    private func spawn(for nsApp: NSRunningApplication, upsertRecord: Bool = true) {
         let pid = nsApp.processIdentifier
         guard pid > 0 else { return }
         guard nsApp.activationPolicy != .prohibited else { return }
         if watchers[pid] != nil { return }
 
-        AppRecordKt.upsertAppRecord(pid: pid, store: store)
+        if upsertRecord {
+            let diagU0 = CFAbsoluteTimeGetCurrent()  // DIAG (temporary)
+            AppRecordKt.upsertAppRecord(pid: pid, store: store)
+            diagUpsertMs += (CFAbsoluteTimeGetCurrent() - diagU0) * 1000  // DIAG
+        }
         let watcher = AxAppWatcher(pid: pid, store: store)
         // Window-set mutation may flip activationPolicy back the other way
         // (apps that drop to `.accessory` after their last window closes).

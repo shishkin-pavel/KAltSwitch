@@ -62,6 +62,12 @@ private val configScope = CoroutineScope(Dispatchers.Main).also { scope ->
 val switcherController = SwitcherController(
     store = store,
     scope = CoroutineScope(Dispatchers.Main),
+    // Run the snapshot classify/filter/sort off the main dispatcher. On an
+    // AX-trust grant ~one `applyAxSnapshot` per running app lands in a burst;
+    // recomputing all of them on Main would starve the press-tick coroutine and
+    // Compose for a few hundred ms (panel freezes for several cmd+tab presses
+    // right after enabling Accessibility).
+    snapshotContext = Dispatchers.Default,
 )
 
 /** Lifetime scope for cross-boundary observers. Cancelled on app termination. */

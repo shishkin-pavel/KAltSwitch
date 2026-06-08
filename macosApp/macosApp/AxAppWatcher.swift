@@ -5,9 +5,31 @@ import ComposeAppMac
 
 /// Per-app accessibility watcher. Spawns a dedicated thread that owns a CFRunLoop;
 /// an `AXObserver` attached to that run loop fires on per-app and per-window AX
-/// events. State changes are dispatched to main to update [WorldStore].
+/// events.
 ///
-/// AeroSpace-style: AX work happens off-main, only state mutations cross over.
+/// AeroSpace-style: **all AX work runs on this watcher's run-loop thread** —
+/// the `kAXWindows` enumeration, every per-window attribute read, the
+/// per-window subscriptions, the WindowServer destroy probe. None of it hops
+/// to main. `WorldStore` is documented thread-safe (atomic `MutableStateFlow`),
+/// so the snapshot mutations are applied directly from this thread; Compose
+/// observes the `StateFlow` and recomposes on main on its own.
+///
+/// Why this matters: the synchronous `AXUIElementCopyAttributeValue` calls are
+/// cross-process Mach IPC that block the calling thread until the target app's
+/// run loop replies (hundreds of ms when an app's AX server is cold — exactly
+/// the case right after the user grants Accessibility, when `AppRegistry`
+/// respawns a watcher for every running app at once). Keeping that off main is
+/// what stops the switcher overlay (Compose, main-thread render) from stalling.
+///
+/// Two deliberate exceptions cross threads:
+///   - [windowsByHash] is read by the raise/commit/window-action methods, which
+///     `AppRegistry` invokes synchronously on main. It's guarded by
+///     [windowsByHashLock]; every *other* mutable field is confined to the
+///     run-loop thread.
+///   - `syncActiveStateFromSystem` (active-app/window pointers + activation log)
+///     is dispatched to main via [syncActiveStateOnMain] so its writes keep a
+///     single total order with the NSWorkspace-driven activations that
+///     `AppRegistry` records on main.
 final class AxAppWatcher {
     let pid: pid_t
     private let store: WorldStore
@@ -31,7 +53,18 @@ final class AxAppWatcher {
     /// Live AXUIElement references for every top-level window currently known,
     /// keyed by `CFHash(axWin)` (which is also the WindowId we publish to the
     /// store). Looked up on raise / commit to find the element to act on.
+    ///
+    /// The **only** watcher field touched from two threads: written by
+    /// `refreshAllWindows` on the run-loop thread, read by the action methods
+    /// (`raiseWindow`/`makeWindowMain`/`closeWindow`/`toggleMinimize`/
+    /// `toggleFullscreen`/`cgWindowId(forAxWindowId:)`) on main. Guard every
+    /// access with [windowsByHashLock] via [axWindow(forHash:)].
     private var windowsByHash: [Int: AXUIElement] = [:]
+    /// Serialises access to [windowsByHash]. Contention is near-zero (an
+    /// occasional snapshot write vs. a per-click action read), so a plain
+    /// `NSLock` is plenty — we hold it only for the dictionary lookup, never
+    /// across the AX IPC that follows.
+    private let windowsByHashLock = NSLock()
 
     /// Fired on every snapshot-style window-list refresh and on
     /// per-window destroyed events. AppRegistry uses this to re-poll the
@@ -112,7 +145,14 @@ final class AxAppWatcher {
     /// Force a window snapshot + subscription retry. Useful when the system tells
     /// us this app just activated — its AX surface may have just become available.
     func requestRefresh() {
-        DispatchQueue.main.async { [weak self] in self?.refreshAllWindows() }
+        // Bounce onto the watcher's own run-loop thread (not main) so the AX
+        // reads stay off the main thread. No-op until the run loop is up; the
+        // initial `refreshAllWindows` in `runLoopBody` covers that startup gap.
+        guard let runLoop = runLoop else { return }
+        CFRunLoopPerformBlock(runLoop, CFRunLoopMode.defaultMode.rawValue) { [weak self] in
+            self?.refreshAllWindows()
+        }
+        CFRunLoopWakeUp(runLoop)
     }
 
     private func runLoopBody() {
@@ -137,17 +177,31 @@ final class AxAppWatcher {
             .defaultMode
         )
 
-        DispatchQueue.main.async { [weak self] in self?.refreshAllWindows() }
+        // First snapshot runs right here on the watcher thread before we enter
+        // the run loop — no main hop (see [receive] for the why).
+        refreshAllWindows()
 
         CFRunLoopRun()
     }
 
-    /// Called from C `axCallback` on this watcher's thread. Marshals to main.
+    /// Called from C `axCallback` on this watcher's run-loop thread. The AX
+    /// reads happen right here — no hop to main. That hop was the cause of the
+    /// post-AX-grant stall: N apps' worth of synchronous `kAXWindows` reads
+    /// piling onto the main queue while it's also rendering the switcher.
+    /// `WorldStore` is thread-safe, so the snapshot mutations are fine off-main;
+    /// only `syncActiveStateFromSystem` is bounced back to main (see
+    /// [syncActiveStateOnMain]).
     fileprivate func receive(notification: CFString, element: AXUIElement) {
-        let name = notification as String
-        DispatchQueue.main.async { [weak self] in
-            self?.handle(name: name, element: element)
-        }
+        handle(name: notification as String, element: element)
+    }
+
+    /// Bounce the active-app/window + activation-log sync onto main. See the
+    /// class docstring's "deliberate exceptions" note: this writer must keep a
+    /// single total order with the NSWorkspace-driven activations that
+    /// `AppRegistry` records on main, so it can't run on the watcher thread.
+    private func syncActiveStateOnMain() {
+        let store = self.store
+        DispatchQueue.main.async { syncActiveStateFromSystem(store: store) }
     }
 
     private func handle(name: String, element: AXUIElement) {
@@ -171,7 +225,7 @@ final class AxAppWatcher {
              kAXMainWindowChangedNotification as String,
              kAXFocusedWindowChangedNotification as String:
             refreshAllWindows()
-            syncActiveStateFromSystem(store: store)
+            syncActiveStateOnMain()
 
         case kAXWindowCreatedNotification as String:
             subscribePerWindow(element)
@@ -245,7 +299,7 @@ final class AxAppWatcher {
                     cgWindowIds: [KotlinLong(value: Int64(cgWid))]
                 )
                 tombstoneDroppedCgWid(cgWid)
-                syncActiveStateFromSystem(store: store)
+                syncActiveStateOnMain()
                 // A last-window close can flip the app's activationPolicy
                 // (.regular → .accessory for menubar-style apps — KAltSwitch,
                 // Bitwarden, …). That transition fires no NSWorkspace
@@ -282,7 +336,7 @@ final class AxAppWatcher {
         // recycled AXUIElement / reconcile the AX snapshot, then
         // refresh active pointers.
         refreshAllWindows()
-        syncActiveStateFromSystem(store: store)
+        syncActiveStateOnMain()
     }
 
     /// Plant a tombstone for `cgWid`. See [droppedCgWidTombstones].
@@ -301,6 +355,12 @@ final class AxAppWatcher {
     }
 
     private func refreshAllWindows() {
+        // DIAG (temporary): prove which thread the AX reads run on and how long
+        // they take. `MAIN⚠️` should never appear after the off-main change; a
+        // burst of high-readMs lines clustered after an AX grant is the
+        // cold-AX storm. Remove once the lag is root-caused.
+        let diagT0 = CFAbsoluteTimeGetCurrent()
+        let diagOnMain = Thread.isMainThread
         let topLevel = (readAttribute(appElement, kAXWindowsAttribute as String) as? [AXUIElement]) ?? []
         let appHash = Int(CFHash(appElement))
         // AX occasionally returns the same AXUIElement twice in kAXWindows, and
@@ -310,7 +370,9 @@ final class AxAppWatcher {
             topLevel.map { (Int(CFHash($0)), $0) },
             uniquingKeysWith: { _, new in new }
         )
+        windowsByHashLock.lock()
         windowsByHash = byHash
+        windowsByHashLock.unlock()
 
         // For each "top-level" window, see whether its AXParent is another top-level
         // window. Sheets/dialogs/floating panels often appear in app's kAXWindows even
@@ -351,6 +413,15 @@ final class AxAppWatcher {
                 return true
             }
             out = kept
+        }
+        // MAIN⚠️-only: per-refresh logging from ~57 watcher threads in a burst
+        // floods the (unbuffered, shared-formatter) logger and stalls main's own
+        // run loop — an observer effect that masquerades as the very lag we're
+        // chasing. We only assert the invariant here: a refresh must never run
+        // on main. The off-main read cost itself was already confirmed.
+        if diagOnMain {
+            let diagMs = (CFAbsoluteTimeGetCurrent() - diagT0) * 1000
+            log("[diag-ax/refresh] MAIN⚠️ pid=\(pid) readMs=\(Int(diagMs)) windows=\(out.count)")
         }
         store.applyAxSnapshot(pid: pid, axWindows: out)
         // Notify the registry: the windowed/windowless transition may have
@@ -589,7 +660,7 @@ final class AxAppWatcher {
     /// `didActivateApplicationNotification` so it doesn't pollute history.
     @discardableResult
     func raiseWindow(windowId: Int64) -> Bool {
-        guard let el = windowsByHash[Int(windowId)] else { return false }
+        guard let el = axWindow(forHash: Int(windowId)) else { return false }
         return AXUIElementPerformAction(el, kAXRaiseAction as CFString) == .success
     }
 
@@ -598,7 +669,7 @@ final class AxAppWatcher {
     /// window forward. Used on switcher-commit.
     @discardableResult
     func makeWindowMain(windowId: Int64) -> Bool {
-        guard let el = windowsByHash[Int(windowId)] else { return false }
+        guard let el = axWindow(forHash: Int(windowId)) else { return false }
         let setMain = AXUIElementSetAttributeValue(el, kAXMainAttribute as CFString, kCFBooleanTrue)
         let raise = AXUIElementPerformAction(el, kAXRaiseAction as CFString)
         return setMain == .success || raise == .success
@@ -613,7 +684,7 @@ final class AxAppWatcher {
     /// failed, or the AX id is unknown to this watcher.
     @discardableResult
     func closeWindow(windowId: Int64) -> Bool {
-        guard let el = windowsByHash[Int(windowId)] else { return false }
+        guard let el = axWindow(forHash: Int(windowId)) else { return false }
         guard let btn = readAttributeAsElement(el, kAXCloseButtonAttribute as String) else {
             NSLog("KAltSwitch: closeWindow(pid=%d, wid=%lld) — no AXCloseButton", pid, windowId)
             return false
@@ -627,7 +698,7 @@ final class AxAppWatcher {
     /// treated as "not minimized" → the toggle minimizes it.
     @discardableResult
     func toggleMinimize(windowId: Int64) -> Bool {
-        guard let el = windowsByHash[Int(windowId)] else { return false }
+        guard let el = axWindow(forHash: Int(windowId)) else { return false }
         let current = (readAttribute(el, kAXMinimizedAttribute as String) as? Bool) ?? false
         let target: CFBoolean = if current { kCFBooleanFalse } else { kCFBooleanTrue }
         return AXUIElementSetAttributeValue(el, kAXMinimizedAttribute as CFString, target) == .success
@@ -639,7 +710,7 @@ final class AxAppWatcher {
     /// constant isn't always available across SDK versions.
     @discardableResult
     func toggleFullscreen(windowId: Int64) -> Bool {
-        guard let el = windowsByHash[Int(windowId)] else { return false }
+        guard let el = axWindow(forHash: Int(windowId)) else { return false }
         let current = (readAttribute(el, "AXFullScreen") as? Bool) ?? false
         let target: CFBoolean = if current { kCFBooleanFalse } else { kCFBooleanTrue }
         return AXUIElementSetAttributeValue(el, "AXFullScreen" as CFString, target) == .success
@@ -649,7 +720,7 @@ final class AxAppWatcher {
     /// API. The CGS focus call (`_SLPSSetFrontProcessWithOptions`) operates on
     /// CGWindowIDs, not AXUIElements, so we need this conversion.
     func cgWindowId(forAxWindowId windowId: Int64) -> CGWindowID? {
-        guard let el = windowsByHash[Int(windowId)] else { return nil }
+        guard let el = axWindow(forHash: Int(windowId)) else { return nil }
         var cgWid: CGWindowID = 0
         let err = _AXUIElementGetWindow(el, &cgWid)
         guard err == .success else {
@@ -658,6 +729,17 @@ final class AxAppWatcher {
             return nil
         }
         return cgWid
+    }
+
+    /// Thread-safe read of [windowsByHash]. The action methods below run on
+    /// main (called from `AppRegistry`); `refreshAllWindows` writes the map on
+    /// the run-loop thread. We hold [windowsByHashLock] only for the lookup —
+    /// the returned element is retained by the caller's local, so the
+    /// subsequent AX IPC runs lock-free.
+    private func axWindow(forHash hash: Int) -> AXUIElement? {
+        windowsByHashLock.lock()
+        defer { windowsByHashLock.unlock() }
+        return windowsByHash[hash]
     }
 
     private func readAttribute(_ element: AXUIElement, _ attribute: String) -> Any? {

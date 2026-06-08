@@ -22,6 +22,8 @@ import com.shish.kaltswitch.model.scopedApps
 import com.shish.kaltswitch.model.scopedNavigable
 import com.shish.kaltswitch.model.withCursor
 import com.shish.kaltswitch.store.WorldStore
+import kotlin.coroutines.CoroutineContext
+import kotlin.coroutines.EmptyCoroutineContext
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
@@ -30,6 +32,7 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.distinctUntilChanged
+import kotlinx.coroutines.flow.flowOn
 import kotlinx.coroutines.launch
 
 /**
@@ -63,6 +66,15 @@ data class SwitcherUiState(
 class SwitcherController(
     private val store: WorldStore,
     private val scope: CoroutineScope,
+    /**
+     * Context the snapshot `combine` (the expensive `filteredSwitcherSnapshot`
+     * classify/filter/sort over every app + window) runs on. Production passes
+     * `Dispatchers.Default` so the burst of store writes on an AX-trust grant
+     * doesn't recompute on the main dispatcher and freeze the panel / press-tick.
+     * Defaults to [EmptyCoroutineContext], for which `flowOn` is a no-op — tests
+     * keep the combine on their single-threaded test scheduler unchanged.
+     */
+    private val snapshotContext: CoroutineContext = EmptyCoroutineContext,
 ) {
     // Live-read settings from the store so changes in the inspector's
     // Settings panel take effect on the next session start without
@@ -716,7 +728,19 @@ class SwitcherController(
                     currentSpaceOnly = currentSpaceOnly,
                     visibleSpaceIds = visibleSpaceIds,
                 )
-            }.distinctUntilChanged().collect { newSnapshot ->
+            }
+                // `filteredSwitcherSnapshot` classifies/filters/sorts every app +
+                // window — pure CPU work, no main-thread requirement. Run it (and
+                // the dedup) off the main dispatcher: on an AX-trust grant ~one
+                // `applyAxSnapshot` per running app lands in a burst, and if this
+                // combine ran on Main each of those ~50+ emissions would trigger a
+                // full recompute on the main dispatcher, starving the press-tick
+                // coroutine and Compose for several hundred ms (the "panel freezes
+                // for a few cmd+tab presses after enabling Accessibility" bug).
+                // Only the lightweight result-apply below stays on `scope` (Main).
+                .distinctUntilChanged()
+                .flowOn(snapshotContext)
+                .collect { newSnapshot ->
                 // Drop tags whose target window disappeared. Done before the
                 // refreshedWith branch so the tag state stays consistent even
                 // when the snapshot is structurally identical from the cursor's
