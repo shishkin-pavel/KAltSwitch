@@ -5,6 +5,7 @@ import com.shish.kaltswitch.config.AppConfig
 import com.shish.kaltswitch.config.SwitcherSettings
 import com.shish.kaltswitch.config.WindowFrame
 import com.shish.kaltswitch.model.App
+import com.shish.kaltswitch.model.AppActivationPolicy
 import com.shish.kaltswitch.model.FilteringRules
 import com.shish.kaltswitch.model.PinningRule
 import com.shish.kaltswitch.model.PinningRules
@@ -199,6 +200,39 @@ class WorldStoreTest {
         assertNull(store.state.value.runningApps[10])
         assertNull(store.state.value.windowsByPid[10])
         assertNull(store.iconsByPid.value[10])
+    }
+
+    /**
+     * `upsertAppFields` takes the activation policy as a raw `NSInteger`
+     * precisely so the macOS side never has to build an
+     * `NSApplicationActivationPolicy` — the cinterop enum lookup throws on any
+     * value outside {0, 1, 2}, and `NSRunningApplication` hands back an
+     * out-of-range integer once its process has exited. Anything unrecognised
+     * must therefore land on `Prohibited`, not blow up.
+     */
+    @Test
+    fun upsertAppFields_mapsActivationPolicyRaw_andFoldsUnknownToProhibited() {
+        val store = WorldStore()
+        val seen = mutableMapOf<Long, AppActivationPolicy>()
+        for (raw in listOf(0L, 1L, 2L, -1L, Long.MAX_VALUE)) {
+            store.upsertAppFields(
+                pid = 10,
+                bundleId = "com.example",
+                name = "Example",
+                activationPolicyRaw = raw,
+                isHidden = false,
+                isFinishedLaunching = true,
+                executablePath = null,
+                launchDateMillis = 0,
+            )
+            seen[raw] = assertNotNull(store.state.value.runningApps[10]).activationPolicy
+        }
+
+        assertEquals(AppActivationPolicy.Regular, seen[0L])
+        assertEquals(AppActivationPolicy.Accessory, seen[1L])
+        assertEquals(AppActivationPolicy.Prohibited, seen[2L])
+        assertEquals(AppActivationPolicy.Prohibited, seen[-1L])
+        assertEquals(AppActivationPolicy.Prohibited, seen[Long.MAX_VALUE])
     }
 
     private fun window(
